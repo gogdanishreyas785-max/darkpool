@@ -13,6 +13,7 @@ Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with
 | T-U01 | Economy/formulas. | Fixed inputs yield exact supply, reserve, balances, health and price. |
 | T-U02 | Boundaries. | Filled roster N=5/64, no shares for empty seats, reserve shortage, same-round sell/buy, rotating priority, demand ties, insufficient cash/shares, zero-health and price bounds. |
 | T-U03 | Voting/victory. | Abstentions, missing votes, ties, strict threshold, eliminated voters/targets, zero health, Insider elimination, final survival. |
+| T-U04 | Scoring/final summary. | After approval, verify team-only scoring and that a player's summary reveals only that player's balances and permitted result. |
 | T-I01 | UNIX lifecycle and fragmented/coalesced frames. | Multiple clients; disconnect safe. |
 | T-I02 | Concurrent matches. | Independent state/timers; canaries never leak. |
 | T-I03 | Auth/membership/reconnect. | Forged identity/nonmember rejected; approved cleanup policy. |
