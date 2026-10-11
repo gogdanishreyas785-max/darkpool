@@ -120,6 +120,66 @@ void test_state_fixture_invariants() {
   employees_win_with_insider_alive.outcome = Outcome::EmployeesWin;
   CHECK(rejected(std::move(employees_win_with_insider_alive)));
 
+  auto trade_in_lobby = base_state();
+  trade_in_lobby.phase = Phase::Lobby;
+  trade_in_lobby.round = 0;
+  trade_in_lobby.players[0].action_submitted = true;
+  trade_in_lobby.players[0].order = TradeAction::Hold;
+  CHECK(rejected(std::move(trade_in_lobby)));
+
+  auto trade_before_trading = base_state();
+  trade_before_trading.phase = Phase::Discussion;
+  trade_before_trading.players[0].action_submitted = true;
+  trade_before_trading.players[0].order = TradeAction::Hold;
+  CHECK(rejected(std::move(trade_before_trading)));
+
+  auto vote_before_voting = base_state();
+  vote_before_voting.phase = Phase::Discussion;
+  vote_before_voting.players[0].vote_submitted = true;
+  vote_before_voting.players[0].vote_target = 20;
+  CHECK(rejected(std::move(vote_before_voting)));
+
+  auto clue_before_clue_phase = base_state();
+  clue_before_clue_phase.clue_used = true;
+  clue_before_clue_phase.clue_target = 30;
+  clue_before_clue_phase.clue_result = false;
+  CHECK(rejected(std::move(clue_before_clue_phase)));
+
+  auto inactive_first_round_clue_target = base_state();
+  inactive_first_round_clue_target.phase = Phase::Clue;
+  inactive_first_round_clue_target.clue_used = true;
+  inactive_first_round_clue_target.clue_target = 50;
+  inactive_first_round_clue_target.clue_result = false;
+  inactive_first_round_clue_target.players[4].active = false;
+  CHECK(rejected(std::move(inactive_first_round_clue_target)));
+
+  auto fabricated_finished_activity = base_state();
+  fabricated_finished_activity.phase = Phase::Finished;
+  fabricated_finished_activity.players[0].active = false;
+  fabricated_finished_activity.players[2].active = false;
+  fabricated_finished_activity.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(fabricated_finished_activity)));
+
+  auto inactive_vote_target_without_majority = base_state();
+  inactive_vote_target_without_majority.phase = Phase::AwaitingEvent;
+  inactive_vote_target_without_majority.round = 2;
+  inactive_vote_target_without_majority.eligible_voters_at_open = 5;
+  inactive_vote_target_without_majority.players[4].active = false;
+  inactive_vote_target_without_majority.players[0].vote_submitted = true;
+  inactive_vote_target_without_majority.players[0].vote_target = 50;
+  CHECK(rejected(std::move(inactive_vote_target_without_majority)));
+
+  auto valid_resolved_vote_to_eliminated_player = base_state();
+  valid_resolved_vote_to_eliminated_player.phase = Phase::AwaitingEvent;
+  valid_resolved_vote_to_eliminated_player.round = 2;
+  valid_resolved_vote_to_eliminated_player.eligible_voters_at_open = 5;
+  valid_resolved_vote_to_eliminated_player.players[4].active = false;
+  for (std::size_t i = 0; i < 3; ++i) {
+    valid_resolved_vote_to_eliminated_player.players[i].vote_submitted = true;
+    valid_resolved_vote_to_eliminated_player.players[i].vote_target = 50;
+  }
+  (void)Match::from_state(std::move(valid_resolved_vote_to_eliminated_player));
+
   auto vote_count_mismatch = base_state();
   vote_count_mismatch.phase = Phase::Voting;
   vote_count_mismatch.eligible_voters_at_open = 4;
@@ -160,16 +220,35 @@ void test_state_fixture_invariants() {
   valid_health_win.outcome = Outcome::InsiderWin;
   (void)Match::from_state(std::move(valid_health_win));
 
+  auto invalid_final_win_without_vote = base_state();
+  invalid_final_win_without_vote.phase = Phase::Finished;
+  invalid_final_win_without_vote.round = kRoundCount;
+  invalid_final_win_without_vote.outcome = Outcome::InsiderWin;
+  CHECK(rejected(std::move(invalid_final_win_without_vote)));
+
   auto valid_final_survival = base_state();
   valid_final_survival.phase = Phase::Finished;
   valid_final_survival.round = kRoundCount;
+  valid_final_survival.eligible_voters_at_open = 5;
   valid_final_survival.outcome = Outcome::InsiderWin;
+  for (auto& player : valid_final_survival.players) player.vote_submitted = true;
   (void)Match::from_state(std::move(valid_final_survival));
+
+  auto invalid_insider_elimination_without_vote = base_state();
+  invalid_insider_elimination_without_vote.phase = Phase::Finished;
+  invalid_insider_elimination_without_vote.players[0].active = false;
+  invalid_insider_elimination_without_vote.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(invalid_insider_elimination_without_vote)));
 
   auto valid_insider_elimination = base_state();
   valid_insider_elimination.phase = Phase::Finished;
   valid_insider_elimination.players[0].active = false;
+  valid_insider_elimination.eligible_voters_at_open = 5;
   valid_insider_elimination.outcome = Outcome::EmployeesWin;
+  for (std::size_t i = 1; i <= 3; ++i) {
+    valid_insider_elimination.players[i].vote_submitted = true;
+    valid_insider_elimination.players[i].vote_target = 10;
+  }
   (void)Match::from_state(std::move(valid_insider_elimination));
 }
 
@@ -340,7 +419,13 @@ void test_formula_bounds() {
 void test_eliminated_players_cannot_act_or_be_targets() {
   Match match(roster());
   CHECK(match.start());
-  round_to_voting(match, 0);
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  for (const PlayerId id : {10U, 20U, 30U, 40U, 50U}) {
+    CHECK(match.submit_trade(id, TradeAction::Hold));
+  }
+  CHECK(match.resolve_market().has_value());
+  CHECK(match.open_voting());
   CHECK(match.submit_vote(10, 50));
   CHECK(match.submit_vote(20, 50));
   CHECK(match.submit_vote(30, 50));
@@ -348,8 +433,15 @@ void test_eliminated_players_cannot_act_or_be_targets() {
   CHECK(eliminated && eliminated->eliminated == 50U);
   CHECK(match.state().players[4].shares == 10U); // holdings remain after elimination
 
+  // The just-resolved vote may still point at its eliminated target, and the
+  // eliminated player may have submitted a vote/action before elimination.
+  (void)Match::from_state(match.state());
+  CHECK(match.state().players[4].action_submitted);
+  CHECK(match.state().players[4].order == TradeAction::Hold);
+
   CHECK(match.publish_event(0));
   CHECK(match.open_trading());
+  CHECK(!match.state().players[4].action_submitted && !match.state().players[4].order);
   CHECK(match.submit_trade(50, TradeAction::Hold).error == ErrorCode::InactivePlayer);
   CHECK(match.resolve_market().has_value());
   CHECK(match.open_voting());
