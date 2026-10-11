@@ -297,7 +297,7 @@ void test_invalid_trades_and_credit_cap() {
 }
 
 void test_formula_bounds() {
-  auto lower = market_fixture(0, 1, -2, {{0, TradeAction::Sell}});
+  auto lower = market_fixture(1, 1, -2, {{0, TradeAction::Sell}});
   auto low = lower.resolve_market();
   CHECK(low && low->closing_health == 0 && low->closing_price == 1);
   CHECK(low && low->outcome == Outcome::InsiderWin);
