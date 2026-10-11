@@ -615,7 +615,15 @@ std::string_view Match::to_string(Role value) noexcept {
   return "UnknownRole";
 }
 std::string_view Match::to_string(Phase value) noexcept {
-  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case Phase::Clue: return "Clue"; case Phase::Voting: return "Voting"; case Phase::Finished: return "Finished"; }
+  switch (value) {
+    case Phase::Lobby: return "Lobby";
+    case Phase::AwaitingEvent: return "AwaitingEvent";
+    case Phase::Discussion: return "Discussion";
+    case Phase::Trading: return "Trading";
+    case Phase::Clue: return "Clue";
+    case Phase::Voting: return "Voting";
+    case Phase::Finished: return "Finished";
+  }
   return "UnknownPhase";
 }
 std::string_view Match::to_string(Outcome value) noexcept {
