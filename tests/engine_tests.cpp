@@ -83,6 +83,96 @@ void finish_round_without_elimination(Match& match) {
   CHECK(match.resolve_votes().has_value());
 }
 
+void test_state_fixture_invariants() {
+  const auto rejected = [](MatchState state) {
+    try { (void)Match::from_state(std::move(state)); }
+    catch (const std::invalid_argument&) { return true; }
+    return false;
+  };
+
+  auto finished_without_outcome = base_state();
+  finished_without_outcome.phase = Phase::Finished;
+  CHECK(rejected(std::move(finished_without_outcome)));
+
+  auto live_with_outcome = base_state();
+  live_with_outcome.outcome = Outcome::InsiderWin;
+  CHECK(rejected(std::move(live_with_outcome)));
+
+  auto zero_health_live = base_state();
+  zero_health_live.company.health = 0;
+  CHECK(rejected(std::move(zero_health_live)));
+
+  auto zero_health_wrong_winner = base_state();
+  zero_health_wrong_winner.phase = Phase::Finished;
+  zero_health_wrong_winner.company.health = 0;
+  zero_health_wrong_winner.players[0].active = false;
+  zero_health_wrong_winner.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(zero_health_wrong_winner)));
+
+  auto premature_insider_win = base_state();
+  premature_insider_win.phase = Phase::Finished;
+  premature_insider_win.outcome = Outcome::InsiderWin;
+  premature_insider_win.round = 2;
+  CHECK(rejected(std::move(premature_insider_win)));
+
+  auto employees_win_with_insider_alive = base_state();
+  employees_win_with_insider_alive.phase = Phase::Finished;
+  employees_win_with_insider_alive.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(employees_win_with_insider_alive)));
+
+  auto vote_count_mismatch = base_state();
+  vote_count_mismatch.phase = Phase::Voting;
+  vote_count_mismatch.eligible_voters_at_open = 4;
+  CHECK(rejected(std::move(vote_count_mismatch)));
+
+  auto inactive_voter = base_state();
+  inactive_voter.phase = Phase::Voting;
+  inactive_voter.players[4].active = false;
+  inactive_voter.eligible_voters_at_open = 4;
+  inactive_voter.players[4].vote_submitted = true;
+  CHECK(rejected(std::move(inactive_voter)));
+
+  auto clue_without_result = base_state();
+  clue_without_result.clue_used = true;
+  clue_without_result.clue_target = 30;
+  CHECK(rejected(std::move(clue_without_result)));
+
+  auto incorrect_clue_result = base_state();
+  incorrect_clue_result.clue_used = true;
+  incorrect_clue_result.clue_target = 30;
+  incorrect_clue_result.clue_result = true; // target 30 is an Employee
+  CHECK(rejected(std::move(incorrect_clue_result)));
+
+  // A once-valid clue target can later be eliminated; preserve that valid historical state.
+  auto used_clue_target_later_eliminated = base_state();
+  used_clue_target_later_eliminated.phase = Phase::Voting;
+  used_clue_target_later_eliminated.round = 2;
+  used_clue_target_later_eliminated.players[4].active = false;
+  used_clue_target_later_eliminated.eligible_voters_at_open = 4;
+  used_clue_target_later_eliminated.clue_used = true;
+  used_clue_target_later_eliminated.clue_target = 50;
+  used_clue_target_later_eliminated.clue_result = false;
+  (void)Match::from_state(std::move(used_clue_target_later_eliminated));
+
+  auto valid_health_win = base_state();
+  valid_health_win.phase = Phase::Finished;
+  valid_health_win.company.health = 0;
+  valid_health_win.outcome = Outcome::InsiderWin;
+  (void)Match::from_state(std::move(valid_health_win));
+
+  auto valid_final_survival = base_state();
+  valid_final_survival.phase = Phase::Finished;
+  valid_final_survival.round = kRoundCount;
+  valid_final_survival.outcome = Outcome::InsiderWin;
+  (void)Match::from_state(std::move(valid_final_survival));
+
+  auto valid_insider_elimination = base_state();
+  valid_insider_elimination.phase = Phase::Finished;
+  valid_insider_elimination.players[0].active = false;
+  valid_insider_elimination.outcome = Outcome::EmployeesWin;
+  (void)Match::from_state(std::move(valid_insider_elimination));
+}
+
 void test_initialization_and_supply() {
   Match match(roster());
   CHECK(match.state().players.size() == 5U);
@@ -380,6 +470,7 @@ void test_deterministic_replay() {
 }  // namespace
 
 int main() {
+  test_state_fixture_invariants();
   test_initialization_and_supply();
   test_normal_five_player_worked_example();
   test_reserve_shortage_and_conservation();
