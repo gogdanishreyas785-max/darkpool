@@ -1,6 +1,6 @@
 # Proposed game rules
 
-**Source status:** Draft 3 directly specifies the five-player baseline roles, three rounds, event/hint, discussion/chat, one BUY/HOLD/SELL per player, market resolution, one limited clue per match, vote, and final evaluation. It does not specify the detailed rules below. Every addition in this document is a proposed decision requiring your approval before implementation.
+**Source status:** Draft 3 directly specifies the baseline sequence and roles; detailed mechanics below were S0 proposals. The user's S1 follow-up explicitly approves the S1 gameplay rules listed there. Proposals outside that follow-up (including larger-match scaling and scoring) remain open.
 
 ## Roles and scaling
 
@@ -30,7 +30,7 @@ The PDF gives no starting balances/supply model. Let N be the number of active p
 - Start each player with 100 fictional credits and 10 shares; total issued supply is 20N shares. The match-local reserve starts with 10N; initial player holdings total 10N. Five seats: total 100/reserve 50. Sixty-four seats: total 1,280/reserve 640.
 - Reserve is finite and supply conserved. BUY transfers one share from reserve to player and credits to reserve. SELL transfers one share from player to reserve and pays the player. Both settle at the share price frozen at round open. HOLD has no effect.
 - Start company health 5, bounds 0–10; start price 10, bounds 1–100.
-- **Credit-pool proposal — approval required:** credits are player counters, not a globally conserved supply. BUY debits the player; SELL credits the player at opening P. There is no cash-reserve sufficiency check or shared treasury constraint; cap each balance at a declared implementation-safe integer maximum (to be fixed before S1), rejecting any trade that would exceed it. This avoids an undefined seller funding source but is a gameplay/economy choice, not specified by the PDF.
+- **Credit-pool proposal — approval required:** credits are player counters, not a globally conserved supply. BUY debits the player; SELL credits the player at opening P. There is no cash-reserve sufficiency check or shared treasury constraint; cap each balance at the provisional S1 implementation limit of 1,000,000 credits (uint32_t); reject any trade that would exceed it. This cap is an implementation detail selected under the user's S1 instruction, not a new gameplay rule, and may be revisited. This avoids an undefined seller funding source but is a gameplay/economy choice, not specified by the PDF.
 - BUY requires enough opening cash and reserve inventory; SELL requires an owned share. Invalid action is rejected with no balance change and consumes the one action slot. Missing action is HOLD. A player may submit only once per round.
 - At round close, freeze opening reserve. All eligible SELLs add shares only after BUY allocation; they cannot fund same-round buys. If BUY demand exceeds opening reserve, accept BUYs in rotating seat order starting at ((round number - 1) mod N), reject remaining buys without mutation. Only executed trades count toward demand.
 
