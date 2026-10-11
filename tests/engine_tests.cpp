@@ -28,10 +28,18 @@ std::vector<PlayerSetup> roster() {
           {40, Role::Employee}, {50, Role::Employee}};
 }
 
+PlayerState initial_player(PlayerId id, Role role) {
+  PlayerState player{};
+  player.id = id;
+  player.role = role;
+  return player;
+}
+
 MatchState base_state() {
   MatchState state;
-  state.players = {{10, Role::Insider}, {20, Role::Investigator}, {30, Role::Employee},
-                   {40, Role::Employee}, {50, Role::Employee}};
+  state.players = {initial_player(10, Role::Insider), initial_player(20, Role::Investigator),
+                   initial_player(30, Role::Employee), initial_player(40, Role::Employee),
+                   initial_player(50, Role::Employee)};
   state.reserve = 50;
   state.total_supply = 100;
   state.company = {5, 10};
