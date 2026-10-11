@@ -476,7 +476,7 @@ MarketResolution Match::resolve_market() {
   result.closing_price = state_.company.price;
   result.closing_reserve = state_.reserve;
   state_.phase = Phase::Clue;
-  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.heal[...]
+  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.health) + "|P=" + std::to_string(state_.company.price) + "|reserve=" + std::to_string(state_.reserve));
   if (state_.company.health == 0) finish(Outcome::InsiderWin);
   result.outcome = state_.outcome;
   return {{}, result};
@@ -557,7 +557,7 @@ VoteResolution Match::resolve_votes() {
       break;
     }
   }
-  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(resul[...]
+  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(result.votes_received));
   if (insider_eliminated) finish(Outcome::EmployeesWin);
   else if (state_.round == kRoundCount) finish(Outcome::InsiderWin);
   else {
@@ -615,7 +615,7 @@ std::string_view Match::to_string(Role value) noexcept {
   return "UnknownRole";
 }
 std::string_view Match::to_string(Phase value) noexcept {
-  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case P[...]
+  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case Phase::Clue: return "Clue"; case Phase::Voting: return "Voting"; case Phase::Finished: return "Finished"; }
   return "UnknownPhase";
 }
 std::string_view Match::to_string(Outcome value) noexcept {
