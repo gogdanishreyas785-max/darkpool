@@ -30,6 +30,7 @@ The PDF gives no starting balances/supply model. Let N be the number of active p
 - Start each player with 100 fictional credits and 10 shares; total issued supply is 20N shares. The match-local reserve starts with 10N; initial player holdings total 10N. Five seats: total 100/reserve 50. Sixty-four seats: total 1,280/reserve 640.
 - Reserve is finite and supply conserved. BUY transfers one share from reserve to player and credits to reserve. SELL transfers one share from player to reserve and pays the player. Both settle at the share price frozen at round open. HOLD has no effect.
 - Start company health 5, bounds 0–10; start price 10, bounds 1–100.
+- **Credit-pool proposal — approval required:** credits are player counters, not a globally conserved supply. BUY debits the player; SELL credits the player at opening P. There is no cash-reserve sufficiency check or shared treasury constraint; cap each balance at a declared implementation-safe integer maximum (to be fixed before S1), rejecting any trade that would exceed it. This avoids an undefined seller funding source but is a gameplay/economy choice, not specified by the PDF.
 - BUY requires enough opening cash and reserve inventory; SELL requires an owned share. Invalid action is rejected with no balance change and consumes the one action slot. Missing action is HOLD. A player may submit only once per round.
 - At round close, freeze opening reserve. All eligible SELLs add shares only after BUY allocation; they cannot fund same-round buys. If BUY demand exceeds opening reserve, accept BUYs in rotating seat order starting at ((round number - 1) mod N), reject remaining buys without mutation. Only executed trades count toward demand.
 
@@ -53,7 +54,7 @@ Bounds are inclusive. Formulas, impact range, event table and random-seed policy
 
 At match start, N=5 gives total supply 100 shares: 50 player-held and 50 in reserve. Each player has 100 credits; H=5 and P=10. In round 1, the fixed test event is e=-1. Two players submit valid BUY, one submits valid SELL, and two HOLD. All are funded/eligible; reserve is sufficient.
 
-- Resolve at the opening price P=10: buyers each pay 10 credits and gain one share; seller receives 10 credits and loses one share. Reserve changes 50-2+1=49. Player shares change from 50 to 51, so 51+49=100 remains conserved. Player cash totals 490 and reserve cash is 10 (assuming reserve starts at zero), so credits remain conserved at 500.
+- Resolve at the opening price P=10: buyers each pay 10 credits and gain one share; seller receives 10 credits and loses one share. Reserve changes 50-2+1=49. Player shares change from 50 to 51, so 51+49=100 remains conserved. Player cash totals 490 after these trades; credits are not globally conserved under the proposed credit-pool model because SELL credits are issued by the match's credit pool.
 - Executed B=2, S=1, so sign(B-S)=+1. H'=clamp(5-1+1,0,10)=5. P'=clamp(10+2(-1)+1,1,100)=9.
 - The market result is committed before the proposed health-zero check; because H'=5, the match proceeds to the clue/vote stages.
 
