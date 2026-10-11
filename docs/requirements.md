@@ -43,4 +43,4 @@ Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Require
 | P-11 | mixed64-v1 workload and ACK definition. | Repeatable load metrics. |
 | P-13 | Reserve exhaustion is a synthetic conserved-state boundary test; ordinary three-round play cannot exhaust 10N reserve with at most one trade/player/round. | Prove share conservation and reject BUY when reserve is zero/insufficient. |
 
-P-07 through P-11 require approval; none are source requirements.
+P-07 through P-13 require approval; none are source requirements.
