@@ -1,54 +1,60 @@
 # DARKPOOL test and evidence plan
 
-Planned tests only; none are reported as run. Every result must be labeled PASS, FAIL, NOT RUN, or BLOCKED, with evidence.
+Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with evidence. Test approved rules, not unapproved defaults.
 
-## Functional and unit tests
-
-| ID | Test | Acceptance evidence |
-|---|---|---|
-| T-F01 | Five clients complete all three rounds. | Correct sequence and automated transcript/demo. |
-| T-F02 | Server-side roles and visibility. | Baseline roster correct; unauthorized clients never receive role/hint; moderator view follows approved policy. |
-| T-F03 | Public chat and authorized whispers. | Correct recipients; private message not broadcast; transcript. |
-| T-F04 | Trade, clue, vote permissions and phase. | Legal action once; illegal/late/duplicate action no state mutation. |
-| T-U01 | State-machine invariants. | Deterministic tests for approved roles, economy, event effects, clues, votes, deadlines and victory. |
-| T-U02 | Boundary/tie behavior. | Ties/no votes, absent players, health/price bounds, insufficient cash/shares, empty reserve, repeated actions follow approved rules. |
-
-## Integration, isolation and security
+## Functional, unit and integration
 
 | ID | Test | Acceptance evidence |
 |---|---|---|
-| T-I01 | UNIX socket lifecycle, fragmented/coalesced frames. | Multiple client processes; disconnect safe. |
-| T-I02 | Two concurrent matches. | Independent outcomes and timers. |
-| T-I03 | Four-match isolation. | Unique role/chat/clue/trade/vote/timer/log canaries never escape owning match. |
-| T-I04 | Authentication and membership. | Forged identity/nonmember rejected, state unchanged. |
-| T-I05 | Disconnect/reconnect. | Approved grace policy, cleanup; no identity theft. |
-| T-P01 | Invalid versions/types/fields, truncated/oversized/invalid UTF-8 frames. | Bounded rejection/close; no crash/state corruption. |
-| T-P02 | Retries, duplicate IDs, replay. | Approved idempotency behavior and exactly one transition. |
-| T-S01 | Flood/rate limit. | Abusive traffic rejected; normal clients and matches responsive; record thresholds. |
-| T-S02 | Slow reader/backpressure. | Queue remains within cap or connection dropped; other clients responsive; record RSS/queue. |
-| T-S03 | Secret leakage. | Role/clue canaries absent from unauthorized output and logs. |
-| T-R01 | Steady-load reliability. | Recommended 30 minutes without crash/deadlock/unbounded growth; record RSS, CPU, queues, exit and latency. |
-| T-R02 | Timer/event-loop behavior. | Monotonic phase deadlines; record event-loop delay under load. |
+| T-F01 | Five active clients complete all three rounds. | Correct sequence and transcript/demo. |
+| T-F02 | Server-side roles and visibility. | Baseline roster; no unauthorized role/hint; moderator view follows approved policy. |
+| T-F03 | Public chat and authorized private messages. | Correct recipients; private message not broadcast. |
+| T-F04 | Trade/clue/vote phase and permission. | Legal actions once; rejected actions do not mutate state. |
+| T-U01 | Economy/formulas. | Fixed inputs yield exact supply, reserve, balances, health and price. |
+| T-U02 | Boundaries. | N=5/64, reserve shortage, same-round sell/buy, rotating priority, insufficient cash/shares, bounds. |
+| T-U03 | Voting/victory. | Abstentions, missing votes, ties, strict threshold, eliminated voters/targets, zero health, Insider elimination, final survival. |
+| T-I01 | UNIX lifecycle and fragmented/coalesced frames. | Multiple clients; disconnect safe. |
+| T-I02 | Concurrent matches. | Independent state/timers; canaries never leak. |
+| T-I03 | Auth/membership/reconnect. | Forged identity/nonmember rejected; approved cleanup policy. |
+
+## Protocol, security and reliability
+
+- Invalid version/type/fields, truncated/oversized/invalid UTF-8 frames: bounded rejection, no crash/corruption.
+- Duplicate/retried/conflicting request IDs: approved semantics; at most one mutation.
+- Flood/rate limit: abusive requests rejected, normal matches responsive, thresholds recorded.
+- Slow reader: queue remains bounded or disconnect; record RSS/queue and other-client latency.
+- Secret canaries: role/hint/clue absent from unauthorized output/logs.
+- Final reliability: 30 minutes without crash/deadlock/unbounded growth; record RSS, CPU, queues, process status and latency.
+- Timer/event-loop: monotonic deadlines and event-loop delay under load.
 
 ## Load matrix
 
-Use automated clients that follow the actual protocol and a realistic mixture of joins, chat, trades, votes and acknowledgements. Opening sockets alone is not a capacity test.
+Use automated clients speaking the real protocol; opening sockets alone does not establish capacity.
 
 | Run | Configuration | Evidence |
 |---|---|---|
-| L1 | 5 players/1 match, full game | Correctness, baseline CPU/RSS, protocol errors. |
-| L2 | 8 and 16/1 match | Three 16-player runs; p50/p95, CPU/RSS, responsiveness. |
-| L3 | 32/1 match | Sustained messaging/phases; queue depth, rejects, latency. |
-| L4 | 64/1 match | At least 10-minute smoke run; no crash, bounded queues/memory; report CPU/latency. |
-| L5 | 2 × 32 | Concurrent actions, no leakage/starvation. |
-| L6 | 4 × up to 64 | Attempt 256 players plus moderators/test clients where hardware permits; report actual maximum and limits/failures. |
-| L7 | Slow/disconnected clients | Bounded queue, cleanup, other-match responsiveness. |
-| L8 | Malformed/flood traffic | Safe rejection; no crash, growth, corruption. |
+| L1 | 5 players/1 match, full game | Correctness, CPU/RSS, protocol errors. |
+| L2 | 8 and 16/1 match | Three 16-player runs; p50/p95 and resources. |
+| L3 | 32/1 match | Queue depth, rejected requests, latency. |
+| L4 | 64/1 match | 10-minute smoke test; bounded resources, CPU/latency. |
+| L5 | 2 × 32 | Isolation/starvation results. |
+| L6 | 4 × up to 64 | Attempt 256 plus moderators/test clients where hardware permits; report actual maximum/failure. |
+| L7 | Slow/disconnected clients | Bounded queue, cleanup, responsiveness. |
+| L8 | Malformed/flood traffic | Safe rejection and no corruption. |
 
-Proposed p95 command send-to-ack ≤100 ms at 64 connected clients under an explicitly defined mixed workload, excluding deliberate phase waits. Significant runs repeated three times where practical. Four full matches are a stretch target; never claim without actual evidence.
+## Proposed mixed64-v1 p95 workload — approval required
 
-Record CPU model/cores, RAM, Ubuntu, compiler/build mode, kernel, exact command/config/workload/duration, active clients/matches, accepted/rejected connections, reconnects, latency p50/p95/p99 where meaningful, RSS/CPU/FDs/queue depth/event-loop delay, correctness failures, crashes/timeouts. Save timestamped CSV or JSON plus logs.
+Draft 3 proposes p95 command acknowledgement ≤100 ms at 64 clients but does not define workload/ACK boundary. This profile is a proposed test decision:
 
-## Reporting
+- 64 simulated active clients in one match over local UNIX sockets. Use for the 10-minute L4 smoke and 30-minute final reliability run; repeat significant acceptance runs three times.
+- Test phase lengths per round: discussion 30 seconds, trading 10 seconds, clue 5 seconds, voting 10 seconds. Repeat complete matches with same connected clients after a match ends. These accelerated timings are test settings, not game rules.
+- During discussion, each client sends one chat every 10 seconds with deterministic seeded jitter 0–2 seconds; 80% public, 20% authorized whispers to rotating same-match recipients.
+- In each trade phase, every eligible player sends exactly one legal BUY/HOLD/SELL, distributed deterministically over the first second. In each vote phase, every eligible player sends one vote/abstention over the first second. Investigator requests one clue per match. Use real join/readiness and phase protocol.
+- ACK p95 starts when client has written the complete request and ends when it receives the complete correlated ACK/ERROR, using a monotonic clock. Includes local IPC, event-loop queueing, validation, transition and response enqueue. Excludes intentional phase wait and broadcast delivery; measure broadcast separately.
+- Proposed threshold remains p95 ≤100 ms. Record the same metrics during four-match stretch runs separately.
 
-Each row includes status, timestamp, source revision, environment, command, measurements, failures and artifact paths. A compilation or socket-open test does not demonstrate capacity. Distinguish target from observation. Report measured limit/bottleneck if a target misses; do not silently lower thresholds. TCP/TLS tests are deferred until S9 is approved.
+Phase lengths, workload mix/jitter, ACK semantics, and repeat count are proposals requiring approval. Workload details are not PDF requirements.
+
+## Metrics and reporting
+
+Record hardware, Ubuntu/compiler/build/kernel, exact command/config/profile/duration, clients/matches, accepted/rejected connections, reconnects, p50/p95/p99 where meaningful, RSS/CPU/file descriptors/queue depth/event-loop delay, correctness failures, timeouts/crashes. Save timestamped CSV/JSON and logs with source revision and status. Never claim capacity from compilation or open sockets; report measured limits/bottlenecks. TCP/TLS tests wait for S9 approval.
