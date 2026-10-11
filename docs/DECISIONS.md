@@ -24,10 +24,10 @@ Documenting a proposal does not approve it. Approval-required decisions must be 
 |---|---|---|---|
 | DEC-01 | Moderator is separate non-player; create/start/close/status; no secret visibility in player output. | Consistent with five active players plus moderator; audit access impacts secrecy. | Yes |
 | DEC-02 | At all sizes, one Insider and one Investigator; remainder Employees. | Preserves baseline simplicity; balance at 64 may weaken. Scaling proposal, not requirement. | Yes |
-| DEC-03 | 100 fictional credits and 10 shares/player; for N seats total supply 20N, reserve 10N. Health 5/10, price 10; bounds health 0–10, price 1–100. | Finite supply works at 5 seats (total100/reserve50) and 64 (total1280/reserve640). | Yes |
+| DEC-03 | 100 fictional credits and 10 shares/player; for N filled active seats at match start, total supply 20N and reserve 10N. Health 5/10, price 10; bounds health 0–10, price 1–100. | Finite supply works at 5 seats (total100/reserve50) and 64 (total1280/reserve640). | Yes |
 | DEC-04 | Trades one share at opening price; buys use finite opening reserve, sells add after allocation; rotate seat priority on shortage. | Conserves supply and makes shortage deterministic. | Yes |
-| DEC-05 | Event impact e∈{-1,0,+1}; H'=clamp(H+e,0,10); P'=clamp(P+e+sign(B-S),1,100). Demand changes price only. Tests inject fixed events. | Separate deterministic formulas and reproducibility. | Yes |
-| DEC-06 | Health zero: immediate Insider win after market resolution, before clue/vote. Insider eliminated with health>0: immediate Employee win. If alive after round-three vote: Insider wins. | Resolves timing and precedence. | Yes |
+| DEC-05 | Event impact e∈{-2,-1,0,+1,+2}; H'=clamp(H+e+sign(B-S),0,10); P'=clamp(P+2e+sign(B-S),1,100). Event and demand affect both values with separate formulas. Tests inject fixed events. | Separate deterministic formulas and reproducibility. | Yes |
+| DEC-06 | Health zero at market resolution: immediate Insider win before clue/vote. With health positive, a vote eliminating Insider causes immediate Employee win. If round-three vote ends without identification, Insider wins. | Resolves timing and precedence. | Yes |
 | DEC-07 | Active voters, no self/eliminated targets; missing/explicit abstain; eliminate only on strictly more than E/2 votes with E eligible-at-open; tie/no majority none. | Deterministic edge cases. | Yes |
 | DEC-08 | Replace trade-action clue with private once-per-match target-role check by Investigator. | Trade clue may be weak/redundant; role check is meaningful but powerful. | Yes |
 | DEC-09 | Local peer credentials + server session IDs; no persistent accounts; same UID is not distinct human. | Explicit local trust boundary. | Yes |
