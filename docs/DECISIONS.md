@@ -42,17 +42,17 @@ Status note: the user's S1 follow-up approves only the five-player gameplay choi
 | DEC-18 | Reserve-exhaustion test uses a synthetic, supply-conserving state; ordinary play from 10N reserve cannot exhaust inventory in three rounds at one action/player/round. | Preserves proposed economy while testing finite-reserve rejection. | Yes |
 | DEC-19 | Credits are per-player counters, not globally conserved; SELL credits the player without a reserve-cash test, subject to an implementation-safe balance cap. | PDF does not define the source of SELL proceeds; avoids an unstated finite treasury while making balance overflow behavior explicit. | Yes |
 
-### Formula review and reserve reachability (proposal; approval required)
+### S1 formula and reserve consistency review
 
-The proposed formulas are mathematically deterministic and bounded when inputs are integers in their declared ranges. Both use opening H/P, the same executed-trade net demand sign, and inclusive clamps. Settlement at opening P precedes updating H/P; the health-zero victory check follows both calculations and precedes clue/vote. This avoids a price update feeding back into the same round's trade settlement.
+The S1-approved formulas are mathematically deterministic and bounded when inputs are integers in their declared ranges. Both use opening H/P, the same executed-trade net demand sign, and inclusive clamps. Settlement at opening P precedes updating H/P; the health-zero victory check follows both calculations and precedes clue/vote. This avoids a price update feeding back into the same round's trade settlement.
 
-The finite-reserve model conserves shares: player holdings + reserve = 20N before and after each settlement. Credits are deliberately not described as conserved by Draft 3; the recommended counter model treats SELL proceeds as issued by the match credit pool, with an explicit balance cap to prevent overflow. However, natural reserve exhaustion is unreachable from the proposed initial condition within three rounds: at most 3N BUYs can execute, versus 10N reserve, leaving at least 7N even with zero SELLs. Test reserve shortage/exhaustion only through a synthetic state that preserves total supply. See worked examples in game-rules.md and explicit cases in test-plan.md.
+The finite-reserve model conserves shares: player holdings + reserve = 20N before and after each settlement. Credits are deliberately not described as conserved by Draft 3; the approved S1 counter model treats SELL proceeds as issued by the match credit pool, with the provisional 1,000,000-credit cap to prevent overflow. However, natural reserve exhaustion is unreachable from the proposed initial condition within three rounds: at most 3N BUYs can execute, versus 10N reserve, leaving at least 7N even with zero SELLs. Test reserve shortage/exhaustion only through a synthetic state that preserves total supply. See worked examples in game-rules.md and explicit cases in test-plan.md.
 
-Full definitions are in game-rules.md, test-plan.md and protocol.md. DEC-02 through DEC-08 are gameplay defaults; DEC-10 through DEC-12 and DEC-16 are protocol choices. None are approved.
+Full definitions are in game-rules.md, test-plan.md and protocol.md. The S1 follow-up status below supersedes the original S0 approval-request column for the S1 scope.
 
-### Other approvals still open
+### Remaining approvals for later milestones
 
-Moderator powers/secret audit access; chat and audit retention; reconnect grace/moderator disconnect behavior; connection/match/player caps including test clients; confirm all economy, market, vote, clue, victory and scoring values; confirm protocol framing, authentication, duplicate policy and limits; approve mixed64-v1 and ACK semantics; confirm acceptance Ubuntu/compiler/kernel; assess larger-match role balance.
+Larger-match role balance; protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment. The S1 engine does not decide these.
 
 ## 3. Deferred
 

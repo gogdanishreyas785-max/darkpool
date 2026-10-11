@@ -14,14 +14,14 @@ These are requirements attributed to Draft 3 in `requirements.md`, not newly app
 - Capacity targets: 64 players per match and four concurrent matches (up to 256 players, plus moderator/test clients). These are unverified design targets.
 - Draft 3 contains p95 acknowledgement and reliability objectives; workload and acknowledgement semantics need approval before they can be measured consistently.
 
-## Recommended prototype rules (all proposed decisions, approval required)
+## Prototype rules authorized for S1
 
 1. **Moderator:** separate non-player with create, start, close and operational-status permissions. Secret audit access and chat/audit retention remain separate decisions.
 2. **First playable match:** exactly five active players: one Insider, one Investigator and three Employees. The baseline roles are directly specified; the moderator's separate status is proposed.
-3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. Recommended credit model treats balances as non-conserved counters: BUY debits and SELL credits from the match credit pool, without treasury sufficiency, subject to the provisional S1 implementation cap of 1,000,000 credits (uint32_t), selected under the user's S1 instruction. This resolves an unspecified SELL funding source; the cap is not an additional gameplay rule. All numerical/economic details are proposals.
-4. **Market formulas:** e∈[-2,2] integer, d=sign(B-S); H'=clamp(H+e+d,0,10), P'=clamp(P+2e+d,1,100). Freeze opening H/P/reserve; validate and allocate trades; settle at opening P; calculate both outputs from opening state and executed trades; check H=0 victory before clue/vote. Formulas are deterministic and bounded as written, but remain proposals pending approval.
-5. **Clue:** once-per-match Investigator target-role check, private binary Insider/not-Insider answer. This is recommended for playtesting and remains approval-required.
-6. **Voting and victory:** active eligible electorate, no self/eliminated targets, missing vote=abstain, abstentions stay in denominator; eliminate only with strictly more than half of eligible voters. Health zero gives immediate Insider win before clue/vote; identifying Insider by vote with health positive gives immediate Employee win; otherwise Insider wins at final evaluation after round 3. Proposed precedence and edge handling require approval.
+3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. Recommended credit model treats balances as non-conserved counters: BUY debits and SELL credits from the match credit pool, without treasury sufficiency, subject to the provisional S1 implementation cap of 1,000,000 credits (uint32_t), selected under the user's S1 instruction. This resolves an unspecified SELL funding source; the cap is not an additional gameplay rule. These values are approved for the S1 prototype by the user's follow-up; they are not direct PDF requirements.
+4. **Market formulas:** e∈[-2,2] integer, d=sign(B-S); H'=clamp(H+e+d,0,10), P'=clamp(P+2e+d,1,100). Freeze opening H/P/reserve; validate and allocate trades; settle at opening P; calculate both outputs from opening state and executed trades; check H=0 victory before clue/vote. Formulas are deterministic and bounded as written; the user's follow-up approves them for S1.
+5. **Clue:** once-per-match Investigator target-role check, private binary Insider/not-Insider answer. This is the once-per-match clue approved for the S1 prototype, subject to balance review after playtesting.
+6. **Voting and victory:** active eligible electorate, no self/eliminated targets, missing vote=abstain, abstentions stay in denominator; eliminate only with strictly more than half of eligible voters. Health zero gives immediate Insider win before clue/vote; identifying Insider by vote with health positive gives immediate Employee win; otherwise Insider wins at final evaluation after round 3. The user's follow-up approves this precedence and edge handling for S1.
 7. **Larger matches:** role composition remains a separate configurable decision; no scaling policy is approved here.
 8. **Defaults:** protocol encoding/framing, local authentication, resource limits, duplicate handling, and ACK semantics remain proposed implementation defaults. Review `protocol.md` and DEC-09–16 before locking them.
 9. **Capacity tests:** keep L4/64-client/one-match 10-minute run as a smoke test and 30-minute run as final reliability acceptance. mixed64-v1 and the p95 measurement boundary are proposed and require approval.
@@ -57,9 +57,9 @@ The finite-reserve “exhaustion” case is not reachable during ordinary protot
 - Share reserve shortage is only a synthetic boundary case with the proposed 10N reserve and three-round action cap.
 - Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation. The provisional S1 balance cap and overflow rejection behavior are documented in game-rules.md.
 
-## Precise S1 proposal and acceptance gate
+## S1 scope and acceptance criteria
 
-S1 should deliver only the deterministic, in-process C++20 game engine/state machine; no sockets, epoll server, client, or network protocol implementation. Begin only after explicit user approval of gameplay decisions below.
+S1 delivers only the deterministic, in-process C++20 game engine/state machine; no sockets, epoll server, client, or network protocol implementation. The user's follow-up authorizes this scope and the S1 gameplay rules summarized above; no S2 work is included.
 
 **S1 deliverables**
 
@@ -83,15 +83,16 @@ S1 should deliver only the deterministic, in-process C++20 game engine/state mac
 
 S1 acceptance is functional and deterministic; the 64×4 capacity, p95 and 30-minute reliability targets belong to later integrated load testing and remain unverified.
 
-## Explicit approval requested before S1
+## Approval status and remaining decisions
 
-Please approve, reject or amend these grouped proposals:
+The user has authorized S1 within the deliverables and acceptance criteria above. The following decisions remain open for later milestones:
 
-1. Moderator boundary and powers; separate audit access/retention policy.
-2. Five-player playable roster, share supply/trading defaults, and the non-conserved credit-pool model/balance cap.
-3. Event impact model, formulas, update order and win precedence.
-4. Voting edge rules and once-per-match target-role clue.
-5. Larger-match role policy (or defer it, as recommended).
-6. Protocol format, authentication, limits, duplicate policy and ACK definition.
-7. mixed64-v1 workload and ACK latency boundary.
-8. S1 scope and acceptance criteria above were authorized by the user's follow-up request. The above approval list remains useful for future milestones; open networking, operations, audit, scaling and retention decisions are not silently approved.
+- Larger-match role policy and balance.
+- Production event text/table, random selection/seed policy and what event detail is exposed beyond the approved Insider hint.
+- Protocol format/versioning, ACK semantics, duplicate handling, local authentication, reconnect policy and production resource limits.
+- Secret audit access, chat/audit retention and disclosure.
+- Exit, disconnect, shutdown, session cleanup and moderator-disconnect behavior.
+- Scoring/final-summary disclosures.
+- Exact mixed64-v1 workload approval, supported Ubuntu/compiler/kernel baseline, and load-test environment.
+
+These open items do not block the in-process S1 engine and do not authorize S2. Capacity, latency, security and reliability targets remain unmeasured.

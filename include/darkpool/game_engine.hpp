@@ -123,11 +123,29 @@ struct MarketResult {
   Outcome outcome{Outcome::None};
 };
 
+struct MarketResolution {
+  OperationResult status;
+  std::optional<MarketResult> value;
+  [[nodiscard]] bool has_value() const noexcept { return static_cast<bool>(status) && value.has_value(); }
+  [[nodiscard]] explicit operator bool() const noexcept { return has_value(); }
+  [[nodiscard]] MarketResult* operator->() noexcept { return value ? &*value : nullptr; }
+  [[nodiscard]] const MarketResult* operator->() const noexcept { return value ? &*value : nullptr; }
+};
+
 struct VoteResult {
   std::optional<PlayerId> eliminated;
   std::uint32_t eligible_voters{};
   std::uint32_t votes_received{};
   Outcome outcome{Outcome::None};
+};
+
+struct VoteResolution {
+  OperationResult status;
+  std::optional<VoteResult> value;
+  [[nodiscard]] bool has_value() const noexcept { return static_cast<bool>(status) && value.has_value(); }
+  [[nodiscard]] explicit operator bool() const noexcept { return has_value(); }
+  [[nodiscard]] VoteResult* operator->() noexcept { return value ? &*value : nullptr; }
+  [[nodiscard]] const VoteResult* operator->() const noexcept { return value ? &*value : nullptr; }
 };
 
 class Match {
@@ -145,12 +163,12 @@ class Match {
   [[nodiscard]] OperationResult publish_event(std::int32_t impact);
   [[nodiscard]] OperationResult open_trading();
   [[nodiscard]] OperationResult submit_trade(PlayerId player, TradeAction action);
-  [[nodiscard]] std::optional<MarketResult> resolve_market();
+  [[nodiscard]] MarketResolution resolve_market();
   [[nodiscard]] std::optional<bool> use_clue(PlayerId investigator, PlayerId target,
                                                OperationResult& result);
   [[nodiscard]] OperationResult open_voting();
   [[nodiscard]] OperationResult submit_vote(PlayerId voter, std::optional<PlayerId> target);
-  [[nodiscard]] std::optional<VoteResult> resolve_votes();
+  [[nodiscard]] VoteResolution resolve_votes();
 
   // The impact is private game information; callers must apply audience authorization.
   [[nodiscard]] std::optional<std::int32_t> insider_hint(PlayerId player,
