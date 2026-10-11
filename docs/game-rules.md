@@ -25,13 +25,13 @@ Draft 3 does not define deadlines. Appendix A puts clue use before the vote. Exa
 
 ## Proposed share supply and trading — approval required
 
-The PDF gives no starting balances/supply model. Let N be configured match capacity, 5–64.
+The PDF gives no starting balances/supply model. Let N be the number of active player seats actually filled when the match starts, from 5–64. Freeze that roster at match start; do not issue shares for empty configured seats.
 
 - Start each player with 100 fictional credits and 10 shares; total issued supply is 20N shares. The match-local reserve starts with 10N; initial player holdings total 10N. Five seats: total 100/reserve 50. Sixty-four seats: total 1,280/reserve 640.
 - Reserve is finite and supply conserved. BUY transfers one share from reserve to player and credits to reserve. SELL transfers one share from player to reserve and pays the player. Both settle at the share price frozen at round open. HOLD has no effect.
 - Start company health 5, bounds 0–10; start price 10, bounds 1–100.
 - BUY requires enough opening cash and reserve inventory; SELL requires an owned share. Invalid action is rejected with no balance change and consumes the one action slot. Missing action is HOLD. A player may submit only once per round.
-- At round close, freeze opening reserve. All eligible SELLs add shares only after BUY allocation; they cannot fund same-round buys. If BUY demand exceeds opening reserve, accept BUYs in rotating seat order starting at (round number mod N), reject remaining buys without mutation. Only executed trades count toward demand.
+- At round close, freeze opening reserve. All eligible SELLs add shares only after BUY allocation; they cannot fund same-round buys. If BUY demand exceeds opening reserve, accept BUYs in rotating seat order starting at ((round number - 1) mod N), reject remaining buys without mutation. Only executed trades count toward demand.
 
 These values and mechanics are proposed defaults, not PDF requirements.
 
@@ -39,15 +39,15 @@ These values and mechanics are proposed defaults, not PDF requirements.
 
 Draft 3 requires business events and updates to health/price but supplies no impacts or formulas.
 
-Each event has impact e in {-1, 0, +1}. Production may select from an approved fixed table using server-generated seed recorded in audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
+Each event has signed impact e in {-2, -1, 0, +1, +2}. Production may select from an approved fixed table using server-generated seed recorded in audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
 
-At round start freeze opening health H, price P, and reserve. At trading close, validate submissions, resolve BUYs using opening inventory and rotating seat priority, then settle accepted trades at P. Let B and S be executed BUY and SELL counts.
+At round start freeze opening health H, price P, and reserve. At trading close, validate submissions, resolve BUYs against opening inventory in rotating seat order, then settle accepted trades at P. Let B and S be executed BUY and SELL counts; sign(x) is -1 for x<0, 0 for x=0, and +1 for x>0.
 
-- Health_next = clamp(H + e, 0, 10). Demand does not change health.
-- Price_next = clamp(P + e + sign(B-S), 1, 100), where sign is -1, 0, or +1. Event affects price; net demand shifts it by one credit. Equal BUY/SELL counts add zero.
-- Update order: settle trades at P; calculate health and price from opening values; check zero-health victory; only then continue to clue/vote.
+- Health_next = clamp(H + e + sign(B-S), 0, 10). The event changes health by e; net demand changes health by one in its direction. This lets net selling, including the Insider's action, damage company performance.
+- Price_next = clamp(P + 2e + sign(B-S), 1, 100). The event has twice its health weight on price; net demand shifts it by one credit. Equal BUY/SELL counts add zero demand effect.
+- Update order: freeze opening H, P, and reserve; resolve executed trades and B/S; settle at P; calculate health and price from opening values; check zero-health victory; only then continue to clue/vote.
 
-Bounds are inclusive. Formulas, impacts, event table and random-seed policy all require approval.
+Bounds are inclusive. Formulas, impact range, event table and random-seed policy all require approval.
 
 ## Proposed clue — approval required
 
