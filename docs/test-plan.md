@@ -9,7 +9,7 @@ Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with
 | T-F01 | Five active clients complete all three rounds. | Correct sequence and transcript/demo. |
 | T-F02 | Server-side roles and visibility. | Baseline roster; no unauthorized role/hint; moderator view follows approved policy. |
 | T-F03 | Public chat and authorized private messages. | Correct recipients; private message not broadcast. |
-| T-F04 | Trade/clue/vote phase and permission. | Legal actions once; rejected actions do not mutate state. |
+| T-F04 | Trade/clue/vote phase and permission. | Legal actions once; rejected actions do not mutate balances, share supply, health or price; action-slot behavior follows the proposed rule. |
 | T-U01 | Economy/formulas and worked example. | Reproduce the five-player example in game-rules.md exactly: N=5, e=-1, B=2, S=1 gives reserve49, player shares51, H=5, P=9, and conserved cash/shares. |
 | T-U02 | Supply conservation and boundaries. | For N=5 and N=64 verify total=20N, player shares=10N, reserve=10N; after every BUY/SELL assert player holdings + reserve =20N and credits move by the opening price. Empty configured seats receive no shares. Test P=1/100 and H=0/10 clamping for all e and demand-sign values. |
 | T-U03A | Finite-reserve exhaustion boundary. | Use the documented conserved synthetic fixture (reserve1, player-held99 at N=5); two valid BUYs with seat0 priority accept one, reject one, reach reserve0 without violating supply. Then verify another BUY is rejected without mutation. Document that the state is unreachable in ordinary three-round play (initial reserve10N; at most 3N BUYs). |
