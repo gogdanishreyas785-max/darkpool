@@ -96,6 +96,8 @@ void test_initialization_and_supply() {
   CHECK(match.publish_event(3).error == ErrorCode::InvalidEventImpact);
   CHECK(match.publish_event(-2));
   CHECK(match.state().phase == Phase::Discussion);
+  const auto wrong_market_phase = match.resolve_market();
+  CHECK(wrong_market_phase.status.error == ErrorCode::WrongPhase && !wrong_market_phase.has_value());
   const auto five = supply_plan(5);
   const auto sixty_four = supply_plan(64);
   CHECK(five && five->total == 100U && five->player_held == 50U && five->reserve == 50U);

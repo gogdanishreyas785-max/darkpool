@@ -181,8 +181,8 @@ OperationResult Match::submit_trade(PlayerId id, TradeAction action) {
   return {};
 }
 
-std::optional<MarketResult> Match::resolve_market() {
-  if (state_.phase != Phase::Trading) return std::nullopt;
+MarketResolution Match::resolve_market() {
+  if (state_.phase != Phase::Trading) return {fail(ErrorCode::WrongPhase, "market resolution requires trading phase"), std::nullopt};
   MarketResult result;
   result.opening_health = state_.company.health;
   result.opening_price = state_.company.price;
@@ -241,7 +241,7 @@ std::optional<MarketResult> Match::resolve_market() {
   record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.health) + "|P=" + std::to_string(state_.company.price) + "|reserve=" + std::to_string(state_.reserve));
   if (state_.company.health == 0) finish(Outcome::InsiderWin);
   result.outcome = state_.outcome;
-  return result;
+  return {{}, result};
 }
 
 std::optional<bool> Match::use_clue(PlayerId investigator, PlayerId target, OperationResult& result) {
@@ -297,8 +297,8 @@ OperationResult Match::submit_vote(PlayerId voter_id, std::optional<PlayerId> ta
   return {};
 }
 
-std::optional<VoteResult> Match::resolve_votes() {
-  if (state_.phase != Phase::Voting) return std::nullopt;
+VoteResolution Match::resolve_votes() {
+  if (state_.phase != Phase::Voting) return {fail(ErrorCode::WrongPhase, "vote resolution requires voting phase"), std::nullopt};
   VoteResult result;
   result.eligible_voters = state_.eligible_voters_at_open;
   std::vector<std::uint32_t> counts(state_.players.size(), 0);
@@ -327,7 +327,7 @@ std::optional<VoteResult> Match::resolve_votes() {
     state_.phase = Phase::AwaitingEvent;
   }
   result.outcome = state_.outcome;
-  return result;
+  return {{}, result};
 }
 
 std::optional<std::int32_t> Match::insider_hint(PlayerId id, OperationResult& result) const {
