@@ -57,9 +57,9 @@ The finite-reserve “exhaustion” case is not reachable during ordinary protot
 - Share reserve shortage is only a synthetic boundary case with the proposed 10N reserve and three-round action cap.
 - Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation. The provisional S1 balance cap and overflow rejection behavior are documented in game-rules.md.
 
-## Precise S1 proposal and acceptance gate
+## S1 scope and acceptance criteria
 
-S1 should deliver only the deterministic, in-process C++20 game engine/state machine; no sockets, epoll server, client, or network protocol implementation. Begin only after explicit user approval of gameplay decisions below.
+S1 delivers only the deterministic, in-process C++20 game engine/state machine; no sockets, epoll server, client, or network protocol implementation. The user's follow-up authorizes this scope and the S1 gameplay rules summarized above; no S2 work is included.
 
 **S1 deliverables**
 
