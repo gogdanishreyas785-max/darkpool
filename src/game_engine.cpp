@@ -60,38 +60,113 @@ Match::Match(MatchState state, bool validate) : state_(std::move(state)) {
 Match Match::from_state(MatchState state) { return Match(std::move(state), true); }
 
 bool Match::validate_state(std::string& why) const {
-  if (state_.players.size() != kPlayerCount) { why = "five players required"; return false; }
+  const auto invalid = [&why](const char* message) {
+    why = message;
+    return false;
+  };
+  if (state_.players.size() != kPlayerCount) return invalid("five players required");
   const auto expected_supply = supply_plan(kPlayerCount).value().total;
-  if (state_.total_supply != expected_supply) { why = "total supply does not match five-player economy"; return false; }
+  if (state_.total_supply != expected_supply) return invalid("total supply does not match five-player economy");
+
+  switch (state_.phase) {
+    case Phase::Lobby: case Phase::AwaitingEvent: case Phase::Discussion:
+    case Phase::Trading: case Phase::Clue: case Phase::Voting: case Phase::Finished: break;
+    default: return invalid("unknown phase");
+  }
+  switch (state_.outcome) {
+    case Outcome::None: case Outcome::InsiderWin: case Outcome::EmployeesWin: break;
+    default: return invalid("unknown outcome");
+  }
+
   std::unordered_set<PlayerId> ids;
-  std::uint32_t insiders = 0, investigators = 0, employees = 0;
+  std::uint32_t insiders = 0, investigators = 0, employees = 0, active = 0;
   std::uint64_t held = 0;
+  const PlayerState* insider = nullptr;
+  const PlayerState* investigator = nullptr;
   for (const auto& p : state_.players) {
-    if (!ids.insert(p.id).second) { why = "duplicate player ID"; return false; }
-    if (p.credits > kCreditBalanceCap) { why = "credit balance exceeds cap"; return false; }
+    if (!ids.insert(p.id).second) return invalid("duplicate player ID");
+    if (p.credits > kCreditBalanceCap) return invalid("credit balance exceeds cap");
     held += p.shares;
     if ((p.order.has_value() && !p.action_submitted) ||
         (p.vote_target.has_value() && !p.vote_submitted)) {
-      why = "submission state is inconsistent"; return false;
+      return invalid("submission state is inconsistent");
     }
+    if (p.order && *p.order != TradeAction::Buy && *p.order != TradeAction::Hold &&
+        *p.order != TradeAction::Sell) return invalid("unknown trade action");
     switch (p.role) {
-      case Role::Insider: ++insiders; break;
-      case Role::Investigator: ++investigators; break;
+      case Role::Insider: ++insiders; insider = &p; break;
+      case Role::Investigator: ++investigators; investigator = &p; break;
       case Role::Employee: ++employees; break;
+      default: return invalid("unknown role");
     }
+    if (p.active) ++active;
   }
-  if (insiders != 1 || investigators != 1 || employees != 3) { why = "role counts invalid"; return false; }
-  if (held + state_.reserve != state_.total_supply) { why = "share supply is not conserved"; return false; }
+  if (insiders != 1 || investigators != 1 || employees != 3) return invalid("role counts invalid");
+  if (held + state_.reserve != state_.total_supply) return invalid("share supply is not conserved");
   if (state_.company.health < kMinHealth || state_.company.health > kMaxHealth ||
       state_.company.price < kMinPrice || state_.company.price > kMaxPrice) {
-    why = "company value outside inclusive bounds"; return false;
+    return invalid("company value outside inclusive bounds");
   }
   if (state_.round > kRoundCount || state_.event_impact < -2 || state_.event_impact > 2 ||
       state_.seat_priority >= state_.players.size() ||
       state_.eligible_voters_at_open > state_.players.size() ||
       (state_.phase == Phase::Lobby && state_.round != 0U) ||
       (state_.phase != Phase::Lobby && state_.round == 0U)) {
-    why = "round/event value outside bounds"; return false;
+    return invalid("round/event value outside bounds");
+  }
+
+  if (state_.clue_used) {
+    if (!state_.clue_target || !state_.clue_result || investigator == nullptr ||
+        !ids.contains(*state_.clue_target) || *state_.clue_target == investigator->id) {
+      return invalid("clue-use fields are inconsistent");
+    }
+    const auto target = std::find_if(state_.players.begin(), state_.players.end(),
+                                     [this](const PlayerState& p) { return p.id == *state_.clue_target; });
+    if (target == state_.players.end() || !target->active ||
+        *state_.clue_result != (target->role == Role::Insider)) {
+      return invalid("clue target/result does not match roster");
+    }
+  } else if (state_.clue_target || state_.clue_result) {
+    return invalid("unused clue has target or result");
+  }
+
+  for (const auto& p : state_.players) {
+    if (p.vote_target && (!ids.contains(*p.vote_target) || *p.vote_target == p.id)) {
+      return invalid("vote target is unknown or self");
+    }
+    if (state_.phase == Phase::Voting && p.vote_submitted &&
+        (!p.active || (p.vote_target && !find_player(*p.vote_target)->active))) {
+      return invalid("current vote state includes inactive voter or target");
+    }
+  }
+  if (state_.phase == Phase::Voting && state_.eligible_voters_at_open != active) {
+    return invalid("eligible voter count does not match active voters at vote open");
+  }
+
+  // Victory precedence: health zero is an immediate Insider win; the match
+  // cannot enter another live phase or later eliminate the Insider.
+  if (state_.company.health == 0) {
+    if (state_.phase != Phase::Finished || state_.outcome != Outcome::InsiderWin ||
+        !insider->active) return invalid("zero health requires a finished Insider win");
+  }
+  if (state_.phase == Phase::Finished) {
+    if (state_.outcome == Outcome::None) return invalid("finished match requires an outcome");
+    if (state_.outcome == Outcome::InsiderWin) {
+      if (state_.company.health > 0 &&
+          (state_.round != kRoundCount || !insider->active)) {
+        return invalid("Insider win requires zero health or final-round survival");
+      }
+    } else if (state_.company.health == 0 || insider->active) {
+      return invalid("Employees win requires the Insider eliminated while health is positive");
+    }
+  } else {
+    if (state_.outcome != Outcome::None) return invalid("live match cannot have an outcome");
+    if (state_.phase == Phase::Lobby && active != state_.players.size()) {
+      return invalid("lobby players must all be active");
+    }
+    if (insider != nullptr && !insider->active) {
+      return invalid("Insider elimination must finish the match immediately");
+    }
   }
   return true;
 }
