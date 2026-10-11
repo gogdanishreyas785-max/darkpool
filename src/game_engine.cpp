@@ -122,7 +122,7 @@ bool Match::validate_state(std::string& why) const {
     }
     const auto target = std::find_if(state_.players.begin(), state_.players.end(),
                                      [this](const PlayerState& p) { return p.id == *state_.clue_target; });
-    if (target == state_.players.end() || !target->active ||
+    if (target == state_.players.end() ||
         *state_.clue_result != (target->role == Role::Insider)) {
       return invalid("clue target/result does not match roster");
     }
