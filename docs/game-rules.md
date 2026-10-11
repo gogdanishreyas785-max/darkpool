@@ -1,70 +1,79 @@
 # Proposed game rules
 
-**Status:** Roles and broad loop are from Draft 3. Every proposed default below fills a gap; it is not a PDF requirement and needs approval before implementation.
+**Source status:** Draft 3 directly specifies the five-player baseline roles, three rounds, event/hint, discussion/chat, one BUY/HOLD/SELL per player, market resolution, one limited clue per match, vote, and final evaluation. It does not specify the detailed rules below. Every addition in this document is a proposed decision requiring your approval before implementation.
 
-## Roles and scope
+## Roles and scaling
 
-- **Insider:** Seeks to damage company performance and avoid identification; receives one confidential event hint; may trade like others.
-- **Investigator:** Helps Employees identify Insider; may request one limited clue per match.
-- **Employee:** Discusses, trades, and votes to protect company and identify Insider.
-- **Baseline:** Five active players: one Insider, one Investigator, three Employees. The PDF also shows a moderator but asks that status be clarified.
-- **Proposed default — approval required:** Moderator is a separate non-player operator, not one of the five seats. May create/start/close matches and inspect operational status. No secret visibility through player output; any privileged audit access is separately permissioned.
-- **Proposed default — approval required:** At larger sizes retain one Insider and one Investigator; all other seats are Employees. This extension is not specified and may affect balance.
+- **Direct baseline requirement:** five active players: one Insider, one Investigator, three Employees. The moderator is shown separately in the example; status needs clarification.
+- Insider damages company performance and avoids identification; receives one confidential event hint; may trade like others.
+- Investigator helps Employees identify the Insider; may request one limited clue per match.
+- Employees discuss, trade and vote to protect the company and identify the Insider.
+- **Scaling proposal — approval required:** retain one Insider and one Investigator at all sizes, all remaining seats Employees. This preserves the singular hidden target and baseline rules; at 64 players the lone Insider is harder to identify and one Investigator may be weak. This is a proposal, not an assumed rule.
+- **Moderator proposal — approval required:** separate non-player, not one of the five; can create/start/close and inspect operational status. No secret visibility through player output; privileged audit access needs a separate policy.
 
-## Three-round sequence
+## Three rounds
 
-1. Server announces round, publishes a business event, and privately sends Insider hint.
-2. Public discussion; authorized private messages may be sent.
-3. Every eligible active player submits one BUY, HOLD, or SELL.
-4. Server validates actions and updates cash, shares, company health, and price.
+1. Server announces round and business event; privately sends Insider hint.
+2. Public discussion and authorized private messages.
+3. Each eligible active player submits one BUY, HOLD, or SELL.
+4. Server validates and resolves trades; updates cash/shares, company health and price.
 5. Players discuss evidence; Investigator may use the once-per-match clue.
-6. Eligible players vote; server records the result under approved voting rules.
-7. Repeat through three rounds; evaluate win condition and issue permitted final summary.
+6. Eligible players vote; server resolves result and any elimination.
+7. Continue until a proposed immediate victory occurs or round three's vote resolves; issue permitted final summary.
 
-The PDF does not define phase deadlines or exact clue timing. Appendix A places clue before vote; the above ordering is proposed, pending approval.
+Draft 3 does not define deadlines. Appendix A puts clue use before the vote. Exact timing and clue window need approval.
 
-## Proposed economy (approval required)
+## Proposed share supply and trading — approval required
 
-PDF mentions one company share/instrument and updates to cash, shares, health, and price, but gives no starting balances or formula. Suggested fictional units only, never real money:
+The PDF gives no starting balances/supply model. Let N be configured match capacity, 5–64.
 
-- Start cash 100 credits/player; start shares 10/player.
-- Fixed total supply 640 shares/match; unissued shares are held by a match-local reserve.
-- Start health 5 on a 0–10 scale; start share price 10 credits.
-- BUY/SELL trades one share with the reserve at round-opening price. HOLD is no-op.
-- BUY requires sufficient cash and reserve inventory; SELL requires a held share. Invalid/late/duplicate action does not mutate state. Missing action at deadline becomes HOLD.
-- Each business event has impact -1, 0, or +1. Apply to health and price. After trades, price is clamp(opening price + event impact + sign(valid BUY count - valid SELL count), 1, 100); sign is -1, 0, or +1. A demand tie has no demand adjustment.
-- Reserve collects buyers' credits and pays sellers.
+- Start each player with 100 fictional credits and 10 shares; total issued supply is 20N shares. The match-local reserve starts with 10N; initial player holdings total 10N. Five seats: total 100/reserve 50. Sixty-four seats: total 1,280/reserve 640.
+- Reserve is finite and supply conserved. BUY transfers one share from reserve to player and credits to reserve. SELL transfers one share from player to reserve and pays the player. Both settle at the share price frozen at round open. HOLD has no effect.
+- Start company health 5, bounds 0–10; start price 10, bounds 1–100.
+- BUY requires enough opening cash and reserve inventory; SELL requires an owned share. Invalid action is rejected with no balance change and consumes the one action slot. Missing action is HOLD. A player may submit only once per round.
+- At round close, freeze opening reserve. All eligible SELLs add shares only after BUY allocation; they cannot fund same-round buys. If BUY demand exceeds opening reserve, accept BUYs in rotating seat order starting at (round number mod N), reject remaining buys without mutation. Only executed trades count toward demand.
 
-This avoids order books/auctions but is a new market model. Approve or replace before S1.
+These values and mechanics are proposed defaults, not PDF requirements.
 
-## Business events and Insider hint
+## Proposed deterministic business and market rules — approval required
 
-PDF requires a business event and confidential hint, not their content or effects.
+Draft 3 requires business events and updates to health/price but supplies no impacts or formulas.
 
-**Proposed default — approval required:** Pick each event from a fixed server-side table using a server-generated match seed. Publish event text to all; privately tell Insider its true health impact before trades. Apply impact during resolution. Keep seed in audit, not player output. No external feed. Approve event table, randomness/replay policy, and whether impact is later revealed.
+Each event has impact e in {-1, 0, +1}. Production may select from an approved fixed table using server-generated seed recorded in audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
 
-## Investigator clue
+At round start freeze opening health H, price P, and reserve. At trading close, validate submissions, resolve BUYs using opening inventory and rotating seat priority, then settle accepted trades at P. Let B and S be executed BUY and SELL counts.
 
-PDF permits one limited clue per match but does not define its content, timing, audience, or consequence.
+- Health_next = clamp(H + e, 0, 10). Demand does not change health.
+- Price_next = clamp(P + e + sign(B-S), 1, 100), where sign is -1, 0, or +1. Event affects price; net demand shifts it by one credit. Equal BUY/SELL counts add zero.
+- Update order: settle trades at P; calculate health and price from opening values; check zero-health victory; only then continue to clue/vote.
 
-**Proposed default — approval required:** Once per match, after trade resolution and before vote, Investigator may request a clue privately revealing one randomly selected other player's resolved BUY/HOLD/SELL. No additional consequence. A retry must not consume a second clue. Approve content and availability window.
+Bounds are inclusive. Formulas, impacts, event table and random-seed policy all require approval.
 
-## Chat
+## Proposed clue — approval required
 
-PDF requires public chat and authorized private messages but does not define recipient policy, retention, or post-elimination access.
+Draft 3 only says one limited clue per match. A randomly revealed player's trade may be weak or redundant if trades are visible.
 
-**Proposed default — approval required:** Public messages go only to active members of that match; whisper is one-to-one among active members. No cross-match recipients. Do not persist chat content by default; security metadata goes to a separate access-controlled audit log. Approve retention and moderator access.
+**Recommended alternative:** once per match, after trade resolution and before that round's vote, Investigator selects one other active player and privately receives a binary result: “target is the Insider” or “target is not the Insider.” This is simple, testable and meaningful, but powerful; one use per match limits it. Retry cannot consume another use. Approve or replace before implementation.
 
-## Voting and consequences
+## Proposed voting — approval required
 
-The PDF does not state eligible voters, deadline, ties, threshold, elimination, or consequences.
+PDF does not define eligibility, abstentions, missing votes, ties, threshold or consequences.
 
-**Proposed defaults — approval required:** All active players may vote for another active player, not self. One vote each; missing vote is abstention. Eliminate only if a target receives strictly more than half of non-abstaining votes; a tie or no majority eliminates nobody. Eliminated players cannot trade, clue, vote, or send game chat in later rounds, but may receive public results. Continue schedule to round three. Keep vote identities secret; reveal only approved outcome.
+- All active players at vote open, including Insider and Investigator, may cast one secret vote for another active player or abstain. No self-vote. Eliminated players cannot vote or be targets.
+- Missing vote at deadline counts as abstention.
+- Let E be active eligible voters at vote open. Eliminate a target only if they receive strictly more than E/2 votes. Abstentions remain in denominator. Tie/no strict majority means no elimination.
+- Eliminated Employee cannot trade, clue, vote or send game chat later; their cash/shares remain. They may receive public phase/results. No second vote that round.
 
-## Victory and scoring
+Every bullet is a proposed default requiring approval.
 
-PDF requires final evaluation after three rounds but supplies no victory or scoring formula.
+## Proposed victory — approval required
 
-**Proposed default — approval required:** Employees win if Insider is eliminated and health is above zero; otherwise Insider wins. This gives an exclusive team result and uses both identification and company health. No individual economic score changes team victory. Final player summary contains permitted public company state and outcome, not secret role/clue details.
+Draft 3 requires final evaluation but gives no victory rules.
 
-Whether zero health ends immediately, what happens after early elimination, scoring, and simultaneous conditions need approval. No default above should be implemented until reviewed.
+- If health reaches zero at market resolution, Insider wins immediately before clue/vote; calculate/report final price.
+- If a vote eliminates Insider while health is above zero, Employees win immediately after that vote.
+- Eliminating an Employee does not end the game.
+- If round three's vote resolves without eliminating Insider and health is above zero, Insider wins immediately at final evaluation.
+- No draw under this proposal. Immediate outcomes avoid conflicts: the match ends on zero health or Insider elimination.
+
+These outcomes and precedence are proposed, not specified by the PDF. No real money or excluded market feature is introduced.
