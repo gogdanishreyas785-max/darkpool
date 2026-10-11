@@ -40,12 +40,13 @@ Documenting a proposal does not approve it. Approval-required decisions must be 
 | DEC-16 | Each well-framed command receives one correlated ACK after validation/transition and response enqueue, or ERROR on rejection; PING gets PONG. | Makes command acknowledgement measurable. | Yes |
 | DEC-17 | Team win only; cash/shares do not create individual points or tie-break; private summary shows only own balances. | PDF gives no scoring rule; avoids an unrequested leaderboard. | Yes |
 | DEC-18 | Reserve-exhaustion test uses a synthetic, supply-conserving state; ordinary play from 10N reserve cannot exhaust inventory in three rounds at one action/player/round. | Preserves proposed economy while testing finite-reserve rejection. | Yes |
+| DEC-19 | Credits are per-player counters, not globally conserved; SELL credits the player without a reserve-cash test, subject to an implementation-safe balance cap. | PDF does not define the source of SELL proceeds; avoids an unstated finite treasury while making balance overflow behavior explicit. | Yes |
 
 ### Formula review and reserve reachability (proposal; approval required)
 
 The proposed formulas are mathematically deterministic and bounded when inputs are integers in their declared ranges. Both use opening H/P, the same executed-trade net demand sign, and inclusive clamps. Settlement at opening P precedes updating H/P; the health-zero victory check follows both calculations and precedes clue/vote. This avoids a price update feeding back into the same round's trade settlement.
 
-The finite-reserve model conserves shares: player holdings + reserve = 20N before and after each settlement. However, natural reserve exhaustion is unreachable from the proposed initial condition within three rounds: at most 3N BUYs can execute, versus 10N reserve, leaving at least 7N even with zero SELLs. Test reserve shortage/exhaustion only through a synthetic state that preserves total supply. See worked examples in game-rules.md and explicit cases in test-plan.md.
+The finite-reserve model conserves shares: player holdings + reserve = 20N before and after each settlement. Credits are deliberately not described as conserved by Draft 3; the recommended counter model treats SELL proceeds as issued by the match credit pool, with an explicit balance cap to prevent overflow. However, natural reserve exhaustion is unreachable from the proposed initial condition within three rounds: at most 3N BUYs can execute, versus 10N reserve, leaving at least 7N even with zero SELLs. Test reserve shortage/exhaustion only through a synthetic state that preserves total supply. See worked examples in game-rules.md and explicit cases in test-plan.md.
 
 Full definitions are in game-rules.md, test-plan.md and protocol.md. DEC-02 through DEC-08 are gameplay defaults; DEC-10 through DEC-12 and DEC-16 are protocol choices. None are approved.
 
