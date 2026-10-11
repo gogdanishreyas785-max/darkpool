@@ -316,7 +316,7 @@ void test_formula_bounds() {
   CHECK(exact && exact->closing_health == 7 && exact->closing_price == 13);
 
   // Zero health is already terminal and cannot be an opening market state.
-    for (std::int32_t health = kMinHealth + 1; health <= kMaxHealth; ++health) {
+  for (std::int32_t health = kMinHealth + 1; health <= kMaxHealth; ++health) {
     for (std::int32_t price = kMinPrice; price <= kMaxPrice; ++price) {
       for (std::int32_t event = -2; event <= 2; ++event) {
         for (std::int32_t net : {-1, 0, 1}) {
