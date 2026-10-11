@@ -283,6 +283,32 @@ bool Match::validate_state(std::string& why) const {
     }
   }
 
+  // Semantic validation of recorded trade actions against submission-time preconditions.
+  // If a player has action_submitted=true and a recorded order, the order must satisfy
+  // the preconditions that submit_trade() enforces. This prevents acceptance of
+  // synthetically constructed fixtures that represent impossible game histories.
+  if (state_.phase == Phase::Trading || state_.phase == Phase::Clue ||
+      state_.phase == Phase::Voting ||
+      (state_.phase == Phase::Finished && state_.company.health == 0)) {
+    for (const auto& p : state_.players) {
+      if (p.action_submitted && p.order) {
+        if (*p.order == TradeAction::Buy) {
+          if (p.credits < static_cast<Credits>(state_.company.price)) {
+            return invalid("recorded Buy order requires sufficient opening-price credits");
+          }
+        } else if (*p.order == TradeAction::Sell) {
+          if (p.shares == 0) {
+            return invalid("recorded Sell order requires at least one share");
+          }
+          if (p.credits > kCreditBalanceCap - static_cast<Credits>(state_.company.price)) {
+            return invalid("recorded Sell order would exceed per-player credit cap");
+          }
+        }
+        // Hold has no additional balance requirements.
+      }
+    }
+  }
+
   // Victory precedence: health zero is an immediate Insider win; the match
   // cannot enter another live phase or later eliminate the Insider.
   if (state_.company.health == 0) {
@@ -589,7 +615,15 @@ std::string_view Match::to_string(Role value) noexcept {
   return "UnknownRole";
 }
 std::string_view Match::to_string(Phase value) noexcept {
-  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case Phase::Clue: return "Clue"; case Phase::Voting: return "Voting"; case Phase::Finished: return "Finished"; }
+  switch (value) {
+    case Phase::Lobby: return "Lobby";
+    case Phase::AwaitingEvent: return "AwaitingEvent";
+    case Phase::Discussion: return "Discussion";
+    case Phase::Trading: return "Trading";
+    case Phase::Clue: return "Clue";
+    case Phase::Voting: return "Voting";
+    case Phase::Finished: return "Finished";
+  }
   return "UnknownPhase";
 }
 std::string_view Match::to_string(Outcome value) noexcept {
@@ -612,4 +646,3 @@ std::string_view Match::to_string(ErrorCode value) noexcept {
 }
 
 }  // namespace darkpool
-

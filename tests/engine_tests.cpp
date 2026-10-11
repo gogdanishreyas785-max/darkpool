@@ -383,6 +383,51 @@ void test_invalid_trades_and_credit_cap() {
   CHECK(zero_share_match.submit_trade(10, TradeAction::Sell).error == ErrorCode::NoSharesToSell);
 }
 
+void test_trade_order_preconditions_in_fixture_validation() {
+  const auto rejected = [](MatchState state) {
+    try {
+      (void)Match::from_state(std::move(state));
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  auto buy_without_cash = base_state();
+  buy_without_cash.players[0].action_submitted = true;
+  buy_without_cash.players[0].order = TradeAction::Buy;
+  buy_without_cash.players[0].credits = 9;
+  CHECK(rejected(std::move(buy_without_cash)));
+
+  auto sell_without_share = base_state();
+  sell_without_share.players[0].action_submitted = true;
+  sell_without_share.players[0].order = TradeAction::Sell;
+  sell_without_share.players[0].shares = 0;
+  sell_without_share.players[1].shares += 10; // preserve total supply
+  CHECK(rejected(std::move(sell_without_share)));
+
+  auto sell_exceeding_cap = base_state();
+  sell_exceeding_cap.players[0].action_submitted = true;
+  sell_exceeding_cap.players[0].order = TradeAction::Sell;
+  sell_exceeding_cap.players[0].credits = kCreditBalanceCap;
+  CHECK(rejected(std::move(sell_exceeding_cap)));
+
+  auto valid_buy_pending_zero_reserve = base_state();
+  valid_buy_pending_zero_reserve.reserve = 0;
+  valid_buy_pending_zero_reserve.players[0].shares += 50; // preserve total supply
+  valid_buy_pending_zero_reserve.players[0].action_submitted = true;
+  valid_buy_pending_zero_reserve.players[0].order = TradeAction::Buy;
+  valid_buy_pending_zero_reserve.players[0].credits = 100;
+  // A BUY can be accepted as a request and rejected later by opening-reserve allocation.
+  (void)Match::from_state(std::move(valid_buy_pending_zero_reserve));
+
+  auto valid_sell_at_cap_boundary = base_state();
+  valid_sell_at_cap_boundary.players[0].action_submitted = true;
+  valid_sell_at_cap_boundary.players[0].order = TradeAction::Sell;
+  valid_sell_at_cap_boundary.players[0].credits = kCreditBalanceCap - 10;
+  (void)Match::from_state(std::move(valid_sell_at_cap_boundary));
+}
+
 void test_formula_bounds() {
   auto lower = market_fixture(1, 1, -2, {{0, TradeAction::Sell}});
   auto low = lower.resolve_market();
@@ -576,6 +621,7 @@ int main() {
   test_normal_five_player_worked_example();
   test_reserve_shortage_and_conservation();
   test_invalid_trades_and_credit_cap();
+  test_trade_order_preconditions_in_fixture_validation();
   test_formula_bounds();
   test_clue_scope_and_idempotency();
   test_vote_edges_and_victories();
