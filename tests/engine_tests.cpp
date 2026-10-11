@@ -403,7 +403,7 @@ void test_trade_order_preconditions_in_fixture_validation() {
   sell_without_share.players[0].action_submitted = true;
   sell_without_share.players[0].order = TradeAction::Sell;
   sell_without_share.players[0].shares = 0;
-  ++sell_without_share.players[1].shares; // preserve total supply
+  sell_without_share.players[1].shares += 10; // preserve total supply
   CHECK(rejected(std::move(sell_without_share)));
 
   auto sell_exceeding_cap = base_state();
