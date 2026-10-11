@@ -35,8 +35,8 @@ Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Require
 | P-04 | 4 KiB frame, 512-byte chat, 20 req/s burst 40, 64 KiB queue. | Boundary/flood/slow-reader tests. |
 | P-05 | One epoll state owner and monotonic timers. | Timer/load tests. |
 | P-06 | 30-minute reliability acceptance; 10-minute L4 smoke. | T-R01/L4. |
-| P-07 | Dynamic finite supply 20N total, 10N player allotment and 10N reserve. | Supply conservation, 5/64 and shortage cases. |
-| P-08 | Separate health/price formulas and update order in game-rules.md. | Fixed-event/action results, bounds and demand ties. |
+| P-07 | Dynamic finite supply 20N total, 10N player allotment and 10N reserve, where N is filled active roster at match start, not configured maximum. | Supply conservation, 5/64 and shortage cases. |
+| P-08 | Separate health/price formulas and update order; event impact -2..+2 and demand affects both values. | Fixed-event/action results, bounds and demand ties. |
 | P-09 | Immediate victory precedence and strict-majority voting. | Deterministic edge-case tests. |
 | P-10 | Targeted role-check clue. | Privacy, retry and use-limit tests. |
 | P-11 | mixed64-v1 workload and ACK definition. | Repeatable load metrics. |
