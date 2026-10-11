@@ -49,6 +49,22 @@ At round start freeze opening health H, price P, and reserve. At trading close, 
 
 Bounds are inclusive. Formulas, impact range, event table and random-seed policy all require approval.
 
+### Worked example: ordinary five-player round (proposal illustration)
+
+At match start, N=5 gives total supply 100 shares: 50 player-held and 50 in reserve. Each player has 100 credits; H=5 and P=10. In round 1, the fixed test event is e=-1. Two players submit valid BUY, one submits valid SELL, and two HOLD. All are funded/eligible; reserve is sufficient.
+
+- Resolve at the opening price P=10: buyers each pay 10 credits and gain one share; seller receives 10 credits and loses one share. Reserve changes 50-2+1=49. Player shares change from 50 to 51, so 51+49=100 remains conserved. Player cash totals 490 and reserve cash is 10 (assuming reserve starts at zero), so credits remain conserved at 500.
+- Executed B=2, S=1, so sign(B-S)=+1. H'=clamp(5-1+1,0,10)=5. P'=clamp(10+2(-1)+1,1,100)=9.
+- The market result is committed before the proposed health-zero check; because H'=5, the match proceeds to the clue/vote stages.
+
+### Worked example: reserve exhaustion boundary (proposed synthetic test)
+
+This is a valid conserved test fixture, but it is not reachable from the recommended starting state during ordinary three-round play. For N=5, reserve starts at 50 and there are at most 5 BUYs in each of 3 rounds; even with no SELLs, at least 35 reserve shares remain. For N=64 the corresponding lower bound is 448. This makes natural exhaustion impossible under one action/player/round and a three-round match.
+
+To test the finite-reserve rejection boundary without changing those rules, initialize a test-only conserved N=5 state with reserve=1 and player holdings totaling 99 (total supply remains 100); give two active players enough cash to BUY. In round 1, seat 0 and seat 1 both submit BUY; rotating priority starts at seat 0. Seat 0's BUY settles at opening P; reserve becomes zero and player holdings become 100. Seat 1's BUY is rejected for insufficient reserve, with no balance mutation. The rejected order is not counted in B; only executed trades feed the formulas. This test proves the boundary behavior, not that ordinary play reaches it.
+
+All examples illustrate pending proposals and do not approve them.
+
 ## Proposed clue — approval required
 
 Draft 3 only says one limited clue per match. A randomly revealed player's trade may be weak or redundant if trades are visible.
