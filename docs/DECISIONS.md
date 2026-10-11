@@ -38,12 +38,13 @@ Documenting a proposal does not approve it. Approval-required decisions must be 
 | DEC-14 | One state-owning epoll loop; timerfd or deadline heap; workers only after measured CPU need. | Avoids races/premature threading. | Yes |
 | DEC-15 | mixed64-v1 workload: 64 clients in one match; 30s discussion, 10s trade, 5s clue, 10s vote per round; one chat/client/10s discussion with deterministic 0–2s jitter (80% public, 20% authorized whisper); one trade/vote per eligible player per phase, one clue per match; repeat matches after completion. ACK p95 from last request byte sent to full correlated ACK received, monotonic client clock; excludes phase wait and broadcast delivery. | Reproducible gameplay-like load profile; details absent from PDF. | Yes |
 | DEC-16 | Each well-framed command receives one correlated ACK after validation/transition and response enqueue, or ERROR on rejection; PING gets PONG. | Makes command acknowledgement measurable. | Yes |
+| DEC-17 | Team win only; cash/shares do not create individual points or tie-break; private summary shows only own balances. | PDF gives no scoring rule; avoids an unrequested leaderboard. | Yes |
 
 Full definitions are in game-rules.md, test-plan.md and protocol.md. DEC-02 through DEC-08 are gameplay defaults; DEC-10 through DEC-12 and DEC-16 are protocol choices. None are approved.
 
 ### Other approvals still open
 
-Moderator powers/secret audit access; chat and audit retention; reconnect grace/moderator disconnect behavior; connection/match/player caps including test clients; confirm all economy, market, vote, clue and victory values; confirm protocol framing, authentication, duplicate policy and limits; approve mixed64-v1 and ACK semantics; confirm acceptance Ubuntu/compiler/kernel; assess larger-match role balance.
+Moderator powers/secret audit access; chat and audit retention; reconnect grace/moderator disconnect behavior; connection/match/player caps including test clients; confirm all economy, market, vote, clue, victory and scoring values; confirm protocol framing, authentication, duplicate policy and limits; approve mixed64-v1 and ACK semantics; confirm acceptance Ubuntu/compiler/kernel; assess larger-match role balance.
 
 ## 3. Deferred
 
