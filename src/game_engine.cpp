@@ -38,7 +38,10 @@ Match::Match(const std::vector<PlayerSetup>& roster) {
       case Role::Investigator: ++investigators; break;
       case Role::Employee: ++employees; break;
     }
-    state_.players.push_back(PlayerState{seat.id, seat.role});
+    PlayerState player{};
+    player.id = seat.id;
+    player.role = seat.role;
+    state_.players.push_back(player);
   }
   if (insiders != 1 || investigators != 1 || employees != 3) {
     throw std::invalid_argument("roster requires one Insider, one Investigator, and three Employees");
