@@ -283,6 +283,32 @@ bool Match::validate_state(std::string& why) const {
     }
   }
 
+  // Semantic validation of recorded trade actions against submission-time preconditions.
+  // If a player has action_submitted=true and a recorded order, the order must satisfy
+  // the preconditions that submit_trade() enforces. This prevents acceptance of
+  // synthetically constructed fixtures that represent impossible game histories.
+  if (state_.phase == Phase::Trading || state_.phase == Phase::Clue ||
+      state_.phase == Phase::Voting ||
+      (state_.phase == Phase::Finished && state_.company.health == 0)) {
+    for (const auto& p : state_.players) {
+      if (p.action_submitted && p.order) {
+        if (*p.order == TradeAction::Buy) {
+          if (p.credits < static_cast<Credits>(state_.company.price)) {
+            return invalid("recorded Buy order requires sufficient opening-price credits");
+          }
+        } else if (*p.order == TradeAction::Sell) {
+          if (p.shares == 0) {
+            return invalid("recorded Sell order requires at least one share");
+          }
+          if (p.credits > kCreditBalanceCap - static_cast<Credits>(state_.company.price)) {
+            return invalid("recorded Sell order would exceed per-player credit cap");
+          }
+        }
+        // Hold has no additional balance requirements.
+      }
+    }
+  }
+
   // Victory precedence: health zero is an immediate Insider win; the match
   // cannot enter another live phase or later eliminate the Insider.
   if (state_.company.health == 0) {
@@ -450,7 +476,7 @@ MarketResolution Match::resolve_market() {
   result.closing_price = state_.company.price;
   result.closing_reserve = state_.reserve;
   state_.phase = Phase::Clue;
-  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.health) + "|P=" + std::to_string(state_.company.price) + "|reserve=" + std::to_string(state_.reserve));
+  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.heal[...]
   if (state_.company.health == 0) finish(Outcome::InsiderWin);
   result.outcome = state_.outcome;
   return {{}, result};
@@ -531,7 +557,7 @@ VoteResolution Match::resolve_votes() {
       break;
     }
   }
-  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(result.votes_received));
+  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(resul[...]
   if (insider_eliminated) finish(Outcome::EmployeesWin);
   else if (state_.round == kRoundCount) finish(Outcome::InsiderWin);
   else {
@@ -589,7 +615,7 @@ std::string_view Match::to_string(Role value) noexcept {
   return "UnknownRole";
 }
 std::string_view Match::to_string(Phase value) noexcept {
-  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case Phase::Clue: return "Clue"; case Phase::Voting: return "Voting"; case Phase::Finished: return "Finished"; }
+  switch (value) { case Phase::Lobby: return "Lobby"; case Phase::AwaitingEvent: return "AwaitingEvent"; case Phase::Discussion: return "Discussion"; case Phase::Trading: return "Trading"; case P[...]
   return "UnknownPhase";
 }
 std::string_view Match::to_string(Outcome value) noexcept {
@@ -612,4 +638,3 @@ std::string_view Match::to_string(ErrorCode value) noexcept {
 }
 
 }  // namespace darkpool
-
