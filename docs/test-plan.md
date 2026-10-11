@@ -11,7 +11,7 @@ Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with
 | T-F03 | Public chat and authorized private messages. | Correct recipients; private message not broadcast. |
 | T-F04 | Trade/clue/vote phase and permission. | Legal actions once; rejected actions do not mutate state. |
 | T-U01 | Economy/formulas. | Fixed inputs yield exact supply, reserve, balances, health and price. |
-| T-U02 | Boundaries. | N=5/64, reserve shortage, same-round sell/buy, rotating priority, insufficient cash/shares, bounds. |
+| T-U02 | Boundaries. | Filled roster N=5/64, no shares for empty seats, reserve shortage, same-round sell/buy, rotating priority, demand ties, insufficient cash/shares, zero-health and price bounds. |
 | T-U03 | Voting/victory. | Abstentions, missing votes, ties, strict threshold, eliminated voters/targets, zero health, Insider elimination, final survival. |
 | T-I01 | UNIX lifecycle and fragmented/coalesced frames. | Multiple clients; disconnect safe. |
 | T-I02 | Concurrent matches. | Independent state/timers; canaries never leak. |
