@@ -39,7 +39,7 @@ These values and mechanics are proposed defaults, not PDF requirements.
 
 Draft 3 requires business events and updates to health/price but supplies no impacts or formulas.
 
-Each event has signed impact e in {-2, -1, 0, +1, +2}. Production may select from an approved fixed table using server-generated seed recorded in audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
+Each event has signed impact e in {-2, -1, 0, +1, +2}. **Proposed event/hint mapping — approval required:** publish the event description to all players and privately tell the Insider its true signed health impact before trading; do not reveal the numeric impact to other players during the match. Production may select from an approved fixed table using a server-generated seed recorded in restricted audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
 
 At round start freeze opening health H, price P, and reserve. At trading close, validate submissions, resolve BUYs against opening inventory in rotating seat order, then settle accepted trades at P. Let B and S be executed BUY and SELL counts; sign(x) is -1 for x<0, 0 for x=0, and +1 for x>0.
 
@@ -76,4 +76,10 @@ Draft 3 requires final evaluation but gives no victory rules.
 - If round three's vote resolves without eliminating Insider and health is above zero, Insider wins immediately at final evaluation.
 - No draw under this proposal. Immediate outcomes avoid conflicts: the match ends on zero health or Insider elimination.
 
-These outcomes and precedence are proposed, not specified by the PDF. No real money or excluded market feature is introduced.
+These outcomes and precedence are proposed, not specified by the PDF.
+
+## Proposed scoring — approval required
+
+The PDF gives no individual scoring or tie-break system. Recommended default: the only score is the winning side; cash and shares affect play but do not create individual points, leaderboard, or victory tie-break. A final player summary may show the approved public result and that player's own balances, but not private role/clue data. Approve or replace this scoring/summary policy.
+
+No real money or excluded market feature is introduced.
