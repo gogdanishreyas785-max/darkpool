@@ -18,7 +18,7 @@ These are requirements attributed to Draft 3 in `requirements.md`, not newly app
 
 1. **Moderator:** separate non-player with create, start, close and operational-status permissions. Secret audit access and chat/audit retention remain separate decisions.
 2. **First playable match:** exactly five active players: one Insider, one Investigator and three Employees. The baseline roles are directly specified; the moderator's separate status is proposed.
-3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. All numerical/economic details are proposals.
+3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. Recommended credit model treats balances as non-conserved counters: BUY debits and SELL credits from the match credit pool, without treasury sufficiency, subject to an implementation-safe per-player cap. This resolves an unspecified SELL funding source but is itself a proposal. All numerical/economic details are proposals.
 4. **Market formulas:** e∈[-2,2] integer, d=sign(B-S); H'=clamp(H+e+d,0,10), P'=clamp(P+2e+d,1,100). Freeze opening H/P/reserve; validate and allocate trades; settle at opening P; calculate both outputs from opening state and executed trades; check H=0 victory before clue/vote. Formulas are deterministic and bounded as written, but remain proposals pending approval.
 5. **Clue:** once-per-match Investigator target-role check, private binary Insider/not-Insider answer. This is recommended for playtesting and remains approval-required.
 6. **Voting and victory:** active eligible electorate, no self/eliminated targets, missing vote=abstain, abstentions stay in denominator; eliminate only with strictly more than half of eligible voters. Health zero gives immediate Insider win before clue/vote; identifying Insider by vote with health positive gives immediate Employee win; otherwise Insider wins at final evaluation after round 3. Proposed precedence and edge handling require approval.
@@ -28,7 +28,7 @@ These are requirements attributed to Draft 3 in `requirements.md`, not newly app
 
 ### Formula and supply consistency review
 
-The formulas are integer deterministic with inclusive clamps, and opening-price settlement prevents same-round price feedback. In the five-player worked example, N=5, H=5, P=10, e=-1, two BUYs and one SELL yield reserve=49, player-held=51, H'=5 and P'=9; the 100-share total and 500-credit total are conserved (including the reserve cash account).
+The formulas are integer deterministic with inclusive clamps, and opening-price settlement prevents same-round price feedback. In the five-player worked example, N=5, H=5, P=10, e=-1, two BUYs and one SELL yield reserve=49, player-held=51, H'=5 and P'=9; the 100-share total is conserved. The proposed credit model does not conserve a global credit total; player cash after the example is 490.
 
 The finite-reserve “exhaustion” case is not reachable during ordinary prototype play under the recommended rules: initial reserve is 10N, but at most 3N BUYs can occur in three rounds, leaving at least 7N shares if no SELL occurs. Therefore the documented exhaustion case is a synthetic conserved-state boundary fixture (reserve=1, players hold 20N-1), not a gameplay scenario. This is an identified design/test limitation, not a silently changed rule.
 
@@ -55,7 +55,7 @@ The finite-reserve “exhaustion” case is not reachable during ordinary protot
 - 256 clients plus moderators/test clients, bounded output fan-out and four independent matches are unmeasured.
 - p95 ≤100 ms is not meaningful without a fixed workload and exact ACK start/end events; mixed64-v1 documents a candidate workload.
 - Share reserve shortage is only a synthetic boundary case with the proposed 10N reserve and three-round action cap.
-- Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation.
+- Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation. Credit balance cap and treatment of attempted overflow need approval.
 
 ## Precise S1 proposal and acceptance gate
 
@@ -88,7 +88,7 @@ S1 acceptance is functional and deterministic; the 64×4 capacity, p95 and 30-mi
 Please approve, reject or amend these grouped proposals:
 
 1. Moderator boundary and powers; separate audit access/retention policy.
-2. Five-player playable roster and economy/supply/trading defaults.
+2. Five-player playable roster, share supply/trading defaults, and the non-conserved credit-pool model/balance cap.
 3. Event impact model, formulas, update order and win precedence.
 4. Voting edge rules and once-per-match target-role clue.
 5. Larger-match role policy (or defer it, as recommended).
