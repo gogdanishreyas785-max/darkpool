@@ -1,6 +1,6 @@
 # DARKPOOL S0 approval summary
 
-**Status: S0 review package for approval. No S1 implementation is authorized by this document.** The repository contains design proposals and planned tests only; nothing here demonstrates implemented behavior, measured capacity, or passed performance targets.
+**Status update:** The user's S1 follow-up authorizes the listed five-player gameplay baseline and S1 engine scope. The earlier S0 approval requests below are historical; decisions outside S1 remain deferred. No S2 work is authorized. Performance and scalability targets remain unmeasured.
 
 ## Mandatory specification requirements
 
@@ -18,7 +18,7 @@ These are requirements attributed to Draft 3 in `requirements.md`, not newly app
 
 1. **Moderator:** separate non-player with create, start, close and operational-status permissions. Secret audit access and chat/audit retention remain separate decisions.
 2. **First playable match:** exactly five active players: one Insider, one Investigator and three Employees. The baseline roles are directly specified; the moderator's separate status is proposed.
-3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. Recommended credit model treats balances as non-conserved counters: BUY debits and SELL credits from the match credit pool, without treasury sufficiency, subject to an implementation-safe per-player cap. This resolves an unspecified SELL funding source but is itself a proposal. All numerical/economic details are proposals.
+3. **Economy:** 100 fictional credits and 10 shares per player; for N seated active players, supply=20N, player-held=10N and finite reserve=10N. Initial health=5/10 and price=10. Trades settle at opening price; reserve BUY allocation precedes same-round SELL replenishment. No-reserve and insufficient-reserve BUYs reject. Recommended credit model treats balances as non-conserved counters: BUY debits and SELL credits from the match credit pool, without treasury sufficiency, subject to the provisional S1 implementation cap of 1,000,000 credits (uint32_t), selected under the user's S1 instruction. This resolves an unspecified SELL funding source; the cap is not an additional gameplay rule. All numerical/economic details are proposals.
 4. **Market formulas:** e∈[-2,2] integer, d=sign(B-S); H'=clamp(H+e+d,0,10), P'=clamp(P+2e+d,1,100). Freeze opening H/P/reserve; validate and allocate trades; settle at opening P; calculate both outputs from opening state and executed trades; check H=0 victory before clue/vote. Formulas are deterministic and bounded as written, but remain proposals pending approval.
 5. **Clue:** once-per-match Investigator target-role check, private binary Insider/not-Insider answer. This is recommended for playtesting and remains approval-required.
 6. **Voting and victory:** active eligible electorate, no self/eliminated targets, missing vote=abstain, abstentions stay in denominator; eliminate only with strictly more than half of eligible voters. Health zero gives immediate Insider win before clue/vote; identifying Insider by vote with health positive gives immediate Employee win; otherwise Insider wins at final evaluation after round 3. Proposed precedence and edge handling require approval.
@@ -55,7 +55,7 @@ The finite-reserve “exhaustion” case is not reachable during ordinary protot
 - 256 clients plus moderators/test clients, bounded output fan-out and four independent matches are unmeasured.
 - p95 ≤100 ms is not meaningful without a fixed workload and exact ACK start/end events; mixed64-v1 documents a candidate workload.
 - Share reserve shortage is only a synthetic boundary case with the proposed 10N reserve and three-round action cap.
-- Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation. Credit balance cap and treatment of attempted overflow need approval.
+- Player exits, reconnects and match closure can affect role counts, votes and authorization; define and test policy before engine/network implementation. The provisional S1 balance cap and overflow rejection behavior are documented in game-rules.md.
 
 ## Precise S1 proposal and acceptance gate
 
@@ -94,6 +94,4 @@ Please approve, reject or amend these grouped proposals:
 5. Larger-match role policy (or defer it, as recommended).
 6. Protocol format, authentication, limits, duplicate policy and ACK definition.
 7. mixed64-v1 workload and ACK latency boundary.
-8. S1 scope and acceptance criteria above.
-
-Until those are confirmed, this package is a review proposal only and S1 remains on hold.
+8. S1 scope and acceptance criteria above were authorized by the user's follow-up request. The above approval list remains useful for future milestones; open networking, operations, audit, scaling and retention decisions are not silently approved.

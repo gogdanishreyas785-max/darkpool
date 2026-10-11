@@ -1,6 +1,6 @@
 # DARKPOOL S0 decision register
 
-Documenting a proposal does not approve it. Approval-required decisions must be confirmed or changed before S1 implements them.
+Status note: the user's S1 follow-up approves only the five-player gameplay choices and S1 scope it explicitly names. This table records the original S0 approval requests; unresolved protocol, operations, scoring and larger-match items remain open.
 
 ## 1. Direct requirements from Draft 3
 
@@ -61,3 +61,10 @@ TCP/TLS 1.3/certificate lifecycle; real money, feeds, short selling, derivatives
 ## Approval gate
 
 S0 only records proposals. No proposed gameplay or protocol behavior is approved until you confirm it. Capacity and performance remain unmeasured targets.
+
+
+## S1 follow-up status
+
+Approved for S1 by the user's explicit follow-up: separate moderator boundary and stated powers; exactly five active roles; proposed economy, share reserve, event/health/price formulas, update order, clue, voting and victory precedence; supply-boundary fixture; and non-conserved player-credit model. The per-player cap is provisionally 1,000,000 credits (uint32_t) for S1, with overflow-causing trades rejected; this is an implementation detail directed by the S1 request. The engine receives an explicit role assignment and event impacts as inputs; S1 does not invent role shuffling or event randomness.
+
+Still open and outside S1: larger-match role policy; protocol encoding/ACKs and duplicate policy; local authentication and production limits; chat/audit retention and secret audit access; reconnect/exit handling; and load-test profile/acceptance evidence. The 64-player/four-match, latency and reliability targets remain unverified. No S2 work is authorized.
