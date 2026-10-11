@@ -91,6 +91,14 @@ void test_initialization_and_supply() {
   CHECK(match.state().company.health == 5);
   CHECK(match.state().company.price == 10);
   CHECK(match.state().phase == Phase::Lobby);
+  std::uint32_t insiders = 0, investigators = 0, employees = 0;
+  for (const auto& player : match.state().players) {
+    CHECK(player.credits == 100U && player.shares == 10U && player.active);
+    if (player.role == Role::Insider) ++insiders;
+    else if (player.role == Role::Investigator) ++investigators;
+    else ++employees;
+  }
+  CHECK(insiders == 1U && investigators == 1U && employees == 3U);
   CHECK(match.publish_event(0).error == ErrorCode::WrongPhase);
   CHECK(match.start());
   CHECK(match.publish_event(3).error == ErrorCode::InvalidEventImpact);
