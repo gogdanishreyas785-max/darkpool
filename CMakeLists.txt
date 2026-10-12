@@ -9,7 +9,7 @@ if(NOT nlohmann_json_FOUND)
   if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.24.0")
     FetchContent_Declare(nlohmann_json
       URL https://github.com/nlohmann/json/archive/refs/tags/v3.11.3.tar.gz
-      URL_HASH SHA256=0d8ef5af7f9794e326348019c3c491549b2ba6cc74bb018906202ada498a79406
+      URL_HASH SHA256=0d8ef5af7f9794e3263480193c491549b2ba6cc74bb018906202ada498a79406
       DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   else()
     FetchContent_Declare(nlohmann_json
@@ -80,12 +80,10 @@ add_test(NAME darkpool_cli_tests COMMAND darkpool_cli_tests)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(darkpool_server src/server_main.cpp)
-  target_include_directories(darkpool_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(darkpool_server PRIVATE darkpool_coordinator)
   darkpool_enable_warnings(darkpool_server)
 
   add_executable(darkpool_client src/client_main.cpp)
-  target_include_directories(darkpool_client PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_link_libraries(darkpool_client PRIVATE darkpool_cli)
   darkpool_enable_warnings(darkpool_client)
 
