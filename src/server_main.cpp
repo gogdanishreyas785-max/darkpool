@@ -34,7 +34,8 @@ struct Connection {
 
 bool set_events(int epoll_fd, int fd, bool writing) {
   epoll_event event{};
-  event.events = static_cast<std::uint32_t>(EPOLLIN | EPOLLRDHUP | (writing ? EPOLLOUT : 0));
+  event.events = static_cast<std::uint32_t>(EPOLLIN) | static_cast<std::uint32_t>(EPOLLRDHUP);
+  if (writing) event.events |= static_cast<std::uint32_t>(EPOLLOUT);
   event.data.fd = fd;
   return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event) == 0;
 }
