@@ -1,8 +1,12 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <span>
 #include <string>
 #include <optional>
+#include <string_view>
+#include <vector>
 #include <stdexcept>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -13,6 +17,7 @@ using json = nlohmann::json;
 
 // Maximum message payload size (1 MB for safety)
 inline constexpr std::size_t kMaxMessageSize = 1024 * 1024;
+inline constexpr std::size_t kMaxQueuedBytes = 2 * kMaxMessageSize;
 
 // Message types
 enum class MessageType {
@@ -51,6 +56,29 @@ class Frame {
 
   // Helper: read 4-byte big-endian length from buffer
   static std::optional<std::uint32_t> decode_length(const std::string& buffer);
+};
+
+// Incremental stream decoder. feed() accepts arbitrary TCP read boundaries and
+// may return multiple complete frames. Invalid JSON and invalid lengths throw.
+class FrameDecoder {
+ public:
+  [[nodiscard]] std::vector<Frame> feed(std::span<const char> bytes);
+  [[nodiscard]] std::size_t buffered_bytes() const noexcept { return buffer_.size(); }
+ private:
+  std::string buffer_;
+};
+
+// Bounded FIFO for nonblocking socket writes. The caller consumes exactly the
+// number of bytes accepted by send(), allowing partial writes without copying.
+class OutputQueue {
+ public:
+  [[nodiscard]] bool append(const std::string& bytes);
+  [[nodiscard]] std::string_view pending() const noexcept;
+  void consume(std::size_t bytes);
+  [[nodiscard]] std::size_t size() const noexcept { return bytes_.size() - offset_; }
+ private:
+  std::string bytes_;
+  std::size_t offset_{0};
 };
 
 // Message helper: extract and validate message type from JSON
