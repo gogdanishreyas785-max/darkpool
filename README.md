@@ -11,7 +11,7 @@ S2 Stage 1 adds a standalone, echo-only TCP/JSON transport prototype. It does no
 - Shares are conserved between players and the finite match reserve. Five-player matches are implemented. `supply_plan(64)` verifies the documented 64-seat arithmetic only; larger-match role/gameplay rules are not implemented.
 - Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
 - Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
-- CMake build and unit tests have passed with MSVC 19.44.35228.0 on Windows. An Ubuntu build has not yet been run. No load, latency, security, or scalability result is claimed.
+- The unchanged S1 engine and portable framing target build with MSVC 19.44.35228.0; the two available Windows CTest tests passed. On Ubuntu 24.04, GitHub Actions run `38188504530` built all targets with warnings-as-errors and passed the S1, framing, and live TCP integration tests. These checks do not establish load, latency, security, or scalability results.
 
 ## Build and test on Ubuntu
 
