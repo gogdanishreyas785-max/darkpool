@@ -1,4 +1,5 @@
 #include "darkpool/network.hpp"
+#include "darkpool/match_coordinator.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -43,11 +44,13 @@ bool set_events(int epoll_fd, int fd, bool reading, bool writing) {
 }
 
 void close_connection(int epoll_fd, int fd, std::map<int, Connection>& clients,
-                      std::size_t& players, std::size_t& moderators) {
+                      std::size_t& players, std::size_t& moderators,
+                      darkpool::server::MatchCoordinator& coordinator) {
   const auto found = clients.find(fd);
   if (found == clients.end()) return;
   if (found->second.kind == ClientKind::Player) --players;
   if (found->second.kind == ClientKind::Moderator) --moderators;
+  coordinator.unregister_session(static_cast<std::uint64_t>(fd));
   (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
   (void)close(fd);
   clients.erase(found);
@@ -59,7 +62,8 @@ bool enqueue_echo(int epoll_fd, int fd, Connection& connection, const Frame& fra
 }
 
 bool process_frame(int epoll_fd, int fd, Connection& connection, const Frame& frame,
-                   std::size_t& players, std::size_t& moderators) {
+                   std::size_t& players, std::size_t& moderators,
+                   darkpool::server::MatchCoordinator& coordinator) {
   if (connection.kind == ClientKind::Unassigned) {
     const auto& payload = frame.payload();
     if (!payload.is_object() || payload.value("type", std::string{}) != "connect" ||
@@ -69,19 +73,23 @@ bool process_frame(int epoll_fd, int fd, Connection& connection, const Frame& fr
       if (players >= kMaxPlayers) return false;
       connection.kind = ClientKind::Player;
       ++players;
+      coordinator.register_session(static_cast<std::uint64_t>(fd), darkpool::server::SessionRole::Player);
     } else if (role == "moderator") {
       if (moderators >= kMaxModerators) return false;
       connection.kind = ClientKind::Moderator;
       ++moderators;
+      coordinator.register_session(static_cast<std::uint64_t>(fd), darkpool::server::SessionRole::Moderator);
     } else {
       return false;
     }
   }
-  return enqueue_echo(epoll_fd, fd, connection, frame);
+  const auto response = coordinator.handle(static_cast<std::uint64_t>(fd), frame.payload());
+  return enqueue_echo(epoll_fd, fd, connection, response ? Frame(*response) : frame);
 }
 
 bool read_client(int epoll_fd, int fd, Connection& connection,
-                 std::size_t& players, std::size_t& moderators) {
+                 std::size_t& players, std::size_t& moderators,
+                 darkpool::server::MatchCoordinator& coordinator) {
   char buffer[4096];
   while (true) {
     const auto count = recv(fd, buffer, sizeof(buffer), 0);
@@ -97,7 +105,7 @@ bool read_client(int epoll_fd, int fd, Connection& connection,
     try {
       const auto frames = connection.decoder.feed(std::span<const char>(buffer, static_cast<std::size_t>(count)));
       for (const auto& frame : frames) {
-        if (!process_frame(epoll_fd, fd, connection, frame, players, moderators)) return false;
+        if (!process_frame(epoll_fd, fd, connection, frame, players, moderators, coordinator)) return false;
       }
     } catch (const std::exception&) {
       return false;
@@ -158,6 +166,7 @@ int main(int argc, char** argv) {
   std::map<int, Connection> clients;
   std::size_t players = 0;
   std::size_t moderators = 0;
+  darkpool::server::MatchCoordinator coordinator;
   std::cout << "DARKPOOL echo server listening on 127.0.0.1:" << port << '\n';
   epoll_event events[64]{};
   bool running = true;
@@ -187,7 +196,7 @@ int main(int argc, char** argv) {
       if (found == clients.end()) continue;
       const auto flags = events[i].events;
       if ((flags & EPOLLERR) != 0U) {
-        close_connection(epoll_fd, fd, clients, players, moderators);
+        close_connection(epoll_fd, fd, clients, players, moderators, coordinator);
         continue;
       }
       bool keep = true;
@@ -195,7 +204,7 @@ int main(int argc, char** argv) {
                                   static_cast<std::uint32_t>(EPOLLRDHUP) |
                                   static_cast<std::uint32_t>(EPOLLHUP);
       if ((flags & read_or_hangup) != 0U) {
-        keep = read_client(epoll_fd, fd, found->second, players, moderators);
+        keep = read_client(epoll_fd, fd, found->second, players, moderators, coordinator);
       }
       if (keep && (flags & (EPOLLRDHUP | EPOLLHUP)) != 0U && !found->second.peer_closed) {
         found->second.peer_closed = true;
@@ -206,7 +215,7 @@ int main(int argc, char** argv) {
         keep = write_client(epoll_fd, fd, found->second);
       }
       if (keep && found->second.peer_closed && found->second.output.pending().empty()) keep = false;
-      if (!keep) close_connection(epoll_fd, fd, clients, players, moderators);
+      if (!keep) close_connection(epoll_fd, fd, clients, players, moderators, coordinator);
     }
   }
   for (auto& [fd, connection] : clients) { (void)connection; (void)close(fd); }
