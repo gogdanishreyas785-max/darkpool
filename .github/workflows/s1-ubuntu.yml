@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - s1/deterministic-engine
+      - s2/stage1-tcp-json
   pull_request:
     branches:
       - main
