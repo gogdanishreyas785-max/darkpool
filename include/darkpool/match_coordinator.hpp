@@ -34,6 +34,8 @@ class MatchCoordinator {
     std::unique_ptr<Match> match;
     std::uint64_t moderator{};
     std::vector<std::optional<std::uint64_t>> player_sessions;
+    std::optional<MarketResult> last_market;
+    std::optional<VoteResult> last_vote;
   };
 
   [[nodiscard]] bool is_member(std::uint64_t session, std::uint64_t match_id) const;
