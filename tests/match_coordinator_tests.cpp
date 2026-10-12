@@ -47,7 +47,7 @@ void test_match_isolation_and_authorization() {
     CHECK(a["player_id"] == b["player_id"]);
   }
   const auto started_a = coordinator.handle(100, json{{"type", "start_match"}, {"match_id", match_a}});
-  CHECK(started_a && (*started_a)["type"] == "match_started");
+  CHECK(started_a && (*started_a)["type"] == "transition_result" && (*started_a)["ok"]);
 
   const auto own_status = coordinator.handle(1, json{{"type", "match_status"}, {"match_id", match_a}});
   const auto other_status = coordinator.handle(6, json{{"type", "match_status"}, {"match_id", match_b}});
