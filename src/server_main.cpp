@@ -30,11 +30,13 @@ struct Connection {
   FrameDecoder decoder;
   OutputQueue output;
   ClientKind kind{ClientKind::Unassigned};
+  bool peer_closed{false};
 };
 
-bool set_events(int epoll_fd, int fd, bool writing) {
+bool set_events(int epoll_fd, int fd, bool reading, bool writing) {
   epoll_event event{};
-  event.events = static_cast<std::uint32_t>(EPOLLIN) | static_cast<std::uint32_t>(EPOLLRDHUP);
+  event.events = 0U;
+  if (reading) event.events |= static_cast<std::uint32_t>(EPOLLIN) | static_cast<std::uint32_t>(EPOLLRDHUP);
   if (writing) event.events |= static_cast<std::uint32_t>(EPOLLOUT);
   event.data.fd = fd;
   return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event) == 0;
@@ -53,7 +55,7 @@ void close_connection(int epoll_fd, int fd, std::map<int, Connection>& clients,
 
 bool enqueue_echo(int epoll_fd, int fd, Connection& connection, const Frame& frame) {
   if (!connection.output.append(frame.serialize())) return false;
-  return set_events(epoll_fd, fd, true);
+  return set_events(epoll_fd, fd, !connection.peer_closed, true);
 }
 
 bool process_frame(int epoll_fd, int fd, Connection& connection, const Frame& frame,
@@ -83,7 +85,10 @@ bool read_client(int epoll_fd, int fd, Connection& connection,
   char buffer[4096];
   while (true) {
     const auto count = recv(fd, buffer, sizeof(buffer), 0);
-    if (count == 0) return false;
+    if (count == 0) {
+      connection.peer_closed = true;
+      return set_events(epoll_fd, fd, false, !connection.output.pending().empty());
+    }
     if (count < 0) {
       if (errno == EINTR) continue;
       if (errno == EAGAIN || errno == EWOULDBLOCK) return true;
@@ -112,7 +117,7 @@ bool write_client(int epoll_fd, int fd, Connection& connection) {
     if (count == 0) return false;
     connection.output.consume(static_cast<std::size_t>(count));
   }
-  return set_events(epoll_fd, fd, false);
+  return set_events(epoll_fd, fd, !connection.peer_closed, false);
 }
 
 bool parse_port(const char* text, std::uint16_t& port) {
@@ -180,11 +185,27 @@ int main(int argc, char** argv) {
       }
       const auto found = clients.find(fd);
       if (found == clients.end()) continue;
-      bool keep = true;
       const auto flags = events[i].events;
-      if ((flags & (EPOLLERR | EPOLLHUP | EPOLLRDHUP)) != 0U) keep = false;
-      if (keep && (flags & EPOLLIN) != 0U) keep = read_client(epoll_fd, fd, found->second, players, moderators);
-      if (keep && (flags & EPOLLOUT) != 0U) keep = write_client(epoll_fd, fd, found->second);
+      if ((flags & EPOLLERR) != 0U) {
+        close_connection(epoll_fd, fd, clients, players, moderators);
+        continue;
+      }
+      bool keep = true;
+      const auto read_or_hangup = static_cast<std::uint32_t>(EPOLLIN) |
+                                  static_cast<std::uint32_t>(EPOLLRDHUP) |
+                                  static_cast<std::uint32_t>(EPOLLHUP);
+      if ((flags & read_or_hangup) != 0U) {
+        keep = read_client(epoll_fd, fd, found->second, players, moderators);
+      }
+      if (keep && (flags & (EPOLLRDHUP | EPOLLHUP)) != 0U && !found->second.peer_closed) {
+        found->second.peer_closed = true;
+        keep = set_events(epoll_fd, fd, false, !found->second.output.pending().empty());
+      }
+      if (keep && ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
+          !found->second.output.pending().empty()) {
+        keep = write_client(epoll_fd, fd, found->second);
+      }
+      if (keep && found->second.peer_closed && found->second.output.pending().empty()) keep = false;
       if (!keep) close_connection(epoll_fd, fd, clients, players, moderators);
     }
   }
