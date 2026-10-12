@@ -75,6 +75,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   darkpool_enable_warnings(darkpool_network_integration_tests)
   add_test(NAME darkpool_network_integration_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server>)
+  add_test(NAME darkpool_gameplay_e2e_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> gameplay)
 else()
   message(STATUS "TCP server and CLI client require Linux; engine and framing tests remain available")
 endif()
