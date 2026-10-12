@@ -50,9 +50,7 @@ bool receive_exact(int fd, char* data, std::size_t size) {
   return true;
 }
 
-bool exchange(int fd, const json& payload, bool fragment) {
-  const auto outgoing = Frame(payload).serialize();
-  if (!send_all(fd, outgoing.data(), outgoing.size(), fragment)) return false;
+bool receive_echo(int fd, const json& payload) {
   char header[4];
   if (!receive_exact(fd, header, sizeof(header))) return false;
   const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
@@ -67,6 +65,11 @@ bool exchange(int fd, const json& payload, bool fragment) {
   std::size_t consumed = 0;
   const auto echoed = Frame::parse(bytes, consumed);
   return echoed && consumed == bytes.size() && echoed->payload() == payload;
+}
+
+bool exchange(int fd, const json& payload, bool fragment) {
+  const auto outgoing = Frame(payload).serialize();
+  return send_all(fd, outgoing.data(), outgoing.size(), fragment) && receive_echo(fd, payload);
 }
 
 int connect_to(std::uint16_t port) {
@@ -125,7 +128,19 @@ void test_server_capacity_and_echo(const char* server_path) {
 
   CHECK(exchange(peers[0], json{{"type", "connect"}, {"role", "player"}}, true));
   CHECK(exchange(peers[0], json{{"echo", "fragmented hello"}}, true));
-  for (int i = 1; i < 5; ++i) {
+
+  const int half_closed = peers[0];
+  const json last_message{{"half_close", "echo before eof"}};
+  const auto final_frame = Frame(last_message).serialize();
+  CHECK(send_all(half_closed, final_frame.data(), final_frame.size(), false));
+  CHECK(shutdown(half_closed, SHUT_WR) == 0);
+  CHECK(receive_echo(half_closed, last_message));
+  char trailing = 0;
+  CHECK(recv(half_closed, &trailing, 1U, 0) == 0);
+  (void)close(half_closed);
+  peers.erase(peers.begin());
+
+  for (int i = 0; i < 5; ++i) {
     const int fd = connect_to(port);
     CHECK(fd >= 0);
     if (fd < 0) continue;
