@@ -211,9 +211,9 @@ std::uint16_t reserve_port() {
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
   const bool named = bound && getsockname(probe, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
-  const auto port = named ? ntohs(address.sin_port) : 0;
   (void)close(probe);
-  return port;
+  if (!named) return 0U;
+  return ntohs(address.sin_port);
 }
 
 std::optional<json> command(int fd, std::uint64_t match_id, const char* type) {
