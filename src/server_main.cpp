@@ -1,7 +1,6 @@
+#include "darkpool/coordinator.hpp"
 #include "darkpool/network.hpp"
-#include "darkpool/match_coordinator.hpp"
 
-#include <arpa/inet.h>
 #include <cerrno>
 #include <cstdint>
 #include <cstdlib>
@@ -9,6 +8,7 @@
 #include <iostream>
 #include <map>
 #include <string>
+#include <string_view>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
@@ -57,8 +57,23 @@ void close_connection(int epoll_fd, int fd, std::map<int, Connection>& clients,
 }
 
 bool enqueue_echo(int epoll_fd, int fd, Connection& connection, const Frame& frame) {
-  if (!connection.output.append(frame.serialize())) return false;
+  try {
+    connection.output.enqueue(frame.serialize());
+  } catch (const std::exception&) {
+    return false;
+  }
   return set_events(epoll_fd, fd, !connection.peer_closed, true);
+}
+
+bool constant_time_equals(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) {
+    return false;
+  }
+  unsigned char diff = 0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    diff |= static_cast<unsigned char>(static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]));
+  }
+  return diff == 0;
 }
 
 bool process_frame(int epoll_fd, int fd, Connection& connection, const Frame& frame,
@@ -66,23 +81,43 @@ bool process_frame(int epoll_fd, int fd, Connection& connection, const Frame& fr
                    darkpool::server::MatchCoordinator& coordinator) {
   if (connection.kind == ClientKind::Unassigned) {
     const auto& payload = frame.payload();
-    if (!payload.is_object() || payload.value("type", std::string{}) != "connect" ||
-        !payload.contains("role") || !payload["role"].is_string()) return false;
-    const auto role = payload["role"].get<std::string>();
+    if (!payload.is_object() || payload.value("type", std::string{}) != "connect") {
+      return false;
+    }
+    const auto role = payload.value("role", std::string{});
     if (role == "player") {
       if (players >= kMaxPlayers) return false;
       connection.kind = ClientKind::Player;
       ++players;
       coordinator.register_session(static_cast<std::uint64_t>(fd), darkpool::server::SessionRole::Player);
+      return enqueue_echo(epoll_fd, fd, connection, Frame(json{{"type", "connect"}, {"role", "player"}}));
     } else if (role == "moderator") {
+      const char* server_token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
+      if (!server_token || server_token[0] == '\0') {
+        return false;
+      }
+      if (!payload.contains("token") || !payload["token"].is_string()) {
+        return false;
+      }
+      const auto token = payload["token"].get<std::string>();
+      if (!constant_time_equals(token, server_token)) {
+        return false;
+      }
       if (moderators >= kMaxModerators) return false;
       connection.kind = ClientKind::Moderator;
       ++moderators;
       coordinator.register_session(static_cast<std::uint64_t>(fd), darkpool::server::SessionRole::Moderator);
+      return enqueue_echo(epoll_fd, fd, connection, Frame(json{{"type", "connect"}, {"role", "moderator"}}));
     } else {
       return false;
     }
   }
+
+  // Already assigned connection: reject any subsequent connect frame
+  if (frame.payload().is_object() && frame.payload().value("type", std::string{}) == "connect") {
+    return false;
+  }
+
   const auto response = coordinator.handle(static_cast<std::uint64_t>(fd), frame.payload());
   return enqueue_echo(epoll_fd, fd, connection, response ? Frame(*response) : frame);
 }
