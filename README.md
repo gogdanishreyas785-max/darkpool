@@ -25,22 +25,72 @@ ctest --test-dir build --output-on-failure
 
 Enable warnings-as-errors with `-DDARKPOOL_WARNINGS_AS_ERRORS=ON` when configuring.
 
-## TCP protocol prototype
+## Playable CLI Gameplay
 
 On Linux, run the server and client in separate terminals:
 
 ```sh
+# Terminal 0: Start the TCP coordinator server (default port: 4782)
 ./build/darkpool_server [port]
+
+# Terminal 1: Start the Moderator client
+./build/darkpool_client 127.0.0.1 [port] moderator
+
+# Terminals 2-6: Start five Player clients
 ./build/darkpool_client 127.0.0.1 [port] player
 ```
 
-Use `moderator` in place of `player` for the one moderator connection. The default port is `4782`. Enter one JSON value per input line; each value is echoed as JSON. The initial connection frame is `{"type":"connect","role":"player"}` or `{"type":"connect","role":"moderator"}` and is echoed like any other frame. Frames are a 4-byte unsigned big-endian JSON byte length followed by UTF-8 JSON, limited to 1 MiB. Malformed, zero-length, or oversized frames close the connection. The client accepts a hostname or IP address.
+The default port is `4782`. The client provides an interactive terminal CLI with command prompts, input validation, role guidance, and confidential information display. Raw JSON input (`{...}`) remains supported for scripted test harnesses.
 
-The TCP listener is loopback-only and has no secure authentication, TLS, reconnection, heartbeat, or persistence. The initial launcher is trusted to assign the self-declared `player` or `moderator` connection label; this is not moderator authentication and must not be used on an untrusted network. Five player slots plus one moderator slot are a transport smoke-test limit, not evidence of the 64-player/four-match capacity target. CMake fetches the pinned `nlohmann/json` 3.11.3 dependency when no package is installed. On non-Linux systems CMake builds the engine and framing tests; the epoll server/client and live server integration test require Linux.
+### Moderator CLI Commands
 
-Implemented command messages use the existing length-prefixed JSON framing. A moderator creates a match with an explicit five-role roster, players join and receive a server-assigned player ID and their own private role, and the creating moderator alone may start, inject an event, or advance/resolve phases. Players send `trade`, `request_clue`, `vote`, and `insider_hint`; their acting identity is derived from connection membership. `match_status` is a sanitized public view with aggregate market/vote outcomes; it omits roles, event impact, clue results, submitted orders, and vote targets. The server does not proactively broadcast results; players retrieve the latest public outcome through `match_status`.
+- `create [r1 r2 r3 r4 r5]`: Create a match with a 5-player roster (defaults to standard roster: 1 Insider, 1 Investigator, 3 Employees). Sets the active match ID.
+- `match <id>`: Switch active match ID context (default: 1).
+- `start`: Start the match once all five players have joined.
+- `event <impact>`: Publish round business event impact (-2 to 2). If omitted, prompts for the impact. Transitions phase to Discussion.
+- `trading`: Open the Trading phase for player orders.
+- `market`: Resolve market orders and display executed orders, price changes, and reserve health. Transitions phase to Clue.
+- `voting`: Open the Voting phase for player elimination votes.
+- `resolve`: Resolve votes, announce eliminations, and check victory conditions. If game continues, advances round to AwaitingEvent.
+- `status`: Display public match board, health, price, phase, round, and aggregate market/vote resolutions.
+- `help`: Display available moderator commands.
+- `quit` / `exit`: Disconnect from the match server.
+
+### Player CLI Commands
+
+- `join [match_id]`: Join match (default: 1). The server assigns a player ID and returns the player's secret role (`Insider`, `Investigator`, or `Employee`).
+- `status`: Display public match board, company health, stock price, and round phase.
+- `hint`: (*Insider only*) Secretly inspect upcoming event impact during Discussion.
+- `trade [action]`: Submit order (`BUY`, `SELL`, or `HOLD`) during Trading. Also supports direct shortcuts `buy`, `sell`, and `hold`. If omitted, prompts for the action.
+- `clue [target_id]`: (*Investigator only*) Secretly investigate suspect player ID (1-5) during Clue phase. If omitted, prompts for the suspect ID.
+- `vote [target_id|abstain]`: Cast elimination vote (player ID 1-5) or abstain (`0` or `abstain`) during Voting. If omitted, prompts for the target.
+- `help`: Display available player commands and role notes.
+- `quit` / `exit`: Disconnect from the match server.
+
+### Confidentiality & Information Display
+
+- **Private Information**: Private roles (`joined_match`), Insider hints (`hint_private`), and Investigator investigation results (`clue_private`) are delivered only to the acting connection and displayed privately on their terminal.
+- **Public Information**: Phase transitions, company health, stock price, aggregate market execution summaries, elimination announcements, and game-over winner declarations are public and displayed to all participants.
+
+### How to Run a Complete Game
+
+1. **Launch Server**: Run `./build/darkpool_server 4782` in Terminal 0.
+2. **Launch Moderator**: Run `./build/darkpool_client 127.0.0.1 4782 moderator` in Terminal 1.
+3. **Launch Players**: In Terminals 2 to 6, launch `./build/darkpool_client 127.0.0.1 4782 player`.
+4. **Create Match**: In Moderator terminal, type `create`.
+5. **Join Players**: In each of the 5 Player terminals, type `join 1`. Each player receives their private role and confidential objectives.
+6. **Start Match**: In Moderator terminal, type `start`. (Phase: `AwaitingEvent`).
+7. **Publish Event**: In Moderator terminal, type `event 0` (or impact between -2 and 2). (Phase: `Discussion`).
+8. **Insider Hint**: The Insider (Player 1) types `hint` to view the event impact secretly. Players discuss in the room/chat.
+9. **Open Trading**: Moderator types `trading`.
+10. **Submit Trades**: Each player submits their order: `buy`, `sell`, or `hold`.
+11. **Resolve Market**: Moderator types `market`. The closing health, price, and market outcome are displayed. (Phase: `Clue`).
+12. **Investigate Clue**: The Investigator (Player 2) types `clue <target_id>` (e.g. `clue 1` or `clue 3`) to secretly check if the target is the Insider.
+13. **Open Voting**: Moderator types `voting`.
+14. **Cast Votes**: Each player casts an elimination vote, e.g. `vote 1` or `vote abstain`.
+15. **Resolve Votes**: Moderator types `resolve`. Eliminations and victory outcomes are announced.
+16. **Next Rounds**: If neither side has won, repeat steps 7–15 for Rounds 2 and 3. The final winner is announced when the Insider is eliminated (`EmployeesWin`), the company collapses (`InsiderWin`), or Round 3 concludes (`InsiderWin`).
 
 ## Engine API outline
 
 Construct `Match` with five explicit `{PlayerId, Role}` entries, call `start()`, inject each event with `publish_event(impact)`, and advance phases through `open_trading()`, trade submissions, `resolve_market()`, optional `use_clue()`, `open_voting()`, vote submissions and `resolve_votes()`. Methods return explicit error codes for rejected commands. `Match::from_state()` accepts only a validated, share-conserving state and is intended for deterministic test fixtures.
-

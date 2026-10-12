@@ -5,6 +5,7 @@ on:
     branches:
       - s1/deterministic-engine
       - s2/stage1-tcp-json
+      - s2/playable-cli
   pull_request:
     branches:
       - main
