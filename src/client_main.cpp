@@ -1,3 +1,4 @@
+#include "darkpool/cli.hpp"
 #include "darkpool/network.hpp"
 
 #include <cerrno>
@@ -70,7 +71,7 @@ int main(int argc, char** argv) {
   std::uint16_t port = 0;
   if (argc != 4 || !parse_port(argv[2], port) || (std::string(argv[3]) != "player" && std::string(argv[3]) != "moderator")) {
     std::cerr << "usage: darkpool_client <host> <port> <player|moderator>\n"
-                 "Enter one JSON value per line; the server echoes each valid message.\n";
+                 "Playable terminal client for DARKPOOL matches.\n";
     return 2;
   }
   addrinfo hints{};
@@ -90,24 +91,67 @@ int main(int argc, char** argv) {
   freeaddrinfo(addresses);
   if (fd < 0) { std::cerr << "connect: " << std::strerror(errno) << '\n'; return 1; }
 
-  const auto exchange = [fd](const Frame& outgoing) {
+  const darkpool::cli::ClientRole client_role = (std::string(argv[3]) == "moderator")
+      ? darkpool::cli::ClientRole::Moderator
+      : darkpool::cli::ClientRole::Player;
+  darkpool::cli::ClientState state(client_role);
+
+  const auto exchange = [fd, &state](const Frame& outgoing) -> bool {
     if (!write_all(fd, outgoing.serialize())) return false;
     Frame incoming(json{});
     if (!receive_frame(fd, incoming)) return false;
-    std::cout << incoming.payload().dump() << '\n';
+    std::cout << state.format_response(incoming.payload()) << '\n';
     return true;
   };
+
   if (!exchange(Frame(json{{"type", "connect"}, {"role", argv[3]}}))) {
     std::cerr << "server rejected connection or closed it\n"; (void)close(fd); return 1;
   }
+
+  const bool is_interactive = isatty(fileno(stdin)) != 0;
+  if (is_interactive) {
+    std::cout << "Type 'help' for commands, 'status' for game state.\n";
+  }
+
   std::string line;
-  while (std::getline(std::cin, line)) {
-    try {
-      if (!exchange(Frame(line))) { std::cerr << "connection closed while awaiting echo\n"; (void)close(fd); return 1; }
-    } catch (const std::exception& error) {
-      std::cerr << "invalid JSON or oversized message: " << error.what() << '\n';
+  while (true) {
+    if (is_interactive) {
+      std::cout << state.prompt() << std::flush;
+    }
+    if (!std::getline(std::cin, line)) break;
+
+    auto cmd = state.process_input(line);
+    while (cmd.prompt_for_input) {
+      if (is_interactive) {
+        std::cout << *cmd.prompt_for_input << std::flush;
+      }
+      std::string prompt_response;
+      if (!std::getline(std::cin, prompt_response)) {
+        cmd = darkpool::cli::CommandResult{};
+        break;
+      }
+      cmd = state.process_prompt_response(prompt_response);
+    }
+
+    if (!cmd.local_message.empty()) {
+      std::cout << cmd.local_message << '\n';
+    }
+    if (cmd.should_exit) {
+      break;
+    }
+    if (cmd.send_frame) {
+      try {
+        if (!exchange(Frame(cmd.payload))) {
+          std::cerr << "connection closed while awaiting response\n";
+          (void)close(fd);
+          return 1;
+        }
+      } catch (const std::exception& error) {
+        std::cerr << "network error: " << error.what() << '\n';
+      }
     }
   }
+
   (void)close(fd);
   return 0;
 }
