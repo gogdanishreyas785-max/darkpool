@@ -67,6 +67,30 @@ bool receive_echo(int fd, const json& payload) {
   return echoed && consumed == bytes.size() && echoed->payload() == payload;
 }
 
+std::optional<json> request_json(int fd, const json& payload) {
+  const auto outgoing = Frame(payload).serialize();
+  if (!send_all(fd, outgoing.data(), outgoing.size(), false)) return std::nullopt;
+  char header[4];
+  if (!receive_exact(fd, header, sizeof(header))) return std::nullopt;
+  const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
+  const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[1]));
+  const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[2]));
+  const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
+  const auto length = (b0 << 24U) | (b1 << 16U) | (b2 << 8U) | b3;
+  if (length == 0U || length > darkpool::network::kMaxMessageSize) return std::nullopt;
+  std::string bytes(header, sizeof(header));
+  bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
+  if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) return std::nullopt;
+  std::size_t consumed = 0;
+  try {
+    const auto response = Frame::parse(bytes, consumed);
+    if (!response || consumed != bytes.size()) return std::nullopt;
+    return response->payload();
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 bool exchange(int fd, const json& payload, bool fragment) {
   const auto outgoing = Frame(payload).serialize();
   return send_all(fd, outgoing.data(), outgoing.size(), fragment) && receive_echo(fd, payload);
@@ -177,11 +201,152 @@ void test_server_capacity_and_echo(const char* server_path) {
   (void)waitpid(child, nullptr, 0);
 }
 
+std::uint16_t reserve_port() {
+  const int probe = socket(AF_INET, SOCK_STREAM, 0);
+  if (probe < 0) return 0;
+  sockaddr_in address{};
+  address.sin_family = AF_INET;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
+  const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
+  socklen_t address_length = sizeof(address);
+  const bool named = bound && getsockname(probe, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
+  const auto port = named ? ntohs(address.sin_port) : 0;
+  (void)close(probe);
+  return port;
+}
+
+std::optional<json> command(int fd, std::uint64_t match_id, const char* type) {
+  return request_json(fd, json{{"type", type}, {"match_id", match_id}});
+}
+
+void test_complete_three_round_match(const char* server_path) {
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+  const auto child = fork();
+  CHECK(child >= 0);
+  if (child < 0) return;
+  if (child == 0) {
+    const auto port_text = std::to_string(port);
+    execl(server_path, server_path, port_text.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  int moderator = -1;
+  std::vector<int> players;
+  std::vector<int> connected;
+  const auto cleanup = [&]() {
+    for (const auto fd : connected) (void)close(fd);
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+  for (int attempt = 0; attempt < 80 && moderator < 0; ++attempt) {
+    moderator = connect_to(port);
+    if (moderator < 0) std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  CHECK(moderator >= 0);
+  if (moderator < 0) { cleanup(); return; }
+  connected.push_back(moderator);
+  timeval timeout{2, 0};
+  (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  const auto moderator_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}});
+  CHECK(moderator_hello && (*moderator_hello)["type"] == "connect");
+  CHECK(moderator_hello && (*moderator_hello)["role"] == "moderator");
+
+  for (std::size_t i = 0; i < 5U; ++i) {
+    const int fd = connect_to(port);
+    CHECK(fd >= 0);
+    if (fd < 0) continue;
+    connected.push_back(fd);
+    players.push_back(fd);
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const auto hello = request_json(fd, json{{"type", "connect"}, {"role", "player"}});
+    CHECK(hello && (*hello)["type"] == "connect");
+  }
+  if (players.size() != 5U) { cleanup(); return; }
+
+  const json roles{"Insider", "Investigator", "Employee", "Employee", "Employee"};
+  const auto created = request_json(moderator, json{{"type", "create_match"}, {"roles", roles}});
+  CHECK(created && (*created)["type"] == "match_created");
+  if (!created || !created->contains("match_id")) { cleanup(); return; }
+  const auto match_id = (*created)["match_id"].get<std::uint64_t>();
+
+  const std::vector<std::string> expected_roles{"Insider", "Investigator", "Employee", "Employee", "Employee"};
+  for (std::size_t i = 0; i < players.size(); ++i) {
+    const auto joined = request_json(players[i], json{{"type", "join_match"}, {"match_id", match_id}});
+    CHECK(joined && (*joined)["type"] == "joined_match");
+    CHECK(joined && (*joined)["player_id"] == i + 1U);
+    CHECK(joined && (*joined)["private_role"] == expected_roles[i]);
+  }
+
+  const auto start = command(moderator, match_id, "start_match");
+  CHECK(start && (*start)["type"] == "transition_result" && (*start)["ok"]);
+  const auto status = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+  CHECK(status && (*status)["phase"] == "AwaitingEvent");
+
+  for (std::uint32_t round = 1; round <= 3U; ++round) {
+    const auto event = request_json(moderator, json{{"type", "publish_event"},
+        {"match_id", match_id}, {"impact", 0}});
+    CHECK(event && (*event)["type"] == "transition_result" && (*event)["phase"] == "Discussion");
+    const auto hint = command(players[0], match_id, "insider_hint");
+    CHECK(hint && (*hint)["type"] == "hint_private" && (*hint)["event_impact"] == 0);
+    const auto public_during_discussion = request_json(players[2],
+        json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(public_during_discussion && !public_during_discussion->contains("event_impact"));
+
+    const auto trading = command(moderator, match_id, "open_trading");
+    CHECK(trading && (*trading)["phase"] == "Trading");
+    for (const auto player : players) {
+      const auto trade = request_json(player, json{{"type", "trade"},
+          {"match_id", match_id}, {"action", "HOLD"}});
+      CHECK(trade && (*trade)["type"] == "trade_result" && (*trade)["ok"]);
+    }
+    const auto market = command(moderator, match_id, "resolve_market");
+    CHECK(market && (*market)["type"] == "market_result" && (*market)["ok"]);
+    CHECK(market && (*market)["closing_health"] == 5 && (*market)["outcome"] == "None");
+    const auto clue_phase = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(clue_phase && (*clue_phase)["phase"] == "Clue");
+    if (round == 1U) {
+      const auto clue = request_json(players[1], json{{"type", "request_clue"},
+          {"match_id", match_id}, {"target_id", 3}});
+      CHECK(clue && (*clue)["type"] == "clue_private" && (*clue)["is_insider"] == false);
+    }
+    const auto public_after_clue = request_json(players[2],
+        json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(public_after_clue && !public_after_clue->contains("clue_result") &&
+          !public_after_clue->contains("clue_target"));
+
+    const auto voting = command(moderator, match_id, "open_voting");
+    CHECK(voting && (*voting)["phase"] == "Voting");
+    for (const auto player : players) {
+      const auto vote = request_json(player, json{{"type", "vote"},
+          {"match_id", match_id}, {"target_id", nullptr}});
+      CHECK(vote && (*vote)["type"] == "vote_result" && (*vote)["accepted"]);
+    }
+    const auto resolved = command(moderator, match_id, "resolve_votes");
+    CHECK(resolved && (*resolved)["type"] == "vote_resolution" && (*resolved)["ok"]);
+    CHECK(resolved && (*resolved)["eliminated_player"].is_null());
+    if (round < 3U) {
+      CHECK(resolved && (*resolved)["outcome"] == "None");
+      const auto next = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+      CHECK(next && (*next)["phase"] == "AwaitingEvent" && (*next)["round"] == round + 1U);
+    } else {
+      CHECK(resolved && (*resolved)["outcome"] == "InsiderWin");
+      const auto finished = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+      CHECK(finished && (*finished)["phase"] == "Finished");
+      CHECK(finished && (*finished)["outcome"] == "InsiderWin" && (*finished)["health"] > 0);
+    }
+  }
+  cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-  if (argc != 2) { std::cerr << "expected server executable path\n"; return EXIT_FAILURE; }
-  test_server_capacity_and_echo(argv[1]);
+  if (argc != 2 && argc != 3) { std::cerr << "expected server executable path [gameplay]\n"; return EXIT_FAILURE; }
+  if (argc == 3 && std::string(argv[2]) == "gameplay") test_complete_three_round_match(argv[1]);
+  else test_server_capacity_and_echo(argv[1]);
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Server echo and connection-capacity integration tests passed.\n";
   return EXIT_SUCCESS;
