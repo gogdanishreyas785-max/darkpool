@@ -22,6 +22,11 @@ target_include_directories(darkpool_network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/i
 target_compile_features(darkpool_network PUBLIC cxx_std_20)
 target_link_libraries(darkpool_network PUBLIC nlohmann_json::nlohmann_json)
 
+add_library(darkpool_coordinator src/match_coordinator.cpp)
+target_include_directories(darkpool_coordinator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(darkpool_coordinator PUBLIC cxx_std_20)
+target_link_libraries(darkpool_coordinator PUBLIC darkpool_engine darkpool_network)
+
 function(darkpool_enable_warnings target)
   if(MSVC)
     target_compile_options(${target} PRIVATE /W4 /permissive-)
@@ -38,6 +43,7 @@ endfunction()
 
 darkpool_enable_warnings(darkpool_engine)
 darkpool_enable_warnings(darkpool_network)
+darkpool_enable_warnings(darkpool_coordinator)
 
 enable_testing()
 add_executable(darkpool_engine_tests tests/engine_tests.cpp)
@@ -50,9 +56,14 @@ target_link_libraries(darkpool_network_tests PRIVATE darkpool_network)
 darkpool_enable_warnings(darkpool_network_tests)
 add_test(NAME darkpool_network_tests COMMAND darkpool_network_tests)
 
+add_executable(darkpool_coordinator_tests tests/match_coordinator_tests.cpp)
+target_link_libraries(darkpool_coordinator_tests PRIVATE darkpool_coordinator)
+darkpool_enable_warnings(darkpool_coordinator_tests)
+add_test(NAME darkpool_coordinator_tests COMMAND darkpool_coordinator_tests)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(darkpool_server src/server_main.cpp)
-  target_link_libraries(darkpool_server PRIVATE darkpool_network)
+  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator)
   darkpool_enable_warnings(darkpool_server)
 
   add_executable(darkpool_client src/client_main.cpp)
