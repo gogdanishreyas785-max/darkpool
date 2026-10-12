@@ -11,7 +11,7 @@ using darkpool::cli::ClientState;
 using darkpool::network::json;
 
 int failures = 0;
-void check(bool condition, const char* expression, int line) {
+void check(bool condition, const char *expression, int line) {
   if (!condition) {
     ++failures;
     std::cerr << "FAIL line " << line << ": " << expression << '\n';
@@ -120,7 +120,8 @@ void test_player_commands() {
   CHECK(r.payload["match_id"] == 1U);
 
   // Format private hint
-  auto hint_resp = json{{"type", "hint_private"}, {"match_id", 1}, {"event_impact", 2}};
+  auto hint_resp =
+      json{{"type", "hint_private"}, {"match_id", 1}, {"event_impact", 2}};
   formatted = player.format_response(hint_resp);
   CHECK(formatted.find("Event Impact: 2") != std::string::npos);
 
@@ -159,11 +160,13 @@ void test_player_commands() {
   CHECK(pr.payload["target_id"] == 4U);
 
   // Format clue response
-  auto clue_resp = json{{"type", "clue_private"}, {"match_id", 1}, {"is_insider", true}};
+  auto clue_resp =
+      json{{"type", "clue_private"}, {"match_id", 1}, {"is_insider", true}};
   formatted = player.format_response(clue_resp);
   CHECK(formatted.find("THE INSIDER") != std::string::npos);
 
-  auto clue_false = json{{"type", "clue_private"}, {"match_id", 1}, {"is_insider", false}};
+  auto clue_false =
+      json{{"type", "clue_private"}, {"match_id", 1}, {"is_insider", false}};
   formatted = player.format_response(clue_false);
   CHECK(formatted.find("NOT the Insider") != std::string::npos);
 
@@ -202,58 +205,41 @@ void test_response_formatting() {
   ClientState client(ClientRole::Player);
 
   // Market result
-  json market{
-    {"type", "market_result"},
-    {"ok", true},
-    {"executed_buys", 3},
-    {"executed_sells", 1},
-    {"closing_health", 7},
-    {"closing_price", 12},
-    {"closing_reserve", 18},
-    {"outcome", "None"}
-  };
+  json market{{"type", "market_result"}, {"ok", true},
+              {"executed_buys", 3},      {"executed_sells", 1},
+              {"closing_health", 7},     {"closing_price", 12},
+              {"closing_reserve", 18},   {"outcome", "None"}};
   auto formatted = client.format_response(market);
   CHECK(formatted.find("Executed Buys  : 3") != std::string::npos);
   CHECK(formatted.find("Closing Health : 7 / 10") != std::string::npos);
 
   // Vote resolution with elimination
-  json vote_elim{
-    {"type", "vote_resolution"},
-    {"ok", true},
-    {"eliminated_player", 2},
-    {"votes_received", 3},
-    {"eligible_voters", 5},
-    {"outcome", "EmployeesWin"}
-  };
+  json vote_elim{{"type", "vote_resolution"}, {"ok", true},
+  {"eliminated_player", 2},    {"votes_received", 3},
+  {"eligible_voters", 5},      {"outcome", "EmployeesWin"}};
   formatted = client.format_response(vote_elim);
-  CHECK(formatted.find("ELIMINATION    : Player 2 WAS ELIMINATED!") != std::string::npos);
+  CHECK(formatted.find("ELIMINATION    : Player 2 WAS ELIMINATED!") !=
+        std::string::npos);
   CHECK(formatted.find("EMPLOYEES & INVESTIGATOR WIN") != std::string::npos);
 
   // Vote resolution without elimination
-  json vote_tie{
-    {"type", "vote_resolution"},
-    {"ok", true},
-    {"eliminated_player", nullptr},
-    {"votes_received", 1},
-    {"eligible_voters", 5},
-    {"outcome", "None"}
-  };
+  json vote_tie{{"type", "vote_resolution"},    {"ok", true},
+                {"eliminated_player", nullptr}, {"votes_received", 1},
+                {"eligible_voters", 5},         {"outcome", "None"}};
   formatted = client.format_response(vote_tie);
   CHECK(formatted.find("ELIMINATION    : None") != std::string::npos);
 
   // Full match status
-  json status{
-    {"type", "match_status"},
-    {"match_id", 1},
-    {"phase", "Trading"},
-    {"round", 2},
-    {"joined_players", 5},
-    {"health", 6},
-    {"price", 11},
-    {"outcome", "None"},
-    {"last_market", market},
-    {"last_vote", vote_tie}
-  };
+  json status{{"type", "match_status"},
+              {"match_id", 1},
+              {"phase", "Trading"},
+              {"round", 2},
+              {"joined_players", 5},
+              {"health", 6},
+              {"price", 11},
+              {"outcome", "None"},
+              {"last_market", market},
+              {"last_vote", vote_tie}};
   formatted = client.format_response(status);
   CHECK(formatted.find("MATCH #1 STATUS") != std::string::npos);
   CHECK(formatted.find("Phase          : Trading") != std::string::npos);
@@ -263,17 +249,21 @@ void test_response_formatting() {
   CHECK(formatted.find("Last Vote Resolution:") != std::string::npos);
 
   // Operation error
-  json op_err{
-    {"type", "operation_result"},
-    {"ok", false},
-    {"code", "WrongPhase"},
-    {"detail", "trading is closed"}
-  };
+  json op_err{{"type", "operation_result"},
+              {"ok", false},
+              {"code", "WrongPhase"},
+              {"detail", "trading is closed"}};
   formatted = client.format_response(op_err);
   CHECK(formatted.find("WrongPhase: trading is closed") != std::string::npos);
+
+  // Connect response formatting
+  json connect_resp{{"type", "connect"}, {"role", "moderator"}};
+  formatted = client.format_response(connect_resp);
+  CHECK(formatted.find("[CONNECTED] Session established as moderator") !=
+        std::string::npos);
 }
 
-}  // namespace
+} // namespace
 
 int main() {
   test_moderator_commands();

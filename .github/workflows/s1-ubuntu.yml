@@ -6,6 +6,7 @@ on:
       - s1/deterministic-engine
       - s2/stage1-tcp-json
       - s2/playable-cli
+      - s2/moderator-auth
   pull_request:
     branches:
       - main

@@ -27,16 +27,22 @@ Enable warnings-as-errors with `-DDARKPOOL_WARNINGS_AS_ERRORS=ON` when configuri
 
 ## Playable CLI Gameplay
 
-On Linux, run the server and client in separate terminals:
+Moderator connections require an authentication secret supplied via the `DARKPOOL_MODERATOR_TOKEN` environment variable on both the server and the moderator client. If the server does not have `DARKPOOL_MODERATOR_TOKEN` set, it fails closed and rejects all moderator connection attempts. Players connect without a token.
+
+> **Security Scope Note**: The server binds to `127.0.0.1` (loopback only). This mechanism does not implement TLS or production-ready transport authentication; the authentication token travels over the local loopback TCP connection.
+
+On Linux, run the server and clients in separate terminals:
 
 ```sh
 # Terminal 0: Start the TCP coordinator server (default port: 4782)
+export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ./build/darkpool_server [port]
 
 # Terminal 1: Start the Moderator client
+export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ./build/darkpool_client 127.0.0.1 [port] moderator
 
-# Terminals 2-6: Start five Player clients
+# Terminals 2-6: Start five Player clients (no token required)
 ./build/darkpool_client 127.0.0.1 [port] player
 ```
 
@@ -74,8 +80,8 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 
 ### How to Run a Complete Game
 
-1. **Launch Server**: Run `./build/darkpool_server 4782` in Terminal 0.
-2. **Launch Moderator**: Run `./build/darkpool_client 127.0.0.1 4782 moderator` in Terminal 1.
+1. **Launch Server**: Run `DARKPOOL_MODERATOR_TOKEN="secret" ./build/darkpool_server 4782` in Terminal 0.
+2. **Launch Moderator**: Run `DARKPOOL_MODERATOR_TOKEN="secret" ./build/darkpool_client 127.0.0.1 4782 moderator` in Terminal 1.
 3. **Launch Players**: In Terminals 2 to 6, launch `./build/darkpool_client 127.0.0.1 4782 player`.
 4. **Create Match**: In Moderator terminal, type `create`.
 5. **Join Players**: In each of the 5 Player terminals, type `join 1`. Each player receives their private role and confidential objectives.
