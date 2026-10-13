@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 
@@ -94,6 +95,11 @@ std::optional<json> request_json(int fd, const json& payload) {
 bool exchange(int fd, const json& payload, bool fragment) {
   const auto outgoing = Frame(payload).serialize();
   return send_all(fd, outgoing.data(), outgoing.size(), fragment) && receive_echo(fd, payload);
+}
+
+void set_receive_timeout(int fd, int timeout_ms) {
+  timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 }
 
 bool closed_within_timeout(int fd, int timeout_ms) {
@@ -812,6 +818,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
     CHECK(fd >= 0);
     if (fd < 0) { stop_server(); return; }
     open_fds.push_back(fd);
+    set_receive_timeout(fd, 2000);
     players.push_back(fd);
     CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
   }
@@ -820,6 +827,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
   CHECK(moderator >= 0);
   if (moderator < 0) { stop_server(); return; }
   open_fds.push_back(moderator);
+  set_receive_timeout(moderator, 2000);
   CHECK(exchange(moderator,
                  json{{"type", "connect"}, {"role", "moderator"},
                       {"token", "integration-test-mod-token"}}, false));
@@ -855,6 +863,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
     CHECK(replacement >= 0);
     if (replacement >= 0) {
       open_fds.push_back(replacement);
+      set_receive_timeout(replacement, 2000);
       CHECK(exchange(replacement, json{{"type", "connect"}, {"role", "player"}}, false));
       CHECK(exchange(replacement,
                      json{{"echo", "replacement-handshake-" + std::to_string(i)}},
