@@ -256,6 +256,7 @@ int main(int argc, char **argv) {
   std::size_t moderators = 0;
   std::cout << "darkpool_server listening on port " << port << '\n';
 
+  int exit_status = 0;
   while (true) {
     epoll_event events[16];
     const auto ready = epoll_wait(epoll_fd, events, 16, kEpollTimeoutMs);
@@ -263,6 +264,7 @@ int main(int argc, char **argv) {
       if (errno == EINTR)
         continue;
       std::cerr << "epoll_wait: " << std::strerror(errno) << '\n';
+      exit_status = 1;
       break;
     }
     for (int i = 0; i < ready; ++i) {
@@ -347,5 +349,5 @@ int main(int argc, char **argv) {
   }
   (void)close(epoll_fd);
   (void)close(listener);
-  return 0;
+  return exit_status;
 }

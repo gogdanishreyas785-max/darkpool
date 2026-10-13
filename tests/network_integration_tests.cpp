@@ -959,10 +959,39 @@ void test_malformed_tcp_isolation(const char* server_path) {
       const auto big_frame = Frame(json{{"echo", pad}}).serialize();
       CHECK(big_frame.size() <= darkpool::network::kMaxFramePayloadSize + 4U);
 
-      // Send 30 frames without reading (30 * ~3,800 bytes = ~114 KiB > 64 KiB queue limit)
-      for (int i = 0; i < 30; ++i) {
-        (void)send_all(offender, big_frame.data(), big_frame.size(), false);
+      // Minimum frames required for the server to accumulate > kMaxQueuedBytes (64 KiB)
+      // in its pending output queue when responses are not drained by the client:
+      const auto min_frames_for_overflow =
+          (darkpool::network::kMaxQueuedBytes / big_frame.size()) + 1U;
+      constexpr int target_frames = 30;
+      CHECK(target_frames >= static_cast<int>(min_frames_for_overflow));
+
+      // Flood the server with requests without reading responses.
+      // Every send_all() result is recorded and checked:
+      // - Successful sends advance the count toward the overflow threshold.
+      // - Expected disconnection (EPIPE / ECONNRESET) indicates the server has closed
+      //   the socket due to queue overflow.
+      // - Any other error is an unexpected failure that immediately fails the test.
+      int successful_sends = 0;
+      for (int i = 0; i < target_frames; ++i) {
+        errno = 0;
+        if (send_all(offender, big_frame.data(), big_frame.size(), false)) {
+          ++successful_sends;
+        } else {
+          if (errno == EPIPE || errno == ECONNRESET) {
+            // Server closed connection while or after the queue limit was breached.
+            break;
+          }
+          std::cerr << "Unexpected send_all failure on frame " << i
+                    << ": errno=" << errno << " (" << std::strerror(errno) << ")\n";
+          CHECK(false);
+          break;
+        }
       }
+
+      // Prove that enough frames were transmitted to exceed the 64 KiB output queue limit
+      // before any server disconnection occurred.
+      CHECK(successful_sends >= static_cast<int>(min_frames_for_overflow));
 
       // Server output queue must overflow (64 KiB), causing server to evict the offender
       CHECK(closed_within_timeout(offender, 2000));
