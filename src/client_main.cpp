@@ -46,7 +46,7 @@ bool receive_frame(int fd, FrameStream& stream, Frame& out_frame) {
     try {
       stream.feed(std::span<const char>(buffer, static_cast<std::size_t>(count)));
     } catch (const std::exception& error) {
-      std::cerr << "protocol error: invalid server frame: " << error.what() << '\\n';
+      std::cerr << "protocol error: invalid server frame: " << error.what() << '\n';
       return false;
     }
     if (stream.next(out_frame)) return true;
