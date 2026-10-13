@@ -17,6 +17,7 @@ namespace {
 
 using darkpool::network::Frame;
 using darkpool::network::FrameDecoder;
+using darkpool::network::FrameStream;
 using darkpool::network::json;
 
 bool write_all(int fd, const std::string& buffer) {
