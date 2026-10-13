@@ -20,4 +20,8 @@ Process complete requests in receive order per connection; events carry per-matc
 
 Proposed numeric limits requiring approval: ordinary frame 4 KiB (also suggested in PDF); chat/whisper 512 UTF-8 bytes; 20 req/s burst 40; output queue 64 KiB/client, high-water backpressure and disconnect persistent slow consumers; configurable connection/match/player caps. Validate lengths before allocation and bound work per readiness event.
 
+**Enforced protocol resource limits:**
+- **Maximum JSON frame payload:** 4 KiB (4,096 bytes). Inbound frames with declared length of 0 or exceeding 4,096 bytes are rejected immediately upon reading the 4-byte big-endian length prefix before allocating or accumulating payload data. Outbound frame serialization rejects payloads exceeding 4,096 bytes with an error.
+- **Maximum pending output queue:** 64 KiB (65,536 bytes) per client connection. If a slow or stalled client's output queue exceeds 64 KiB, the server evicts and closes the offending connection cleanly while preserving all existing legitimate client sessions and match state.
+
 Planned tests: golden/fragmented/coalesced frames; invalid lengths/types/text/version; duplicate/retry; authorization/phase rejection; flood/slow reader. TCP cert/plaintext tests only if later S9 is approved.

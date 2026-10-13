@@ -70,9 +70,13 @@ void close_connection(int epoll_fd, int fd, std::map<int, Connection> &clients,
 
 bool enqueue_echo(int epoll_fd, int fd, Connection &connection,
                   const Frame &frame) {
-  if (!connection.output.append(frame.serialize()))
+  try {
+    if (!connection.output.append(frame.serialize()))
+      return false;
+    return set_events(epoll_fd, fd, !connection.peer_closed, true);
+  } catch (const std::exception &) {
     return false;
-  return set_events(epoll_fd, fd, !connection.peer_closed, true);
+  }
 }
 
 bool constant_time_equals(std::string_view a, std::string_view b) noexcept {
@@ -238,41 +242,41 @@ int main(int argc, char **argv) {
     return 1;
   }
   epoll_event event{};
-  event.events = EPOLLIN;
+  event.events = static_cast<std::uint32_t>(EPOLLIN);
   event.data.fd = listener;
   if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listener, &event) < 0) {
-    std::cerr << "epoll_ctl: " << std::strerror(errno) << '\n';
+    std::cerr << "epoll_ctl listener: " << std::strerror(errno) << '\n';
     (void)close(epoll_fd);
     (void)close(listener);
     return 1;
   }
   std::map<int, Connection> clients;
+  darkpool::server::MatchCoordinator coordinator;
   std::size_t players = 0;
   std::size_t moderators = 0;
-  darkpool::server::MatchCoordinator coordinator;
-  std::cout << "DARKPOOL echo server listening on 127.0.0.1:" << port << '\n';
-  epoll_event events[64]{};
-  bool running = true;
-  while (running) {
-    const int count = epoll_wait(epoll_fd, events, 64, kEpollTimeoutMs);
-    if (count < 0) {
+  std::cout << "darkpool_server listening on port " << port << '\n';
+
+  while (true) {
+    epoll_event events[16];
+    const auto ready = epoll_wait(epoll_fd, events, 16, kEpollTimeoutMs);
+    if (ready < 0) {
       if (errno == EINTR)
         continue;
       std::cerr << "epoll_wait: " << std::strerror(errno) << '\n';
       break;
     }
-    for (int i = 0; i < count; ++i) {
-      const int fd = events[i].data.fd;
+    for (int i = 0; i < ready; ++i) {
+      const auto fd = events[i].data.fd;
       if (fd == listener) {
         while (true) {
-          const int client =
-              accept4(listener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
+          sockaddr_in peer{};
+          socklen_t peer_len = sizeof(peer);
+          const auto client =
+              accept4(listener, reinterpret_cast<sockaddr *>(&peer), &peer_len,
+                      SOCK_NONBLOCK | SOCK_CLOEXEC);
           if (client < 0) {
             if (errno == EINTR)
               continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-              break;
-            std::cerr << "accept4: " << std::strerror(errno) << '\n';
             break;
           }
           if (clients.size() >= kMaxConnections) {
@@ -280,13 +284,14 @@ int main(int argc, char **argv) {
             continue;
           }
           epoll_event client_event{};
-          client_event.events = EPOLLIN | EPOLLRDHUP;
+          client_event.events = static_cast<std::uint32_t>(EPOLLIN) |
+                                static_cast<std::uint32_t>(EPOLLRDHUP);
           client_event.data.fd = client;
-          if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &client_event) < 0) {
+          if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &client_event) == 0) {
+            clients.emplace(client, Connection{});
+          } else {
             (void)close(client);
-            continue;
           }
-          clients.emplace(client, Connection{});
         }
         continue;
       }
@@ -332,16 +337,15 @@ int main(int argc, char **argv) {
         expired.push_back(client_fd);
       }
     }
-    for (const int expired_fd : expired) {
-      close_connection(epoll_fd, expired_fd, clients, players, moderators,
+    for (const auto client_fd : expired) {
+      close_connection(epoll_fd, client_fd, clients, players, moderators,
                        coordinator);
     }
   }
-  for (auto &[fd, connection] : clients) {
-    (void)connection;
-    (void)close(fd);
+  for (const auto &[client_fd, _] : clients) {
+    (void)close(client_fd);
   }
   (void)close(epoll_fd);
   (void)close(listener);
-  return running ? 1 : 0;
+  return 0;
 }
