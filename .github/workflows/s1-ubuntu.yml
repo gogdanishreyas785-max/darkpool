@@ -26,6 +26,6 @@ jobs:
       - name: Build
         run: cmake --build build --parallel
       - name: Run malformed TCP integration test
-        run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests
+        run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
       - name: Run full test suite
         run: ctest --test-dir build --output-on-failure
