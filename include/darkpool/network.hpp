@@ -7,6 +7,7 @@
 #include <optional>
 #include <string_view>
 #include <vector>
+#include <deque>
 #include <stdexcept>
 #include <sstream>
 #include <nlohmann/json.hpp>
@@ -66,6 +67,18 @@ class FrameDecoder {
   [[nodiscard]] std::size_t buffered_bytes() const noexcept { return buffer_.size(); }
  private:
   std::string buffer_;
+};
+
+// Maintains decoded frames across TCP reads, including multiple frames returned
+// by one read. The caller owns one FrameStream per connection.
+class FrameStream {
+ public:
+  void feed(std::span<const char> bytes);
+  [[nodiscard]] bool next(Frame& out_frame);
+  [[nodiscard]] std::size_t pending_frames() const noexcept { return frames_.size(); }
+ private:
+  FrameDecoder decoder_;
+  std::deque<Frame> frames_;
 };
 
 // Bounded FIFO for nonblocking socket writes. The caller consumes exactly the

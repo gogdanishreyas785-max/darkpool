@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <cerrno>
 #include <cstdlib>
+#include <exception>
 #include <cstring>
 #include <iostream>
 #include <netdb.h>
@@ -16,6 +17,7 @@ namespace {
 
 using darkpool::network::Frame;
 using darkpool::network::FrameDecoder;
+using darkpool::network::FrameStream;
 using darkpool::network::json;
 
 bool write_all(int fd, const std::string& buffer) {
@@ -32,8 +34,9 @@ bool write_all(int fd, const std::string& buffer) {
   return true;
 }
 
-bool receive_frame(int fd, Frame& out_frame) {
-  FrameDecoder decoder;
+bool receive_frame(int fd, FrameStream& stream, Frame& out_frame) {
+  if (stream.next(out_frame)) return true;
+
   char buffer[4096];
   while (true) {
     const auto count = recv(fd, buffer, sizeof(buffer), 0);
@@ -41,11 +44,13 @@ bool receive_frame(int fd, Frame& out_frame) {
       if (count < 0 && errno == EINTR) continue;
       return false;
     }
-    const auto frames = decoder.feed(std::span<const char>(buffer, static_cast<std::size_t>(count)));
-    if (!frames.empty()) {
-      out_frame = frames.front();
-      return true;
+    try {
+      stream.feed(std::span<const char>(buffer, static_cast<std::size_t>(count)));
+    } catch (const std::exception& error) {
+      std::cerr << "protocol error: invalid server frame: " << error.what() << '\n';
+      return false;
     }
+    if (stream.next(out_frame)) return true;
   }
 }
 
@@ -100,10 +105,11 @@ int main(int argc, char** argv) {
       : darkpool::cli::ClientRole::Player;
   darkpool::cli::ClientState state(client_role);
 
-  const auto exchange = [fd, &state](const Frame& outgoing) -> bool {
+  FrameStream response_stream;
+  const auto exchange = [fd, &state, &response_stream](const Frame& outgoing) -> bool {
     if (!write_all(fd, outgoing.serialize())) return false;
     Frame incoming(json{});
-    if (!receive_frame(fd, incoming)) return false;
+    if (!receive_frame(fd, response_stream, incoming)) return false;
     std::cout << state.format_response(incoming.payload()) << '\n';
     return true;
   };

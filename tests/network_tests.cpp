@@ -49,6 +49,31 @@ void test_fragmented_and_coalesced_stream() {
   CHECK(decoder.buffered_bytes() == 0U);
 }
 
+void test_persistent_frame_stream_queue() {
+  const auto first = Frame(json{{"n", 1}}).serialize();
+  const auto second = Frame(json{{"n", 2}}).serialize();
+  FrameStream stream;
+  Frame decoded(json{});
+
+  // A fragmented frame is retained until its final byte arrives.
+  for (std::size_t i = 0; i < first.size(); ++i) {
+    stream.feed(std::span<const char>(first.data() + i, 1U));
+    if (i + 1U < first.size()) CHECK(!stream.next(decoded));
+  }
+  CHECK(stream.next(decoded));
+  CHECK(decoded.payload()["n"] == 1);
+  CHECK(!stream.next(decoded));
+
+  // Both frames are retained when one TCP read contains multiple frames.
+  const std::string coalesced = first + second;
+  stream.feed(std::span<const char>(coalesced.data(), coalesced.size()));
+  CHECK(stream.pending_frames() == 2U);
+  CHECK(stream.next(decoded) && decoded.payload()["n"] == 1);
+  CHECK(stream.next(decoded) && decoded.payload()["n"] == 2);
+  CHECK(!stream.next(decoded));
+  CHECK(stream.pending_frames() == 0U);
+}
+
 void test_malformed_and_oversized_frames() {
   FrameDecoder malformed;
   const std::string bad_json{"\0\0\0\1{", 5U};
@@ -94,6 +119,7 @@ void test_partial_output_and_queue_bound() {
 int main() {
   test_frame_golden_and_round_trip();
   test_fragmented_and_coalesced_stream();
+  test_persistent_frame_stream_queue();
   test_malformed_and_oversized_frames();
   test_partial_output_and_queue_bound();
   if (failures != 0) return EXIT_FAILURE;
