@@ -25,5 +25,7 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build --parallel
-      - name: Run tests
+      - name: Run malformed TCP integration test
+        run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
+      - name: Run full test suite
         run: ctest --test-dir build --output-on-failure

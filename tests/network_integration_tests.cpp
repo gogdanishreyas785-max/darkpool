@@ -13,6 +13,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 
@@ -96,6 +97,34 @@ bool exchange(int fd, const json& payload, bool fragment) {
   return send_all(fd, outgoing.data(), outgoing.size(), fragment) && receive_echo(fd, payload);
 }
 
+void set_receive_timeout(int fd, int timeout_ms) {
+  timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+}
+
+bool closed_within_timeout(int fd, int timeout_ms) {
+  timeval timeout{static_cast<time_t>(timeout_ms / 1000),
+                  static_cast<suseconds_t>((timeout_ms % 1000) * 1000)};
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  char byte = 0;
+  while (true) {
+    errno = 0;
+    const auto received = recv(fd, &byte, 1U, 0);
+    if (received == 0) return true;  // Orderly peer shutdown (EOF/FIN)
+    if (received < 0) {
+      if (errno == EINTR) continue;
+      // An ordinary receive timeout returns -1 with EAGAIN / EWOULDBLOCK / ETIMEDOUT.
+      // A receive timeout is explicitly NOT proof of peer closure.
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+        return false;
+      }
+      return errno == ECONNRESET || errno == EPIPE;
+    }
+    // received > 0 means unexpected data was received, not peer closure
+    return false;
+  }
+}
+
 int connect_to(std::uint16_t port) {
   const int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
@@ -131,8 +160,8 @@ std::uint16_t reserve_port() {
   if (probe < 0) return 0;
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   address.sin_port = 0;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
   const bool named = bound && getsockname(probe, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
@@ -765,17 +794,154 @@ void test_idle_unassigned_timeout(const char* server_path) {
   }
 }
 
+void test_malformed_tcp_isolation(const char* server_path) {
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+
+  const auto child = start_server(server_path, port, "integration-test-mod-token");
+  CHECK(child > 0);
+  if (child <= 0) return;
+
+  std::vector<int> open_fds;
+  const auto close_fd = [&](int& fd) {
+    if (fd >= 0) {
+      (void)close(fd);
+      for (auto& tracked : open_fds) {
+        if (tracked == fd) tracked = -1;
+      }
+      fd = -1;
+    }
+  };
+  const auto stop_server = [&]() {
+    for (auto& fd : open_fds) {
+      if (fd >= 0) {
+        (void)close(fd);
+        fd = -1;
+      }
+    }
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  // The server enforces kMaxConnections = 6, kMaxPlayers = 5, and kMaxModerators = 1.
+  // We establish exactly 4 player sessions and 1 moderator session (5 legitimate sessions total).
+  // This satisfies three key test invariants:
+  // 1. Both player and moderator session types are active simultaneously.
+  // 2. When the offender connects, all 6 connection slots (kMaxConnections) are filled.
+  //    An excess (7th) connection attempt is verified to be rejected while the offender is connected.
+  // 3. Exactly one player slot remains available (4 of 5), so that after the offender is evicted,
+  //    a replacement client can connect and complete a valid player handshake without breaking
+  //    or disconnecting any existing player or moderator session.
+  std::vector<int> players;
+  for (int i = 0; i < 4; ++i) {
+    const int fd = connect_with_retry(port);
+    CHECK(fd >= 0);
+    if (fd < 0) { stop_server(); return; }
+    open_fds.push_back(fd);
+    set_receive_timeout(fd, 2000);
+    players.push_back(fd);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+  }
+
+  int moderator = connect_with_retry(port);
+  CHECK(moderator >= 0);
+  if (moderator < 0) { stop_server(); return; }
+  open_fds.push_back(moderator);
+  set_receive_timeout(moderator, 2000);
+  const auto moderator_reply = request_json(
+      moderator, json{{"type", "connect"}, {"role", "moderator"},
+                      {"token", "integration-test-mod-token"}});
+  CHECK(moderator_reply && (*moderator_reply)["type"] == "connect" &&
+        (*moderator_reply)["role"] == "moderator" && !moderator_reply->contains("token"));
+
+  // Explicitly verify that closed_within_timeout cannot accept an ordinary receive timeout
+  // as proof of peer closure. On open, idle sessions, it must return false.
+  CHECK(!closed_within_timeout(players.front(), 50));
+  CHECK(!closed_within_timeout(moderator, 50));
+
+  const std::string oversized_header{"\0\x10\0\x01", 4U};
+  const std::vector<std::pair<std::string, bool>> cases{
+      {std::string{"\0\0\0\x01{", 5U}, false},  // malformed JSON
+      {std::string{"\0\0\0\0", 4U}, false},     // zero-length frame
+      {oversized_header, false},                 // oversized header (1048577 > 1048576)
+      {std::string{"\0\0", 2U}, true},          // truncated header + FIN
+      {std::string{"\0\0\0\x05{}", 6U}, true},  // truncated payload + FIN
+  };
+
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    int offender = connect_to(port);
+    CHECK(offender >= 0);
+    if (offender < 0) continue;
+    open_fds.push_back(offender);
+
+    // The offender fills the 6th connection slot (4 players + 1 moderator + 1 offender = 6).
+    // Verify server capacity is 100% saturated: an excess 7th connection is rejected immediately.
+    int excess = connect_to(port);
+    CHECK(excess >= 0);
+    if (excess >= 0) {
+      CHECK(rejected_by_server(excess));
+    }
+
+    CHECK(send_all(offender, cases[i].first.data(), cases[i].first.size(), false));
+    if (cases[i].second) CHECK(shutdown(offender, SHUT_WR) == 0);
+    CHECK(closed_within_timeout(offender, 2000));
+
+    int status = 0;
+    CHECK(waitpid(child, &status, WNOHANG) == 0);
+
+    // Verify all 4 existing players and the moderator survived and remain fully responsive.
+    for (std::size_t p = 0; p < players.size(); ++p) {
+      CHECK(exchange(players[p],
+                     json{{"echo", "legitimate-player-" + std::to_string(p) + "-survives-" + std::to_string(i)}},
+                     false));
+    }
+    const auto mod_survives = request_json(
+        moderator, json{{"echo", "moderator-survives-" + std::to_string(i)}});
+    CHECK(mod_survives && (*mod_survives)["echo"] == "moderator-survives-" + std::to_string(i));
+
+    close_fd(offender);
+
+    // Verify slot recovery: a replacement connection connects and handshakes as the 5th player
+    // while all 4 original players and the moderator remain connected.
+    int replacement = connect_with_retry(port);
+    CHECK(replacement >= 0);
+    if (replacement >= 0) {
+      open_fds.push_back(replacement);
+      set_receive_timeout(replacement, 2000);
+      CHECK(exchange(replacement, json{{"type", "connect"}, {"role", "player"}}, false));
+      CHECK(exchange(replacement,
+                     json{{"echo", "replacement-handshake-" + std::to_string(i)}},
+                     false));
+
+      // Concurrently verify communication across replacement, existing player, and moderator.
+      CHECK(exchange(players.front(), json{{"echo", "concurrent-verify-" + std::to_string(i)}}, false));
+      const auto mod_concurrent = request_json(
+          moderator, json{{"echo", "moderator-concurrent-" + std::to_string(i)}});
+      CHECK(mod_concurrent && (*mod_concurrent)["echo"] == "moderator-concurrent-" + std::to_string(i));
+
+      CHECK(shutdown(replacement, SHUT_WR) == 0);
+      CHECK(closed_within_timeout(replacement, 2000));
+      close_fd(replacement);
+    }
+  }
+
+  stop_server();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|malformed|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
     test_complete_three_round_match(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "auth") {
     test_moderator_authentication(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "malformed") {
+    test_malformed_tcp_isolation(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "timeout") {
     test_idle_unassigned_timeout(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
