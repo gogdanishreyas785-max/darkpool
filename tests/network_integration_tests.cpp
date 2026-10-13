@@ -828,9 +828,11 @@ void test_malformed_tcp_isolation(const char* server_path) {
   if (moderator < 0) { stop_server(); return; }
   open_fds.push_back(moderator);
   set_receive_timeout(moderator, 2000);
-  CHECK(exchange(moderator,
-                 json{{"type", "connect"}, {"role", "moderator"},
-                      {"token", "integration-test-mod-token"}}, false));
+  const auto moderator_reply = request_json(
+      moderator, json{{"type", "connect"}, {"role", "moderator"},
+                      {"token", "integration-test-mod-token"}});
+  CHECK(moderator_reply && (*moderator_reply)["type"] == "connect" &&
+        (*moderator_reply)["role"] == "moderator" && !moderator_reply->contains("token"));
 
   const std::string oversized_header{"\0\x10\0\x01", 4U};
   const std::vector<std::pair<std::string, bool>> cases{
