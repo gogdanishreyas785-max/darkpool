@@ -16,9 +16,11 @@ namespace darkpool::network {
 
 using json = nlohmann::json;
 
-// Maximum message payload size (1 MB for safety)
-inline constexpr std::size_t kMaxMessageSize = 1024 * 1024;
-inline constexpr std::size_t kMaxQueuedBytes = 2 * kMaxMessageSize;
+// Maximum message payload size (4 KiB as documented in docs/DECISIONS.md DEC-11 and docs/protocol.md)
+inline constexpr std::size_t kMaxFramePayloadSize = 4096;
+inline constexpr std::size_t kMaxMessageSize = kMaxFramePayloadSize;
+// Maximum pending output per client (64 KiB as documented in docs/DECISIONS.md DEC-11 and docs/protocol.md)
+inline constexpr std::size_t kMaxQueuedBytes = 64 * 1024;
 
 // Message types
 enum class MessageType {

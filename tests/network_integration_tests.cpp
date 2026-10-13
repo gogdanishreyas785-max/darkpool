@@ -120,8 +120,9 @@ bool closed_within_timeout(int fd, int timeout_ms) {
       }
       return errno == ECONNRESET || errno == EPIPE;
     }
-    // received > 0 means unexpected data was received, not peer closure
-    return false;
+    // If bytes were pending in the receive buffer prior to peer closure,
+    // drain them until EOF, connection reset, or receive timeout.
+    continue;
   }
 }
 
@@ -160,8 +161,8 @@ std::uint16_t reserve_port() {
   if (probe < 0) return 0;
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_port = 0;
   address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = 0;
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
   const bool named = bound && getsockname(probe, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
@@ -860,11 +861,13 @@ void test_malformed_tcp_isolation(const char* server_path) {
   CHECK(!closed_within_timeout(players.front(), 50));
   CHECK(!closed_within_timeout(moderator, 50));
 
-  const std::string oversized_header{"\0\x10\0\x01", 4U};
+  const std::string oversized_1mb{"\0\x10\0\x01", 4U};       // 1,048,577 > 4,096
+  const std::string oversized_limit{"\0\0\x10\x01", 4U};     // 4,097 > 4,096 (1 byte over 4 KiB frame limit)
   const std::vector<std::pair<std::string, bool>> cases{
       {std::string{"\0\0\0\x01{", 5U}, false},  // malformed JSON
       {std::string{"\0\0\0\0", 4U}, false},     // zero-length frame
-      {oversized_header, false},                 // oversized header (1048577 > 1048576)
+      {oversized_limit, false},                  // declared length 4,097 (immediately above 4 KiB limit)
+      {oversized_1mb, false},                    // oversized header (1,048,577 > 4,096)
       {std::string{"\0\0", 2U}, true},          // truncated header + FIN
       {std::string{"\0\0\0\x05{}", 6U}, true},  // truncated payload + FIN
   };
@@ -923,6 +926,110 @@ void test_malformed_tcp_isolation(const char* server_path) {
       CHECK(shutdown(replacement, SHUT_WR) == 0);
       CHECK(closed_within_timeout(replacement, 2000));
       close_fd(replacement);
+    }
+  }
+
+  // Live TCP client triggering output-queue overflow (64 KiB limit):
+  // An offending client completes handshake as the 5th player (filling 6/6 server capacity),
+  // restricts its receive buffer, and floods requests without reading server replies.
+  // The server buffers responses in OutputQueue until the 64 KiB limit is exceeded,
+  // then cleanly closes the offending connection without disrupting the existing 4 players or moderator.
+  {
+    int offender = connect_to(port);
+    CHECK(offender >= 0);
+    if (offender >= 0) {
+      open_fds.push_back(offender);
+      int rcvbuf = 2048;
+      (void)setsockopt(offender, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+
+      // Offender connects as player
+      CHECK(exchange(offender, json{{"type", "connect"}, {"role", "player"}}, false));
+
+      // Offender fills the 6th slot (4 players + 1 moderator + 1 offender player = 6).
+      // Excess 7th connection must be rejected immediately.
+      int excess = connect_to(port);
+      CHECK(excess >= 0);
+      if (excess >= 0) {
+        CHECK(rejected_by_server(excess));
+      }
+
+      // Prepare a valid ~3,800-byte frame payload (within 4 KiB frame limit)
+      const auto overhead = json{{"echo", ""}}.dump().size();
+      const std::string pad(3800U - overhead, 'q');
+      const auto big_frame = Frame(json{{"echo", pad}}).serialize();
+      CHECK(big_frame.size() <= darkpool::network::kMaxFramePayloadSize + 4U);
+
+      // Minimum frames required for the server to accumulate > kMaxQueuedBytes (64 KiB)
+      // in its pending output queue when responses are not drained by the client:
+      const auto min_frames_for_overflow =
+          (darkpool::network::kMaxQueuedBytes / big_frame.size()) + 1U;
+      constexpr int target_frames = 30;
+      CHECK(target_frames >= static_cast<int>(min_frames_for_overflow));
+
+      // Flood the server with requests without reading responses.
+      // Every send_all() result is recorded and checked:
+      // - Successful sends advance the count toward the overflow threshold.
+      // - Expected disconnection (EPIPE / ECONNRESET) indicates the server has closed
+      //   the socket due to queue overflow.
+      // - Any other error is an unexpected failure that immediately fails the test.
+      int successful_sends = 0;
+      for (int i = 0; i < target_frames; ++i) {
+        errno = 0;
+        if (send_all(offender, big_frame.data(), big_frame.size(), false)) {
+          ++successful_sends;
+        } else {
+          if (errno == EPIPE || errno == ECONNRESET) {
+            // Server closed connection while or after the queue limit was breached.
+            break;
+          }
+          std::cerr << "Unexpected send_all failure on frame " << i
+                    << ": errno=" << errno << " (" << std::strerror(errno) << ")\n";
+          CHECK(false);
+          break;
+        }
+      }
+
+      // Prove that enough frames were transmitted to exceed the 64 KiB output queue limit
+      // before any server disconnection occurred.
+      CHECK(successful_sends >= static_cast<int>(min_frames_for_overflow));
+
+      // Server output queue must overflow (64 KiB), causing server to evict the offender
+      CHECK(closed_within_timeout(offender, 2000));
+
+      int status = 0;
+      CHECK(waitpid(child, &status, WNOHANG) == 0);
+
+      // Existing 4 players and moderator remain intact and responsive
+      for (std::size_t p = 0; p < players.size(); ++p) {
+        CHECK(exchange(players[p],
+                       json{{"echo", "legitimate-player-" + std::to_string(p) + "-survives-overflow"}},
+                       false));
+      }
+      const auto mod_survives = request_json(
+          moderator, json{{"echo", "moderator-survives-overflow"}});
+      CHECK(mod_survives && (*mod_survives)["echo"] == "moderator-survives-overflow");
+
+      close_fd(offender);
+
+      // Verify slot recovery: a replacement client connects and handshakes as player #5
+      int replacement = connect_with_retry(port);
+      CHECK(replacement >= 0);
+      if (replacement >= 0) {
+        open_fds.push_back(replacement);
+        set_receive_timeout(replacement, 2000);
+        CHECK(exchange(replacement, json{{"type", "connect"}, {"role", "player"}}, false));
+        CHECK(exchange(replacement, json{{"echo", "replacement-handshake-after-overflow"}}, false));
+
+        // Concurrently verify communication across replacement, existing player, and moderator
+        CHECK(exchange(players.front(), json{{"echo", "concurrent-verify-after-overflow"}}, false));
+        const auto mod_concurrent = request_json(
+            moderator, json{{"echo", "moderator-concurrent-after-overflow"}});
+        CHECK(mod_concurrent && (*mod_concurrent)["echo"] == "moderator-concurrent-after-overflow");
+
+        CHECK(shutdown(replacement, SHUT_WR) == 0);
+        CHECK(closed_within_timeout(replacement, 2000));
+        close_fd(replacement);
+      }
     }
   }
 

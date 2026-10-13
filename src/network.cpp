@@ -103,7 +103,7 @@ bool FrameStream::next(Frame& out_frame) {
 
 bool OutputQueue::append(const std::string& bytes) {
   if (bytes.size() > kMaxQueuedBytes || size() > kMaxQueuedBytes - bytes.size()) return false;
-  if (offset_ != 0U && offset_ >= bytes_.size() / 2U) {
+  if (offset_ != 0U) {
     bytes_.erase(0, offset_);
     offset_ = 0;
   }
