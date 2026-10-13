@@ -131,7 +131,7 @@ std::uint16_t reserve_port() {
   if (probe < 0) return 0;
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+  address.sin_port = htonl(INADDR_LOOPBACK);
   address.sin_port = 0;
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
@@ -611,19 +611,119 @@ void test_moderator_authentication(const char* server_path) {
   }
 }
 
+void test_idle_unassigned_timeout(const char* server_path) {
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+
+  const auto child = start_server(server_path, port, "integration-test-mod-token");
+  CHECK(child >= 0);
+  if (child < 0) return;
+
+  const auto cleanup = [&]() {
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  // 1. Connect and authenticate one player
+  const int player = connect_with_retry(port);
+  CHECK(player >= 0);
+  if (player < 0) {
+    cleanup();
+    return;
+  }
+  timeval timeout{2, 0};
+  (void)setsockopt(player, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  CHECK(exchange(player, json{{"type", "connect"}, {"role", "player"}}, false));
+
+  // 2. Connect 5 unassigned idle clients (saturating 6 total capacity)
+  std::vector<int> idle_peers;
+  for (int i = 0; i < 5; ++i) {
+    const int fd = connect_to(port);
+    CHECK(fd >= 0);
+    if (fd >= 0) idle_peers.push_back(fd);
+  }
+  CHECK(idle_peers.size() == 5U);
+  if (idle_peers.size() != 5U) {
+    for (const auto fd : idle_peers) (void)close(fd);
+    (void)close(player);
+    cleanup();
+    return;
+  }
+
+  // 3. Verify server capacity is exhausted: 7th connection is rejected immediately
+  const int excess = connect_to(port);
+  CHECK(excess >= 0);
+  if (excess >= 0) {
+    CHECK(rejected_by_server(excess));
+  }
+
+  // 4. Verify that within 2 seconds, none of the idle connections have timed out prematurely
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+  for (const int fd : idle_peers) {
+    char byte = 0;
+    const auto res = recv(fd, &byte, 1U, MSG_DONTWAIT);
+    CHECK(res < 0 && (errno == EAGAIN || errno == EWOULDBLOCK));
+  }
+
+  // 5. Wait for the 5 idle connections to be closed by the server's 5-second handshake timeout
+  const auto start_time = std::chrono::steady_clock::now();
+  bool all_expired = false;
+  while (std::chrono::steady_clock::now() - start_time < std::chrono::seconds(7)) {
+    bool any_open = false;
+    for (const int fd : idle_peers) {
+      char byte = 0;
+      const auto res = recv(fd, &byte, 1U, MSG_DONTWAIT);
+      const bool closed = (res == 0) || (res < 0 && (errno == ECONNRESET || errno == EPIPE));
+      if (!closed) {
+        any_open = true;
+        break;
+      }
+    }
+    if (!any_open) {
+      all_expired = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  }
+  CHECK(all_expired);
+
+  for (const int fd : idle_peers) {
+    (void)close(fd);
+  }
+
+  // 6. Verify authenticated player connection was NOT closed by the timeout
+  CHECK(exchange(player, json{{"echo", "still_authenticated"}}, false));
+  (void)close(player);
+
+  // 7. Verify capacity is restored: a new connection can connect and complete handshake
+  const int replacement = connect_to(port);
+  CHECK(replacement >= 0);
+  if (replacement >= 0) {
+    (void)setsockopt(replacement, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    CHECK(exchange(replacement, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(replacement);
+  }
+
+  cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [gameplay|auth]\n";
+    std::cerr << "expected server executable path [gameplay|auth|timeout]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
     test_complete_three_round_match(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "auth") {
     test_moderator_authentication(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "timeout") {
+    test_idle_unassigned_timeout(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
+    test_idle_unassigned_timeout(argv[1]);
   }
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Integration tests passed.\n";
