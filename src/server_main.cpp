@@ -2,6 +2,7 @@
 #include "darkpool/network.hpp"
 
 #include <cerrno>
+#include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +14,7 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -25,6 +27,8 @@ constexpr std::uint16_t kDefaultPort = 4782;
 constexpr std::size_t kMaxConnections = 6;
 constexpr std::size_t kMaxPlayers = 5;
 constexpr std::size_t kMaxModerators = 1;
+constexpr auto kHandshakeTimeout = std::chrono::seconds(5);
+constexpr int kEpollTimeoutMs = 100;
 
 enum class ClientKind { Unassigned, Player, Moderator };
 struct Connection {
@@ -32,6 +36,8 @@ struct Connection {
   OutputQueue output;
   ClientKind kind{ClientKind::Unassigned};
   bool peer_closed{false};
+  std::chrono::steady_clock::time_point connected_at{
+      std::chrono::steady_clock::now()};
 };
 
 bool set_events(int epoll_fd, int fd, bool reading, bool writing) {
@@ -248,7 +254,7 @@ int main(int argc, char **argv) {
   epoll_event events[64]{};
   bool running = true;
   while (running) {
-    const int count = epoll_wait(epoll_fd, events, 64, -1);
+    const int count = epoll_wait(epoll_fd, events, 64, kEpollTimeoutMs);
     if (count < 0) {
       if (errno == EINTR)
         continue;
@@ -317,6 +323,18 @@ int main(int argc, char **argv) {
       if (!keep)
         close_connection(epoll_fd, fd, clients, players, moderators,
                          coordinator);
+    }
+    const auto now = std::chrono::steady_clock::now();
+    std::vector<int> expired;
+    for (const auto &[client_fd, conn] : clients) {
+      if (conn.kind == ClientKind::Unassigned &&
+          now - conn.connected_at >= kHandshakeTimeout) {
+        expired.push_back(client_fd);
+      }
+    }
+    for (const int expired_fd : expired) {
+      close_connection(epoll_fd, expired_fd, clients, players, moderators,
+                       coordinator);
     }
   }
   for (auto &[fd, connection] : clients) {
