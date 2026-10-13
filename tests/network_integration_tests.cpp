@@ -131,7 +131,7 @@ std::uint16_t reserve_port() {
   if (probe < 0) return 0;
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_port = htonl(INADDR_LOOPBACK);
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   address.sin_port = 0;
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
