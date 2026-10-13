@@ -160,8 +160,8 @@ std::uint16_t reserve_port() {
   if (probe < 0) return 0;
   sockaddr_in address{};
   address.sin_family = AF_INET;
-  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   address.sin_port = 0;
+  address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
   const bool bound = bind(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0;
   socklen_t address_length = sizeof(address);
   const bool named = bound && getsockname(probe, reinterpret_cast<sockaddr*>(&address), &address_length) == 0;
@@ -285,7 +285,7 @@ void test_complete_three_round_match(const char* server_path) {
   (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   const auto moderator_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "gameplay-test-token"}});
   CHECK(moderator_hello && (*moderator_hello)["type"] == "connect");
-  CHECK(moderator_hello && (*moderator_role)["role"] == "moderator");
+  CHECK(moderator_hello && (*moderator_hello)["role"] == "moderator");
   CHECK(moderator_hello && !moderator_hello->contains("token"));
 
   for (std::size_t i = 0; i < 5U; ++i) {
