@@ -89,6 +89,18 @@ std::vector<Frame> FrameDecoder::feed(std::span<const char> bytes) {
   return frames;
 }
 
+void FrameStream::feed(std::span<const char> bytes) {
+  auto decoded = decoder_.feed(bytes);
+  for (auto& frame : decoded) frames_.push_back(std::move(frame));
+}
+
+bool FrameStream::next(Frame& out_frame) {
+  if (frames_.empty()) return false;
+  out_frame = std::move(frames_.front());
+  frames_.pop_front();
+  return true;
+}
+
 bool OutputQueue::append(const std::string& bytes) {
   if (bytes.size() > kMaxQueuedBytes || size() > kMaxQueuedBytes - bytes.size()) return false;
   if (offset_ != 0U && offset_ >= bytes_.size() / 2U) {
