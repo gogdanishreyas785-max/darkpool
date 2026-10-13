@@ -103,12 +103,26 @@ void set_receive_timeout(int fd, int timeout_ms) {
 }
 
 bool closed_within_timeout(int fd, int timeout_ms) {
-  timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+  timeval timeout{static_cast<time_t>(timeout_ms / 1000),
+                  static_cast<suseconds_t>((timeout_ms % 1000) * 1000)};
   (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   char byte = 0;
-  const auto received = recv(fd, &byte, 1U, 0);
-  return received == 0 ||
-         (received < 0 && (errno == ECONNRESET || errno == EPIPE));
+  while (true) {
+    errno = 0;
+    const auto received = recv(fd, &byte, 1U, 0);
+    if (received == 0) return true;  // Orderly peer shutdown (EOF/FIN)
+    if (received < 0) {
+      if (errno == EINTR) continue;
+      // An ordinary receive timeout returns -1 with EAGAIN / EWOULDBLOCK / ETIMEDOUT.
+      // A receive timeout is explicitly NOT proof of peer closure.
+      if (errno == EAGAIN || errno == EWOULDBLOCK || errno == ETIMEDOUT) {
+        return false;
+      }
+      return errno == ECONNRESET || errno == EPIPE;
+    }
+    // received > 0 means unexpected data was received, not peer closure
+    return false;
+  }
 }
 
 int connect_to(std::uint16_t port) {
@@ -271,7 +285,7 @@ void test_complete_three_round_match(const char* server_path) {
   (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   const auto moderator_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "gameplay-test-token"}});
   CHECK(moderator_hello && (*moderator_hello)["type"] == "connect");
-  CHECK(moderator_hello && (*moderator_hello)["role"] == "moderator");
+  CHECK(moderator_hello && (*moderator_role)["role"] == "moderator");
   CHECK(moderator_hello && !moderator_hello->contains("token"));
 
   for (std::size_t i = 0; i < 5U; ++i) {
@@ -810,8 +824,15 @@ void test_malformed_tcp_isolation(const char* server_path) {
     (void)waitpid(child, nullptr, 0);
   };
 
-  // Five established sessions plus one offender fill the server's six
-  // connection slots, so each replacement handshake verifies slot recovery.
+  // The server enforces kMaxConnections = 6, kMaxPlayers = 5, and kMaxModerators = 1.
+  // We establish exactly 4 player sessions and 1 moderator session (5 legitimate sessions total).
+  // This satisfies three key test invariants:
+  // 1. Both player and moderator session types are active simultaneously.
+  // 2. When the offender connects, all 6 connection slots (kMaxConnections) are filled.
+  //    An excess (7th) connection attempt is verified to be rejected while the offender is connected.
+  // 3. Exactly one player slot remains available (4 of 5), so that after the offender is evicted,
+  //    a replacement client can connect and complete a valid player handshake without breaking
+  //    or disconnecting any existing player or moderator session.
   std::vector<int> players;
   for (int i = 0; i < 4; ++i) {
     const int fd = connect_with_retry(port);
@@ -834,12 +855,17 @@ void test_malformed_tcp_isolation(const char* server_path) {
   CHECK(moderator_reply && (*moderator_reply)["type"] == "connect" &&
         (*moderator_reply)["role"] == "moderator" && !moderator_reply->contains("token"));
 
+  // Explicitly verify that closed_within_timeout cannot accept an ordinary receive timeout
+  // as proof of peer closure. On open, idle sessions, it must return false.
+  CHECK(!closed_within_timeout(players.front(), 50));
+  CHECK(!closed_within_timeout(moderator, 50));
+
   const std::string oversized_header{"\0\x10\0\x01", 4U};
   const std::vector<std::pair<std::string, bool>> cases{
       {std::string{"\0\0\0\x01{", 5U}, false},  // malformed JSON
       {std::string{"\0\0\0\0", 4U}, false},     // zero-length frame
-      {oversized_header, false},                     // header only; no body
-      {std::string{"\0\0", 2U}, true},             // truncated header + FIN
+      {oversized_header, false},                 // oversized header (1048577 > 1048576)
+      {std::string{"\0\0", 2U}, true},          // truncated header + FIN
       {std::string{"\0\0\0\x05{}", 6U}, true},  // truncated payload + FIN
   };
 
@@ -849,6 +875,14 @@ void test_malformed_tcp_isolation(const char* server_path) {
     if (offender < 0) continue;
     open_fds.push_back(offender);
 
+    // The offender fills the 6th connection slot (4 players + 1 moderator + 1 offender = 6).
+    // Verify server capacity is 100% saturated: an excess 7th connection is rejected immediately.
+    int excess = connect_to(port);
+    CHECK(excess >= 0);
+    if (excess >= 0) {
+      CHECK(rejected_by_server(excess));
+    }
+
     CHECK(send_all(offender, cases[i].first.data(), cases[i].first.size(), false));
     if (cases[i].second) CHECK(shutdown(offender, SHUT_WR) == 0);
     CHECK(closed_within_timeout(offender, 2000));
@@ -856,11 +890,20 @@ void test_malformed_tcp_isolation(const char* server_path) {
     int status = 0;
     CHECK(waitpid(child, &status, WNOHANG) == 0);
 
-    CHECK(exchange(players.front(),
-                   json{{"echo", "legitimate-client-survives-" + std::to_string(i)}},
-                   false));
+    // Verify all 4 existing players and the moderator survived and remain fully responsive.
+    for (std::size_t p = 0; p < players.size(); ++p) {
+      CHECK(exchange(players[p],
+                     json{{"echo", "legitimate-player-" + std::to_string(p) + "-survives-" + std::to_string(i)}},
+                     false));
+    }
+    const auto mod_survives = request_json(
+        moderator, json{{"echo", "moderator-survives-" + std::to_string(i)}});
+    CHECK(mod_survives && (*mod_survives)["echo"] == "moderator-survives-" + std::to_string(i));
 
     close_fd(offender);
+
+    // Verify slot recovery: a replacement connection connects and handshakes as the 5th player
+    // while all 4 original players and the moderator remain connected.
     int replacement = connect_with_retry(port);
     CHECK(replacement >= 0);
     if (replacement >= 0) {
@@ -870,6 +913,13 @@ void test_malformed_tcp_isolation(const char* server_path) {
       CHECK(exchange(replacement,
                      json{{"echo", "replacement-handshake-" + std::to_string(i)}},
                      false));
+
+      // Concurrently verify communication across replacement, existing player, and moderator.
+      CHECK(exchange(players.front(), json{{"echo", "concurrent-verify-" + std::to_string(i)}}, false));
+      const auto mod_concurrent = request_json(
+          moderator, json{{"echo", "moderator-concurrent-" + std::to_string(i)}});
+      CHECK(mod_concurrent && (*mod_concurrent)["echo"] == "moderator-concurrent-" + std::to_string(i));
+
       CHECK(shutdown(replacement, SHUT_WR) == 0);
       CHECK(closed_within_timeout(replacement, 2000));
       close_fd(replacement);
