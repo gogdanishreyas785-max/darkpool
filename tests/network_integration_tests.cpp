@@ -96,6 +96,15 @@ bool exchange(int fd, const json& payload, bool fragment) {
   return send_all(fd, outgoing.data(), outgoing.size(), fragment) && receive_echo(fd, payload);
 }
 
+bool closed_within_timeout(int fd, int timeout_ms) {
+  timeval timeout{timeout_ms / 1000, (timeout_ms % 1000) * 1000};
+  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  char byte = 0;
+  const auto received = recv(fd, &byte, 1U, 0);
+  return received == 0 ||
+         (received < 0 && (errno == ECONNRESET || errno == EPIPE));
+}
+
 int connect_to(std::uint16_t port) {
   const int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (fd < 0) return -1;
@@ -765,17 +774,113 @@ void test_idle_unassigned_timeout(const char* server_path) {
   }
 }
 
+void test_malformed_tcp_isolation(const char* server_path) {
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+
+  const auto child = start_server(server_path, port, "integration-test-mod-token");
+  CHECK(child > 0);
+  if (child <= 0) return;
+
+  std::vector<int> open_fds;
+  const auto close_fd = [&](int& fd) {
+    if (fd >= 0) {
+      (void)close(fd);
+      for (auto& tracked : open_fds) {
+        if (tracked == fd) tracked = -1;
+      }
+      fd = -1;
+    }
+  };
+  const auto stop_server = [&]() {
+    for (auto& fd : open_fds) {
+      if (fd >= 0) {
+        (void)close(fd);
+        fd = -1;
+      }
+    }
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  // Five established sessions plus one offender fill the server's six
+  // connection slots, so each replacement handshake verifies slot recovery.
+  std::vector<int> players;
+  for (int i = 0; i < 4; ++i) {
+    const int fd = connect_with_retry(port);
+    CHECK(fd >= 0);
+    if (fd < 0) { stop_server(); return; }
+    open_fds.push_back(fd);
+    players.push_back(fd);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+  }
+
+  int moderator = connect_with_retry(port);
+  CHECK(moderator >= 0);
+  if (moderator < 0) { stop_server(); return; }
+  open_fds.push_back(moderator);
+  CHECK(exchange(moderator,
+                 json{{"type", "connect"}, {"role", "moderator"},
+                      {"token", "integration-test-mod-token"}}, false));
+
+  const std::string oversized_header{"\0\x10\0\x01", 4U};
+  const std::vector<std::pair<std::string, bool>> cases{
+      {std::string{"\0\0\0\x01{", 5U}, false},  // malformed JSON
+      {std::string{"\0\0\0\0", 4U}, false},     // zero-length frame
+      {oversized_header, false},                     // header only; no body
+      {std::string{"\0\0", 2U}, true},             // truncated header + FIN
+      {std::string{"\0\0\0\x05{}", 6U}, true},  // truncated payload + FIN
+  };
+
+  for (std::size_t i = 0; i < cases.size(); ++i) {
+    int offender = connect_to(port);
+    CHECK(offender >= 0);
+    if (offender < 0) continue;
+    open_fds.push_back(offender);
+
+    CHECK(send_all(offender, cases[i].first.data(), cases[i].first.size(), false));
+    if (cases[i].second) CHECK(shutdown(offender, SHUT_WR) == 0);
+    CHECK(closed_within_timeout(offender, 2000));
+
+    int status = 0;
+    CHECK(waitpid(child, &status, WNOHANG) == 0);
+
+    CHECK(exchange(players.front(),
+                   json{{"echo", "legitimate-client-survives-" + std::to_string(i)}},
+                   false));
+
+    close_fd(offender);
+    int replacement = connect_with_retry(port);
+    CHECK(replacement >= 0);
+    if (replacement >= 0) {
+      open_fds.push_back(replacement);
+      CHECK(exchange(replacement, json{{"type", "connect"}, {"role", "player"}}, false));
+      CHECK(exchange(replacement,
+                     json{{"echo", "replacement-handshake-" + std::to_string(i)}},
+                     false));
+      CHECK(shutdown(replacement, SHUT_WR) == 0);
+      CHECK(closed_within_timeout(replacement, 2000));
+      close_fd(replacement);
+    }
+  }
+
+  stop_server();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|malformed|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
     test_complete_three_round_match(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "auth") {
     test_moderator_authentication(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "malformed") {
+    test_malformed_tcp_isolation(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "timeout") {
     test_idle_unassigned_timeout(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
