@@ -92,6 +92,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   darkpool_enable_warnings(darkpool_network_integration_tests)
   add_test(NAME darkpool_network_integration_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server>)
+  add_test(NAME darkpool_timeout_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> timeout)
+  set_tests_properties(darkpool_timeout_tests PROPERTIES TIMEOUT 20)
   add_test(NAME darkpool_auth_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> auth)
   add_test(NAME darkpool_gameplay_e2e_tests
