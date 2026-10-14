@@ -43,18 +43,56 @@ Use automated clients speaking the real protocol; opening sockets alone does not
 
 ## Verification status
 
-The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest run for implementation commit `54e3e28287de3840caef2ec65009dfee0e5719a5` (GitHub Actions run 62) passed the engine roster cases for N=3,4,5,8,9,16,24,32,64 and complete real-TCP matches at N=5 and N=8. No load test has run. In particular, a 64-player live match, four concurrent 64-player matches, and the 256-player server target remain unverified.
+The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest run for implementation commit `54e3e28287de3840caef2ec65009dfee0e5719a5` (GitHub Actions run 62) passed the engine roster cases for N=3,4,5,8,9,16,24,32,64 and complete real-TCP matches at N=5 and N=8.
 
-| Run | Configuration | Evidence |
-|---|---|---|
-| L1 | 5 players/1 match, full game | Correctness, CPU/RSS, protocol errors. |
-| L2 | 8 and 16/1 match | Three 16-player runs; p50/p95 and resources. |
-| L3 | 32/1 match | Queue depth, rejected requests, latency. |
-| L4 | 64/1 match | 10-minute smoke test; bounded resources, CPU/latency. |
-| L5 | 2 × 32 | Isolation/starvation results. |
-| L6 | 4 × up to 64 | Attempt 256 plus moderators/test clients where hardware permits; report actual maximum/failure. |
-| L7 | Slow/disconnected clients | Bounded queue, cleanup, responsiveness. |
-| L8 | Malformed/flood traffic | Safe rejection and no corruption. |
+### Load Test Matrix
+
+| Run | Configuration | Status | Evidence / Notes |
+|---|---|:---:|---|
+| L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
+| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.29 ms, p95=0.52 ms, p99=0.64 ms. Concurrent burst: p50=0.70 ms, p95=1.71 ms, p99=4.29 ms. Verified winner: `InsiderWin`. |
+| L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
+| L4 | 64 players/1 match | **NOT RUN** | Single 64-player match capacity remains unverified. |
+| L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
+| L6 | 4 × up to 64 (256-player server target) | **NOT RUN** | Four-match 256-player capacity remains unverified. |
+| L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
+| L8 | Malformed/flood traffic | NOT RUN | Malformed isolation verified functionally; high-rate flood unmeasured. |
+
+### Measured 16-Player Real-Server Load Test Results (L2)
+
+- **Test Commands**:
+  ```bash
+  # Standalone 3-run load harness execution
+  ./build/darkpool_load_tests ./build/darkpool_server --players 16 --runs 3 --out docs/load_test_16p_results.json
+
+  # Automated regression selftest executing subprocesses to verify real process exit status on assertion/outcome errors
+  ./build/darkpool_load_tests ./build/darkpool_server --selftest
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_'
+  ```
+- **Source Commit**: `fffed8535a2191a183c3a3a142305e0c6f14ddb9`
+- **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
+- **Timing & ACK Boundary**:
+  Timing is captured using `std::chrono::steady_clock` (monotonic clock). The measurement interval begins immediately before the client writes the request frame bytes to the socket and ends immediately when the complete correlated response frame is received and parsed. Intentional phase waits and intervals are excluded from latency measurements.
+- **Workload & Correctness Verification**:
+  Real protocol clients driving a complete 16-player match (1 moderator + 16 players = 17 connected clients). Includes match creation, 16 player joins, match start, and all 3 rounds.
+  - **Sequential Phases (Rounds 1 & 3, match setup/resolution)**: Sequential event publication, insider hints, legal trades, market resolution, clue request, voting, and vote resolution (122 requests per run).
+  - **Concurrent Burst Phase (Round 2)**: 16 simultaneous client threads sending legal trades and votes concurrently over 16 independent TCP sockets (32 concurrent requests per run).
+  - **Fatal Correctness Assertions**: All protocol responses, types, fields, role counts (2 Insiders, 1 Investigator, 13 Employees), and outcomes are strictly asserted. Any correctness or transport failure immediately fails the run and harness.
+  - **Guaranteed Outcome Verification**: In this deterministic workload, health remains > 0 (final health = 6) and all players abstain (no eliminations), guaranteeing `phase == "Finished"` and `outcome == "InsiderWin"`. Both are explicitly asserted.
+
+| Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Verified Winner |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 17 (16P + 1M) | 74 ms | 0.25 / 0.49 / 0.58 ms | 0.57 / 1.63 / 1.71 ms | 0 / 0 | 4,092 kB | 30.0 ms | `InsiderWin` |
+| Run 2 | 17 (16P + 1M) | 74 ms | 0.25 / 0.43 / 0.52 ms | 0.80 / 1.50 / 1.60 ms | 0 / 0 | 4,136 kB | 20.0 ms | `InsiderWin` |
+| Run 3 | 17 (16P + 1M) | 99 ms | 0.37 / 0.57 / 0.64 ms | 0.73 / 2.82 / 4.29 ms | 0 / 0 | 4,092 kB | 30.0 ms | `InsiderWin` |
+| **Aggregate** | **17** | **247 ms** | **0.29 / 0.52 / 0.64 ms** | **0.70 / 1.71 / 4.29 ms** | **0 / 0 (100% Pass)** | **4,136 kB max** | **80.0 ms total** | **`InsiderWin`** |
+
+*Machine-readable report stored in: [`docs/load_test_16p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_16p_results.json)*
+
+> [!IMPORTANT]
+> This test verifies client concurrency responsiveness under bounded concurrent bursts; it does **NOT** establish sustained-load capacity, a single 64-player match under sustained load (L4), or four-match 256-player target capacity (L6), which remain **NOT RUN** and unverified.
 
 ## Proposed mixed64-v1 p95 workload — approval required
 
