@@ -23,7 +23,7 @@ Status note: the user's S1 follow-up approves only the five-player gameplay choi
 | ID | Recommendation | Rationale / impact | Approval |
 |---|---|---|---|
 | DEC-01 | Moderator is separate non-player; create/start/close/status; no secret visibility in player output. | Consistent with five active players plus moderator; audit access impacts secrecy. | Yes |
-| DEC-02 | At all sizes, one Insider and one Investigator; remainder Employees. | Preserves baseline simplicity; balance at 64 may weaken. Scaling proposal, not requirement. | Yes |
+| DEC-02 | **Proposed, not approved:** At all sizes, one Insider and one Investigator; remainder Employees. | Preserves baseline simplicity; balance at 64 may weaken. Larger-match scaling remains deferred by the S1 follow-up. | Open |
 | DEC-03 | 100 fictional credits and 10 shares/player; for N filled active seats at match start, total supply 20N and reserve 10N. Health 5/10, price 10; bounds health 0–10, price 1–100. | Finite supply works at 5 seats (total100/reserve50) and 64 (total1280/reserve640). | Yes |
 | DEC-04 | Trades one share at opening price; buys use finite opening reserve, sells add after allocation; rotate seat priority on shortage. | Conserves supply and makes shortage deterministic. | Yes |
 | DEC-05 | Event impact e∈{-2,-1,0,+1,+2}; H'=clamp(H+e+sign(B-S),0,10); P'=clamp(P+2e+sign(B-S),1,100). Event and demand affect both values with separate formulas. Tests inject fixed events. | Separate deterministic formulas and reproducibility. | Yes |

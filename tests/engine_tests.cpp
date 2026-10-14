@@ -296,6 +296,23 @@ void test_initialization_and_supply() {
   CHECK(rejected);
 }
 
+void test_invalid_roster_entries() {
+  const auto rejected = [](const std::vector<PlayerSetup>& candidate) {
+    try {
+      (void)Match(candidate);
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  CHECK(rejected({{1, Role::Insider}, {2, Role::Investigator},
+                  {3, Role::Employee}, {4, Role::Employee}, {4, Role::Employee}}));
+  CHECK(rejected({{1, Role::Insider}, {2, Role::Investigator},
+                  {3, Role::Employee}, {4, Role::Employee},
+                  {5, static_cast<Role>(99)}}));
+}
+
 void test_normal_five_player_worked_example() {
   Match match(roster());
   start_to_trading(match, -1);
@@ -618,6 +635,7 @@ void test_deterministic_replay() {
 int main() {
   test_state_fixture_invariants();
   test_initialization_and_supply();
+  test_invalid_roster_entries();
   test_normal_five_player_worked_example();
   test_reserve_shortage_and_conservation();
   test_invalid_trades_and_credit_cap();
