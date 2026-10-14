@@ -1130,6 +1130,58 @@ RunResult execute_64_player_match(
   return result;
 }
 
+struct SustainedClassification {
+  std::string status;  // PASS, FAIL, BLOCKED
+  std::string reason;
+  std::string diagnostic_details;
+};
+
+SustainedClassification classify_sustained_status(
+    std::uint64_t target_duration_s,
+    std::uint64_t actual_duration_ms,
+    std::size_t completed_matches,
+    std::size_t total_requests,
+    std::size_t total_failures,
+    std::size_t transport_failures,
+    std::size_t correctness_failures,
+    bool abort_due_to_failure,
+    const std::string& existing_reason) {
+  SustainedClassification out;
+  const bool reached_target_duration = (actual_duration_ms >= target_duration_s * 1000ULL);
+  const double elapsed_s = static_cast<double>(actual_duration_ms) / 1000.0;
+
+  if (abort_due_to_failure || total_failures > 0) {
+    out.status = "FAIL";
+    if (!existing_reason.empty()) {
+      out.reason = existing_reason;
+    } else {
+      out.reason = "Encountered " + std::to_string(total_failures) + " failures (" +
+                   std::to_string(transport_failures) + " transport, " +
+                   std::to_string(correctness_failures) + " correctness)";
+    }
+    out.diagnostic_details = "Workload aborted after " + std::to_string(completed_matches) +
+                             " completed matches and " + std::to_string(total_requests) +
+                             " requests: " + out.reason;
+  } else if (!reached_target_duration) {
+    out.status = "BLOCKED";
+    out.reason = "Workload stopped early before reaching target duration of " +
+                 std::to_string(target_duration_s) + "s (actual: " +
+                 std::to_string(static_cast<std::uint64_t>(elapsed_s)) + "s)";
+    out.diagnostic_details = "Elapsed duration (" + std::to_string(actual_duration_ms) +
+                             " ms) fell short of target duration (" +
+                             std::to_string(target_duration_s * 1000ULL) + " ms)";
+  } else if (completed_matches == 0) {
+    out.status = "FAIL";
+    out.reason = "Zero matches completed during workload";
+    out.diagnostic_details = "Workload reached target duration but zero complete matches were finished";
+  } else {
+    out.status = "PASS";
+    out.diagnostic_details = "Workload completed successfully with zero transport or correctness failures across " +
+                             std::to_string(completed_matches) + " matches";
+  }
+  return out;
+}
+
 // Sustained repeated-match workload (for 10m smoke and 30m reliability)
 SustainedStageResult execute_sustained_workload(
     const std::string& server_path,
@@ -1468,35 +1520,19 @@ SustainedStageResult execute_sustained_workload(
   const double elapsed_s = static_cast<double>(result.actual_duration_ms) / 1000.0;
   result.throughput_rps = elapsed_s > 0.0 ? (static_cast<double>(result.metrics.total_requests) / elapsed_s) : 0.0;
 
-  const bool reached_target_duration = (result.actual_duration_ms + 1000 >= result.target_duration_s * 1000);
-
-  if (abort_due_to_failure || failures.total() > 0) {
-    result.status = "FAIL";
-    if (result.reason.empty()) {
-      result.reason = "Encountered " + std::to_string(failures.total()) + " failures (" +
-                      std::to_string(failures.transport_failures) + " transport, " +
-                      std::to_string(failures.correctness_failures) + " correctness)";
-    }
-    result.diagnostic_details = "Workload aborted after " + std::to_string(result.completed_matches) +
-                                " completed matches and " + std::to_string(result.metrics.total_requests) +
-                                " requests: " + result.reason;
-  } else if (!reached_target_duration) {
-    result.status = "BLOCKED";
-    result.reason = "Workload stopped early before reaching target duration of " +
-                    std::to_string(result.target_duration_s) + "s (actual: " +
-                    std::to_string(static_cast<std::uint64_t>(elapsed_s)) + "s)";
-    result.diagnostic_details = "Elapsed duration (" + std::to_string(result.actual_duration_ms) +
-                                " ms) fell short of target duration (" +
-                                std::to_string(result.target_duration_s * 1000) + " ms)";
-  } else if (result.completed_matches == 0) {
-    result.status = "FAIL";
-    result.reason = "Zero matches completed during workload";
-    result.diagnostic_details = "Workload reached target duration but zero complete matches were finished";
-  } else {
-    result.status = "PASS";
-    result.diagnostic_details = "Workload completed successfully with zero transport or correctness failures across " +
-                                std::to_string(result.completed_matches) + " matches";
-  }
+  const auto classification = classify_sustained_status(
+      result.target_duration_s,
+      result.actual_duration_ms,
+      result.completed_matches,
+      result.metrics.total_requests,
+      failures.total(),
+      failures.transport_failures,
+      failures.correctness_failures,
+      abort_due_to_failure,
+      result.reason);
+  result.status = classification.status;
+  result.reason = classification.reason;
+  result.diagnostic_details = classification.diagnostic_details;
 
   std::cout << "\n=================================================================\n";
   std::cout << " SUSTAINED WORKLOAD REPORT (" << result.stage_name << ")\n";
@@ -1588,14 +1624,23 @@ bool write_sustained_report(
       std::chrono::system_clock::now().time_since_epoch()).count();
 
   std::ofstream out_file(output_path);
-  if (out_file.is_open()) {
-    out_file << j.dump(2) << '\n';
-    std::cout << "Machine-readable sustained report written to: " << output_path << "\n\n";
-    return true;
-  } else {
-    std::cerr << "Warning: Could not open output file: " << output_path << "\n";
+  if (!out_file.is_open()) {
+    std::cerr << "Error: Could not open sustained report output file for writing: " << output_path << "\n";
     return false;
   }
+  out_file << j.dump(2) << '\n';
+  out_file.flush();
+  if (!out_file.good() || out_file.fail() || out_file.bad()) {
+    std::cerr << "Error: Stream error writing sustained report output to: " << output_path << "\n";
+    return false;
+  }
+  out_file.close();
+  if (out_file.fail()) {
+    std::cerr << "Error: Failed to close sustained report output file: " << output_path << "\n";
+    return false;
+  }
+  std::cout << "Machine-readable sustained report written to: " << output_path << "\n\n";
+  return true;
 }
 
 // Subprocess execution for regression self-test
@@ -1645,7 +1690,7 @@ bool run_semantic_response_regression_test(const std::string& harness_path, cons
   std::cout << "=================================================================\n";
 
   // Test 1: Socketpair test with valid JSON frame containing semantic error payload
-  std::cout << "[Semantic 1/3] Verifying timed_request rejects parseable error frame... " << std::flush;
+  std::cout << "[Semantic 1/6] Verifying timed_request rejects parseable error frame... " << std::flush;
   int sv[2];
   if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
     std::cout << "FAILED (socketpair creation error)\n";
@@ -1703,7 +1748,7 @@ bool run_semantic_response_regression_test(const std::string& harness_path, cons
   std::cout << "PASSED (transport_ok=true, correctness_ok=false, correctness_failures=1)\n";
 
   // Test 2: Verify sustained workload fails and accounts correctly on semantic error
-  std::cout << "[Semantic 2/3] Verifying sustained run aborts and fails on semantic error... " << std::flush;
+  std::cout << "[Semantic 2/6] Verifying sustained run aborts and fails on semantic error... " << std::flush;
   TestFaultConfig fault;
   fault.inject_semantic_failure = true;
   const auto sustained_res = execute_sustained_workload(server_path, 5, 42, "semantic_test", fault);
@@ -1723,7 +1768,7 @@ bool run_semantic_response_regression_test(const std::string& harness_path, cons
             << sustained_res.metrics.correctness_failures << ", reason logged)\n";
 
   // Test 3: Subprocess execution with --inject-semantic-failure
-  std::cout << "[Semantic 3/3] Verifying subprocess with semantic error exits nonzero... " << std::flush;
+  std::cout << "[Semantic 3/6] Verifying subprocess with semantic error exits nonzero... " << std::flush;
   const int code = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
   if (code == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1731,7 +1776,96 @@ bool run_semantic_response_regression_test(const std::string& harness_path, cons
   }
   std::cout << "PASSED (nonzero exit code: " << code << ")\n";
 
-  std::cout << "\nAll semantic response validation regression tests PASSED.\n\n";
+  // Test 4: Duration classification strictly enforces full target duration (no early-pass tolerance)
+  std::cout << "[Semantic 4/6] Verifying duration classification rejects runs finishing early (< target_duration)... " << std::flush;
+  {
+    // 600s target (smoke 10m): 599000 ms must be BLOCKED
+    const auto c1 = classify_sustained_status(600, 599000, 10, 100, 0, 0, 0, false, "");
+    if (c1.status != "BLOCKED") {
+      std::cout << "FAILED (expected BLOCKED for 599000 ms / 600s target, got " << c1.status << ")\n";
+      return false;
+    }
+
+    // 600s target: 599999 ms must be BLOCKED (proving removal of 1-second early-pass tolerance)
+    const auto c2 = classify_sustained_status(600, 599999, 10, 100, 0, 0, 0, false, "");
+    if (c2.status != "BLOCKED") {
+      std::cout << "FAILED (expected BLOCKED for 599999 ms / 600s target, got " << c2.status << ")\n";
+      return false;
+    }
+
+    // 600s target: 600000 ms (exact) must be PASS
+    const auto c3 = classify_sustained_status(600, 600000, 10, 100, 0, 0, 0, false, "");
+    if (c3.status != "PASS") {
+      std::cout << "FAILED (expected PASS for 600000 ms / 600s target, got " << c3.status << ")\n";
+      return false;
+    }
+
+    // 600s target: 601000 ms must be PASS
+    const auto c4 = classify_sustained_status(600, 601000, 10, 100, 0, 0, 0, false, "");
+    if (c4.status != "PASS") {
+      std::cout << "FAILED (expected PASS for 601000 ms / 600s target, got " << c4.status << ")\n";
+      return false;
+    }
+
+    // 600s target: reached duration but with failures must be FAIL
+    const auto c5 = classify_sustained_status(600, 600000, 10, 100, 1, 0, 1, false, "");
+    if (c5.status != "FAIL") {
+      std::cout << "FAILED (expected FAIL when failures > 0, got " << c5.status << ")\n";
+      return false;
+    }
+
+    // 600s target: reached duration but 0 completed matches must be FAIL
+    const auto c6 = classify_sustained_status(600, 600000, 0, 0, 0, 0, 0, false, "");
+    if (c6.status != "FAIL") {
+      std::cout << "FAILED (expected FAIL when completed matches == 0, got " << c6.status << ")\n";
+      return false;
+    }
+
+    // 1800s target (reliability 30m): 1799999 ms must be BLOCKED
+    const auto c7 = classify_sustained_status(1800, 1799999, 30, 300, 0, 0, 0, false, "");
+    if (c7.status != "BLOCKED") {
+      std::cout << "FAILED (expected BLOCKED for 1799999 ms / 1800s target, got " << c7.status << ")\n";
+      return false;
+    }
+
+    // 1800s target: 1800000 ms (exact) must be PASS
+    const auto c8 = classify_sustained_status(1800, 1800000, 30, 300, 0, 0, 0, false, "");
+    if (c8.status != "PASS") {
+      std::cout << "FAILED (expected PASS for 1800000 ms / 1800s target, got " << c8.status << ")\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (exact duration boundary enforced; early finishes marked BLOCKED)\n";
+
+  // Test 5: Direct write_sustained_report failure check with unwritable path
+  std::cout << "[Semantic 5/6] Verifying write_sustained_report returns false on unwritable path... " << std::flush;
+  {
+    SustainedStageResult dummy_res;
+    dummy_res.stage_name = "test_stage";
+    dummy_res.target_duration_s = 600;
+    dummy_res.actual_duration_ms = 600000;
+    dummy_res.status = "PASS";
+    dummy_res.completed_matches = 10;
+    const bool write_result = write_sustained_report(dummy_res, "/dev/null/darkpool_invalid_output.json", "dummy_commit", "dummy_env");
+    if (write_result) {
+      std::cout << "FAILED (write_sustained_report should return false for invalid path)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (write_sustained_report returned false)\n";
+
+  // Test 6: Subprocess execution with unwritable output path exits nonzero even if workload passes
+  std::cout << "[Semantic 6/6] Verifying subprocess exits nonzero when sustained report cannot be written... " << std::flush;
+  const int code_unwritable = run_subprocess(
+      harness_path,
+      {"--server", server_path, "--duration", "1", "--out", "/dev/null/darkpool_invalid_output.json"});
+  if (code_unwritable == 0) {
+    std::cout << "FAILED (expected nonzero exit code when report cannot be written, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
+
+  std::cout << "\nAll semantic response validation and duration/report regression tests PASSED.\n\n";
   return true;
 }
 
@@ -1740,7 +1874,7 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   std::cout << " Running 64-Player Load Harness Subprocess Regression Tests\n";
   std::cout << "=================================================================\n";
 
-  std::cout << "[Regression 1/4] Verifying normal 64P run subprocess exits 0... " << std::flush;
+  std::cout << "[Regression 1/5] Verifying normal 64P run subprocess exits 0... " << std::flush;
   const int code_normal = run_subprocess(harness_path, {"--server", server_path, "--smoke-run"});
   if (code_normal != 0) {
     std::cout << "FAILED (expected exit code 0, got " << code_normal << ")\n";
@@ -1748,7 +1882,7 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   }
   std::cout << "PASSED (exit code 0)\n";
 
-  std::cout << "[Regression 2/4] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[Regression 2/5] Verifying assertion failure subprocess exits nonzero... " << std::flush;
   const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1756,7 +1890,7 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   }
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
-  std::cout << "[Regression 3/4] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  std::cout << "[Regression 3/5] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
   const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1764,13 +1898,23 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   }
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
-  std::cout << "[Regression 4/4] Verifying semantic error subprocess exits nonzero... " << std::flush;
+  std::cout << "[Regression 4/5] Verifying semantic error subprocess exits nonzero... " << std::flush;
   const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
   if (code_semantic == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
   }
   std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
+
+  std::cout << "[Regression 5/5] Verifying unwritable report output path subprocess exits nonzero... " << std::flush;
+  const int code_unwritable = run_subprocess(
+      harness_path,
+      {"--server", server_path, "--duration", "1", "--out", "/dev/null/darkpool_invalid_output.json"});
+  if (code_unwritable == 0) {
+    std::cout << "FAILED (expected nonzero exit code when report cannot be written, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
 
   std::cout << "\nAll 64-player regression checks PASSED: real subprocess exit statuses verified.\n\n";
   return true;
@@ -1903,17 +2047,29 @@ int main(int argc, char* argv[]) {
 
     if (is_smoke_10m) {
       const auto res = execute_sustained_workload(server_path, 600, seed, "smoke_10m");
-      write_sustained_report(res, output_json_path, source_commit, env_info);
+      const bool report_ok = write_sustained_report(res, output_json_path, source_commit, env_info);
+      if (!report_ok) {
+        std::cerr << "Error: Failed to persist sustained test report to '" << output_json_path << "'\n";
+        return 1;
+      }
       return res.status == "PASS" ? 0 : 1;
     }
     if (is_reliability_30m) {
       const auto res = execute_sustained_workload(server_path, 1800, seed, "reliability_30m");
-      write_sustained_report(res, output_json_path, source_commit, env_info);
+      const bool report_ok = write_sustained_report(res, output_json_path, source_commit, env_info);
+      if (!report_ok) {
+        std::cerr << "Error: Failed to persist sustained test report to '" << output_json_path << "'\n";
+        return 1;
+      }
       return res.status == "PASS" ? 0 : 1;
     }
     if (custom_duration_s > 0) {
       const auto res = execute_sustained_workload(server_path, custom_duration_s, seed, "custom_sustained");
-      write_sustained_report(res, output_json_path, source_commit, env_info);
+      const bool report_ok = write_sustained_report(res, output_json_path, source_commit, env_info);
+      if (!report_ok) {
+        std::cerr << "Error: Failed to persist sustained test report to '" << output_json_path << "'\n";
+        return 1;
+      }
       return res.status == "PASS" ? 0 : 1;
     }
   }
@@ -2156,11 +2312,22 @@ int main(int argc, char* argv[]) {
   };
 
   std::ofstream out_file(output_json_path);
+  bool report_written = false;
   if (out_file.is_open()) {
     out_file << report.dump(2) << '\n';
+    out_file.flush();
+    if (out_file.good() && !out_file.fail() && !out_file.bad()) {
+      out_file.close();
+      if (!out_file.fail()) {
+        report_written = true;
+      }
+    }
+  }
+  if (report_written) {
     std::cout << "Machine-readable report written to: " << output_json_path << "\n\n";
   } else {
-    std::cerr << "Warning: Could not open output file: " << output_json_path << "\n";
+    std::cerr << "Error: Could not open or write complete report output file: " << output_json_path << "\n";
+    return 1;
   }
 
   return all_passed ? 0 : 1;
