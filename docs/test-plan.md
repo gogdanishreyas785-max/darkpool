@@ -53,8 +53,8 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.29 ms, p95=0.52 ms, p99=0.64 ms. Concurrent burst: p50=0.70 ms, p95=1.71 ms, p99=4.29 ms. Verified winner: `InsiderWin`. |
 | L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
 | L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total: 1,671 successful operations + 12 expected protocol rejections, 100% pass; 0 transport/correctness failures). Sequential: p50=0.10 ms, p95=0.17 ms, p99=0.65 ms. Concurrent burst: p50=0.13 ms, p95=0.58 ms, p99=1.32 ms. Verified winner: `InsiderWin`. |
-| L4-Smoke | 64 players, 10-min sustained | NOT RUN | Harness supports `--smoke-10m` with application-level semantic response validation; multi-iteration acceptance runs not executed due to session time budget. |
-| L4-Reliability | 64 players, 30-min sustained | NOT RUN | Harness supports `--reliability-30m` with application-level semantic response validation; three 30-minute acceptance runs (90m total) not executed due to session time budget. |
+| L4-Smoke | 64 players, 10-min sustained | **PASS** | 10-minute sustained repeated-match workload (600.04s, 13,271 matches, 7,365,405 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.09 ms, p99=0.14 ms, mean=0.06 ms. Throughput: 12,274.9 req/s. Peak RSS=3,928 kB, CPU=301.1s, FDs=8. Single measured run completed. |
+| L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
 | L6 | 4 × up to 64 (256-player server target) | **NOT RUN** | Four-match 256-player capacity remains unverified. |
 | L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
@@ -139,12 +139,32 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 *Machine-readable report stored in: [`docs/load_test_64p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_results.json)*
 
 ### L4 Sustained Workload Stages (10-Minute Smoke & 30-Minute Reliability)
-- **10-Minute Repeated-Match Smoke Test (`--smoke-10m`)**: Fully implemented in harness with strict response validation on all operations and separate sustained JSON output reporting. Multi-iteration acceptance runs are marked **NOT RUN** due to interactive session time constraints.
-- **30-Minute Repeated-Match Reliability Test (`--reliability-30m`)**: Fully implemented in harness with strict disconnect, timeout, outcome tracking, and separate sustained JSON output reporting. Three 30-minute acceptance runs (90 minutes total) are marked **NOT RUN** due to interactive session time constraints.
+
+- **10-Minute Repeated-Match Smoke Test (`--smoke-10m`)**: **PASS** (single measured run).
+  - **Source Commit**: `154ae9147ee1f8606ff5c323b1b710ed3b421b14`
+  - **Actual Duration**: 600.04s (600,038 ms; target: 600s, zero shortfall).
+  - **Completed Matches**: 13,271 matches (13,271 planned resets, 0 unexpected disconnects).
+  - **Request Volume**: 7,365,405 requests (100% successful; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 12,274.9 req/s.
+  - **Round-Trip Latency**: p50 = 0.057 ms, p95 = 0.093 ms, p99 = 0.139 ms, mean = 0.062 ms, min = 0.008 ms, max = 24.965 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Peak RSS = 3,928 kB, Server CPU = 301,070.0 ms, Open FDs = 8.
+  - **Report File**: [`docs/load_test_64p_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_smoke_10m_results.json).
+
+- **30-Minute Repeated-Match Reliability Test (`--reliability-30m`)**: **PASS** (single measured run).
+  - **Source Commit**: `154ae9147ee1f8606ff5c323b1b710ed3b421b14`
+  - **Actual Duration**: 1800.11s (1,800,110 ms; target: 1800s, zero shortfall).
+  - **Completed Matches**: 32,118 matches (32,118 planned resets, 0 unexpected disconnects).
+  - **Request Volume**: 17,825,490 requests (100% successful; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 9,902.4 req/s.
+  - **Round-Trip Latency**: p50 = 0.064 ms, p95 = 0.131 ms, p99 = 0.212 ms, mean = 0.078 ms, min = 0.008 ms, max = 195.422 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Peak RSS = 3,940 kB, Server CPU = 894,870.0 ms, Open FDs = 8.
+  - **Leak / Degradation Analysis**: Flat memory (+12 kB RSS increase from smoke to 30m reliability across >10.4M additional requests; exactly 8 open FDs maintained throughout) confirms no memory leaks, file-descriptor leaks, or event-loop degradation.
+  - **Report File**: [`docs/load_test_64p_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_reliability_30m_results.json).
+
 - **L6 (Four-Match 256-Player Capacity)**: Remains **NOT RUN** and unverified.
 
 > [!IMPORTANT]
-> The functional L4 test verifies single-match 64-player capacity and client concurrency responsiveness under bounded concurrent bursts over UNIX sockets; multi-run 10-minute smoke and 30-minute reliability acceptance runs, as well as four-match 256-player target capacity (L6), remain **NOT RUN** and unverified.
+> The single-match 64-player capacity is verified across functional runs (3 repeatable runs) and sustained runs (one 10-minute smoke run and one 30-minute reliability run). Multi-run acceptance repetitions (three 10m or three 30m runs) were not executed and are not claimed. Four-match 256-player target capacity (L6) remains **NOT RUN** and unverified.
 
 ## Proposed mixed64-v1 p95 workload — approval required
 

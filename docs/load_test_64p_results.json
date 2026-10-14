@@ -129,12 +129,54 @@
       "status": "PASS"
     },
     "reliability_30m": {
-      "description": "30-minute repeated-match reliability test over UNIX sockets (executable via --reliability-30m)",
-      "status": "NOT RUN"
+      "actual_duration_ms": 1800110,
+      "actual_duration_s": 1800.11,
+      "completed_matches": 32118,
+      "correctness_failures": 0,
+      "cpu_time_ms": 894870.0,
+      "description": "30-minute repeated-match reliability test over UNIX sockets (single measured run)",
+      "latency": {
+        "max_ms": 195.422,
+        "mean_ms": 0.07785780379669788,
+        "min_ms": 0.008,
+        "p50_ms": 0.064,
+        "p95_ms": 0.131,
+        "p99_ms": 0.212
+      },
+      "open_fds": 8,
+      "peak_rss_kb": 3940,
+      "report_file": "docs/load_test_64p_reliability_30m_results.json",
+      "runs_completed": 1,
+      "status": "PASS",
+      "throughput_rps": 9902.444850592465,
+      "total_requests": 17825490,
+      "transport_failures": 0,
+      "unexpected_disconnects": 0
     },
     "sustained_smoke_10m": {
-      "description": "10-minute repeated-match bounded smoke test over UNIX sockets (executable via --smoke-10m)",
-      "status": "NOT RUN"
+      "actual_duration_ms": 600038,
+      "actual_duration_s": 600.038,
+      "completed_matches": 13271,
+      "correctness_failures": 0,
+      "cpu_time_ms": 301070.0,
+      "description": "10-minute repeated-match bounded smoke test over UNIX sockets (single measured run)",
+      "latency": {
+        "max_ms": 24.965,
+        "mean_ms": 0.062423400071007634,
+        "min_ms": 0.008,
+        "p50_ms": 0.057,
+        "p95_ms": 0.093,
+        "p99_ms": 0.139
+      },
+      "open_fds": 8,
+      "peak_rss_kb": 3928,
+      "report_file": "docs/load_test_64p_smoke_10m_results.json",
+      "runs_completed": 1,
+      "status": "PASS",
+      "throughput_rps": 12274.897589819311,
+      "total_requests": 7365405,
+      "transport_failures": 0,
+      "unexpected_disconnects": 0
     }
   },
   "test_name": "darkpool_load_tests_64_player",

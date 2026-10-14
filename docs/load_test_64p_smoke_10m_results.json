@@ -1,0 +1,48 @@
+{
+  "actual_duration_ms": 600038,
+  "actual_duration_s": 600.038,
+  "completed_matches": 13271,
+  "correctness_failures": 0,
+  "diagnostic_details": "Workload completed successfully with zero transport or correctness failures across 13271 matches",
+  "environment": "Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0",
+  "expected_rejections": 0,
+  "failure_reason": "",
+  "latency": {
+    "max_ms": 24.965,
+    "mean_ms": 0.062423400071007634,
+    "measurement_definition": "Monotonic round-trip duration measured with std::chrono::steady_clock starting immediately before request frame bytes are written to socket and ending immediately when complete correlated response frame is received and parsed; excludes inter-match and inter-phase pacing.",
+    "min_ms": 0.008,
+    "p50_ms": 0.057,
+    "p95_ms": 0.093,
+    "p99_ms": 0.139
+  },
+  "planned_resets": 13271,
+  "requests": {
+    "correctness_failures": 0,
+    "expected_rejections": 0,
+    "successful_requests": 7365405,
+    "total_requests": 7365405,
+    "transport_failures": 0
+  },
+  "resources": {
+    "cpu_time_ms": 301070.0,
+    "open_fds": 8,
+    "peak_rss_kb": 3928
+  },
+  "source_commit": "154ae9147ee1f8606ff5c323b1b710ed3b421b14",
+  "stage_name": "smoke_10m",
+  "status": "PASS",
+  "successful_requests": 7365405,
+  "target_duration_s": 600,
+  "test_name": "darkpool_load_tests_64_player_sustained",
+  "throughput": {
+    "denominator": "Actual elapsed duration in seconds (actual_duration_ms / 1000.0)",
+    "requests_per_second": 12274.897589819311
+  },
+  "timestamp": 1792013481,
+  "total_requests": 7365405,
+  "transport_failures": 0,
+  "unexpected_disconnects": 0,
+  "workload_seed": 42,
+  "workload_seed_description": "Workload seed recorded as execution metadata; workload executes deterministic 64-player reference scenario"
+}
