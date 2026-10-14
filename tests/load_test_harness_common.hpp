@@ -595,6 +595,37 @@ inline std::string detect_git_commit() {
   return "unknown";
 }
 
+inline bool detect_git_dirty(const std::string& ignore_path = "") {
+  const char* cmds[] = {
+    "git status --porcelain 2>/dev/null",
+    "git -C /mnt/c/darkpool-antigravity/darkpool status --porcelain 2>/dev/null",
+    "git -C .. status --porcelain 2>/dev/null"
+  };
+  for (const auto* cmd : cmds) {
+    FILE* fp = popen(cmd, "r");
+    if (fp) {
+      char buf[256];
+      bool dirty = false;
+      while (fgets(buf, sizeof(buf), fp)) {
+        std::string line(buf);
+        if (!ignore_path.empty()) {
+          const auto fname = std::filesystem::path(ignore_path).filename().string();
+          if (!fname.empty() && line.find(fname) != std::string::npos) {
+            continue;
+          }
+        }
+        if (!line.empty() && line.find_first_not_of(" \t\r\n") != std::string::npos) {
+          dirty = true;
+          break;
+        }
+      }
+      pclose(fp);
+      if (dirty) return true;
+    }
+  }
+  return false;
+}
+
 inline std::string get_environment_info() {
   std::ostringstream oss;
   utsname un{};

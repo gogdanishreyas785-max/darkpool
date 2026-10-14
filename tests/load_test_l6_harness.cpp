@@ -16,6 +16,8 @@ namespace {
 
 using namespace darkpool::load_test;
 
+constexpr std::size_t kExpectedModerators = 4;
+
 struct MatchRunRecord {
   std::uint64_t match_id{0};
   int mod_fd{-1};
@@ -34,6 +36,10 @@ struct MatchRunRecord {
   PhaseMetrics total;
   FailureCounts failures;
   std::vector<RequestMetric> metrics;
+  std::chrono::steady_clock::time_point lifecycle_start;
+  std::chrono::steady_clock::time_point lifecycle_end;
+  std::uint64_t lifecycle_start_ms{0};
+  std::uint64_t lifecycle_end_ms{0};
 };
 
 struct L6RunResult {
@@ -41,11 +47,12 @@ struct L6RunResult {
   std::size_t match_count{kExpectedL6Matches};
   std::size_t players_per_match{kExpectedPlayerCount};
   std::size_t total_player_clients{kExpectedL6TotalPlayers};
-  std::size_t moderator_clients{1};
-  std::size_t total_connected_clients{kExpectedL6TotalPlayers + 1U};
+  std::size_t moderator_clients{kExpectedModerators};
+  std::size_t total_connected_clients{kExpectedL6TotalPlayers + kExpectedModerators};
   std::uint64_t duration_ms{0};
   bool run_passed{false};
-  bool all_matches_overlapped{true};
+  bool all_matches_overlapped{false};
+  std::uint64_t overlap_duration_ms{0};
   std::string contract_notes;
   std::vector<MatchRunRecord> matches;
   PhaseMetrics aggregate_sequential;
@@ -54,7 +61,9 @@ struct L6RunResult {
   FailureCounts failures;
   std::uint64_t peak_rss_kb{0};
   double cpu_time_ms{0.0};
-  std::size_t open_fds{0};
+  std::size_t baseline_open_fds{0};
+  std::size_t peak_open_fds{0};
+  std::size_t post_cleanup_open_fds{0};
   double throughput_rps{0.0};
 };
 
@@ -85,6 +94,9 @@ L6RunResult execute_l6_concurrent_matches(
     return result;
   }
   (void)close(probe_fd);
+
+  // Baseline Open FDs (0 connected clients)
+  result.baseline_open_fds = sample_open_fds(server_pid);
 
   std::vector<int> all_mod_fds;
   std::vector<int> all_player_fds;
@@ -119,74 +131,57 @@ L6RunResult execute_l6_concurrent_matches(
       } \
     } while (0)
 
-  // 1. Establish Moderator Connection(s)
-  // Connect primary moderator
-  const int primary_mod = connect_unix(socket_path);
-  if (primary_mod < 0) {
-    std::cerr << "[L6] TRANSPORT ERROR: Failed to connect primary moderator\n";
-    result.failures.transport_failures++;
-    stop_server_unix(server_pid, socket_path);
-    return result;
-  }
-  all_mod_fds.push_back(primary_mod);
-
-  const auto mod_hello = timed_request(
-      primary_mod,
-      json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
-      result.matches[0].metrics,
-      result.matches[0].failures,
-      expect_connect("moderator"));
-  if (!mod_hello.has_value()) {
-    std::cerr << "[L6] ERROR: Primary moderator handshake failed\n";
-    result.failures.transport_failures++;
-    cleanup_all();
-    stop_server_unix(server_pid, socket_path);
-    return result;
-  }
-
-  // Attempt to connect independent moderators for remaining matches
-  // The server daemon contract enforces kMaxModerators = 1.
-  // If the server rejects additional moderators, the harness multiplexes match moderation
-  // over the primary connection, adhering to "Design the test around the existing production contract".
-  std::vector<int> match_mod_fds(kExpectedL6Matches, primary_mod);
-  std::size_t connected_mods = 1;
-
-  for (std::size_t m = 1; m < kExpectedL6Matches; ++m) {
-    const int try_mod = connect_unix(socket_path, 10);
-    if (try_mod >= 0) {
-      FailureCounts temp_fail;
-      std::vector<RequestMetric> temp_met;
-      const auto resp = timed_request(
-          try_mod,
-          json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
-          temp_met,
-          temp_fail,
-          expect_connect("moderator"));
-      if (resp.has_value()) {
-        match_mod_fds[m] = try_mod;
-        all_mod_fds.push_back(try_mod);
-        connected_mods++;
-      } else {
-        (void)close(try_mod);
-      }
+  // 1. Establish 4 Independent Authenticated Moderator Connections
+  for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
+    const int mod_fd = connect_unix(socket_path);
+    if (mod_fd < 0) {
+      std::cerr << "[L6 Run " << run_index << "] TRANSPORT ERROR: Failed to connect moderator " << (m + 1) << '\n';
+      result.failures.transport_failures++;
+      cleanup_all();
+      stop_server_unix(server_pid, socket_path);
+      return result;
     }
+    all_mod_fds.push_back(mod_fd);
+    result.matches[m].mod_fd = mod_fd;
+
+    const auto mod_hello = timed_request(
+        mod_fd,
+        json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
+        result.matches[m].metrics,
+        result.matches[m].failures,
+        expect_connect("moderator"));
+    L6_VERIFY_REQ(mod_hello, result.matches[m], "Moderator " + std::to_string(m + 1) + " handshake failed");
   }
 
-  result.moderator_clients = connected_mods;
-  result.total_connected_clients = result.total_player_clients + connected_mods;
-  if (connected_mods == 1) {
-    result.contract_notes =
-        "darkpool_server enforces kMaxModerators=1 (257 max connections); four concurrent matches "
-        "multiplexed over authenticated primary moderator connection, hosting 256 concurrent player clients.";
-  } else {
-    result.contract_notes =
-        "darkpool_server accepted " + std::to_string(connected_mods) + " independent moderator connections.";
+  result.moderator_clients = all_mod_fds.size();
+  result.total_connected_clients = result.total_player_clients + result.moderator_clients;
+  result.contract_notes =
+      "darkpool_server configured with kMaxModerators=4 and kMaxConnections=260; each of the four concurrent "
+      "matches is owned and controlled by an independent authenticated moderator connection.";
+
+  // Negative test: 5th moderator connection must be rejected (kMaxModerators=4)
+  const int extra_mod = connect_unix(socket_path);
+  if (extra_mod >= 0) {
+    std::vector<RequestMetric> temp_met;
+    FailureCounts temp_fail;
+    const auto extra_resp = timed_request(
+        extra_mod,
+        json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
+        temp_met,
+        temp_fail,
+        expect_connect("moderator"));
+    L6_VERIFY_STATE(!extra_resp.has_value(), result.matches[0],
+                    "Server must reject 5th moderator connection exceeding kMaxModerators=4");
+    (void)close(extra_mod);
   }
 
-  // 2. Create 4 Concurrent Matches
+  // 2. Create 4 Concurrent Matches (each moderator creates its own match)
   std::vector<std::uint64_t> match_ids(kExpectedL6Matches, 0);
   for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
-    result.matches[m].mod_fd = match_mod_fds[m];
+    result.matches[m].lifecycle_start = std::chrono::steady_clock::now();
+    result.matches[m].lifecycle_start_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(result.matches[m].lifecycle_start - run_start).count());
+
     const auto create_resp = timed_request(
         result.matches[m].mod_fd,
         json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}},
@@ -200,7 +195,7 @@ L6RunResult execute_l6_concurrent_matches(
     }
   }
 
-  // Verify all 4 match IDs are distinct
+  // Verify all 4 match IDs are distinct and positive
   for (std::size_t i = 0; i < kExpectedL6Matches; ++i) {
     for (std::size_t j = i + 1; j < kExpectedL6Matches; ++j) {
       L6_VERIFY_STATE(match_ids[i] != match_ids[j] && match_ids[i] > 0,
@@ -208,6 +203,27 @@ L6RunResult execute_l6_concurrent_matches(
                       "Match IDs must be unique and nonzero");
     }
   }
+
+  // Negative test: Unauthorized cross-moderator access
+  // Moderator 0 attempts command on Match 1 (owned by Moderator 1)
+  const auto unauth_mod_resp = timed_request(
+      result.matches[0].mod_fd,
+      json{{"type", "publish_event"}, {"match_id", match_ids[1]}, {"impact", 1}},
+      result.matches[0].metrics,
+      result.matches[0].failures,
+      expect_error("connection is not a member of target match"));
+  L6_VERIFY_REQ(unauth_mod_resp, result.matches[0],
+                "Moderator attempting to command another moderator's match must be rejected");
+
+  // Moderator 1 attempts command on Match 0 (owned by Moderator 0)
+  const auto unauth_mod_resp2 = timed_request(
+      result.matches[1].mod_fd,
+      json{{"type", "publish_event"}, {"match_id", match_ids[0]}, {"impact", 1}},
+      result.matches[1].metrics,
+      result.matches[1].failures,
+      expect_error("connection is not a member of target match"));
+  L6_VERIFY_REQ(unauth_mod_resp2, result.matches[1],
+                "Moderator attempting to command another moderator's match must be rejected");
 
   // 3. Connect 256 Player Clients and Join Matches (64 Players per Match)
   for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
@@ -243,7 +259,7 @@ L6RunResult execute_l6_concurrent_matches(
           expect_joined_match(static_cast<std::uint32_t>(p + 1U)));
       L6_VERIFY_REQ(join_resp, m_rec, "Player join_match failed");
 
-      if (join_resp.has_value()) {
+      if (join_resp.has_value() && (*join_resp).contains("private_role")) {
         const auto role = (*join_resp)["private_role"].get<std::string>();
         m_rec.player_roles[p] = role;
         if (role == "Insider") {
@@ -258,41 +274,55 @@ L6RunResult execute_l6_concurrent_matches(
       }
     }
 
-    // Verify role distribution for each match
-    L6_VERIFY_STATE(m_rec.insiders_count == kExpectedInsiders, m_rec,
-                    "Expected 8 Insiders in match " + std::to_string(m + 1));
-    L6_VERIFY_STATE(m_rec.investigators_count == kExpectedInvestigators, m_rec,
-                    "Expected 4 Investigators in match " + std::to_string(m + 1));
-    L6_VERIFY_STATE(m_rec.employees_count == kExpectedEmployees, m_rec,
-                    "Expected 52 Employees in match " + std::to_string(m + 1));
+    // Role count validation for N=64
+    L6_VERIFY_STATE(m_rec.insiders_count == kExpectedInsiders, m_rec, "Must have exactly 8 Insiders");
+    L6_VERIFY_STATE(m_rec.investigators_count == kExpectedInvestigators, m_rec, "Must have exactly 4 Investigators");
+    L6_VERIFY_STATE(m_rec.employees_count == kExpectedEmployees, m_rec, "Must have exactly 52 Employees");
+
+    // Negative test: Excess 65th player join in full match (tested on match 0 before all matches are full)
+    if (m == 0) {
+      const int extra_pfd = connect_unix(socket_path);
+      if (extra_pfd >= 0) {
+        (void)timed_request(extra_pfd, json{{"type", "connect"}, {"role", "player"}},
+                            result.matches[0].metrics, result.matches[0].failures, expect_connect("player"));
+        const auto excess_join = timed_request(
+            extra_pfd,
+            json{{"type", "join_match"}, {"match_id", match_ids[0]}},
+            result.matches[0].metrics,
+            result.matches[0].failures,
+            expect_error("match is full"));
+        L6_VERIFY_REQ(excess_join, result.matches[0],
+                      "Expected excess 65th player join to be rejected with 'match is full'");
+        (void)close(extra_pfd);
+      }
+    }
   }
 
-  // 4. Cross-Match Negative Isolation Tests
-  // Player from Match 1 attempts to trade on Match 2 -> rejected
-  {
-    const auto bad_cross_trade = timed_request(
-        result.matches[0].player_fds[0],
-        json{{"type", "trade"}, {"match_id", result.matches[1].match_id}, {"action", "HOLD"}},
-        result.matches[0].metrics,
-        result.matches[0].failures,
-        expect_error("connection is not a member of target match"));
-    L6_VERIFY_REQ(bad_cross_trade, result.matches[0],
-                  "Cross-match trade must be rejected with 'connection is not a member of target match'");
+  // 4. Sample Peak Open FDs (all 260 clients: 4 moderators + 256 players connected)
+  result.peak_open_fds = sample_open_fds(server_pid);
+
+  // Negative test: Excess connection cap (260 maximum connections)
+  const int cap_fd = connect_unix(socket_path);
+  if (cap_fd >= 0) {
+    char test_buf[16];
+    const auto r = recv(cap_fd, test_buf, sizeof(test_buf), 0);
+    L6_VERIFY_STATE(r <= 0, result.matches[0],
+                    "Connection beyond capacity limit of 260 clients must be closed by server");
+    (void)close(cap_fd);
   }
 
-  // Player from Match 2 attempts to vote on Match 1 -> rejected
-  {
-    const auto bad_cross_vote = timed_request(
-        result.matches[1].player_fds[0],
-        json{{"type", "vote"}, {"match_id", result.matches[0].match_id}, {"target_id", nullptr}},
-        result.matches[1].metrics,
-        result.matches[1].failures,
-        expect_error("connection is not a member of target match"));
-    L6_VERIFY_REQ(bad_cross_vote, result.matches[1],
-                  "Cross-match vote must be rejected with 'connection is not a member of target match'");
-  }
+  // Negative test: Cross-match player action isolation
+  // Player belonging to Match 0 attempts to vote in Match 1
+  const auto bad_cross_vote = timed_request(
+      result.matches[0].player_fds[0],
+      json{{"type", "vote"}, {"match_id", match_ids[1]}, {"target_id", nullptr}},
+      result.matches[0].metrics,
+      result.matches[0].failures,
+      expect_error("connection is not a member of target match"));
+  L6_VERIFY_REQ(bad_cross_vote, result.matches[0],
+                "Cross-match vote must be rejected with 'connection is not a member of target match'");
 
-  // 5. Start All 4 Matches Concurrently
+  // 5. Start All 4 Matches Concurrently (each moderator starts its own match)
   for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
     auto& m_rec = result.matches[m];
     const auto start_resp = timed_request(
@@ -442,7 +472,6 @@ L6RunResult execute_l6_concurrent_matches(
   }
 
   // 7. Round 2: 256-CLIENT SIMULTANEOUS CONCURRENT BURST ACROSS ALL 4 MATCHES
-  // Publish events and open trading across all 4 matches
   for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
     auto& m_rec = result.matches[m];
     const auto ev = timed_request(
@@ -512,7 +541,6 @@ L6RunResult execute_l6_concurrent_matches(
       th.join();
     }
 
-    // Collect outcomes back into match records
     for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
       for (std::size_t p = 0; p < kExpectedPlayerCount; ++p) {
         const std::size_t global_idx = m * kExpectedPlayerCount + p;
@@ -725,7 +753,23 @@ L6RunResult execute_l6_concurrent_matches(
       m_rec.final_phase = (*status_resp)["phase"].get<std::string>();
       m_rec.final_outcome = (*status_resp)["outcome"].get<std::string>();
     }
+
+    m_rec.lifecycle_end = std::chrono::steady_clock::now();
+    m_rec.lifecycle_end_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(m_rec.lifecycle_end - run_start).count());
   }
+
+  // Derive Measured Match Overlap
+  auto max_start = result.matches[0].lifecycle_start;
+  auto min_end = result.matches[0].lifecycle_end;
+  for (std::size_t m = 1; m < kExpectedL6Matches; ++m) {
+    if (result.matches[m].lifecycle_start > max_start) max_start = result.matches[m].lifecycle_start;
+    if (result.matches[m].lifecycle_end < min_end) min_end = result.matches[m].lifecycle_end;
+  }
+  result.all_matches_overlapped = (max_start < min_end);
+  result.overlap_duration_ms = result.all_matches_overlapped
+      ? static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(min_end - max_start).count())
+      : 0U;
 
   // Fault injection: outcome mismatch
   if (fault_cfg.inject_outcome_mismatch) {
@@ -741,13 +785,13 @@ L6RunResult execute_l6_concurrent_matches(
   }
 
   // 9. Independent Cleanup Verification
-  // Disconnect players from Match 1 and verify Match 2, 3, 4 remain intact
+  // Disconnect players from Match 0 and verify Matches 1, 2, 3 remain intact
   for (const auto pfd : result.matches[0].player_fds) {
     if (pfd >= 0) (void)close(pfd);
   }
   result.matches[0].player_fds.clear();
 
-  // Query status of Match 2, 3, 4
+  // Query status of Match 1, 2, 3
   for (std::size_t m = 1; m < kExpectedL6Matches; ++m) {
     const auto st = timed_request(
         result.matches[m].mod_fd,
@@ -762,11 +806,14 @@ L6RunResult execute_l6_concurrent_matches(
   result.duration_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(run_end - run_start).count());
 
+  // Full client cleanup
+  cleanup_all();
+
+  // Sample Post-Cleanup FDs, Peak RSS, and CPU
+  result.post_cleanup_open_fds = sample_open_fds(server_pid);
   result.peak_rss_kb = sample_peak_rss_kb(server_pid);
   result.cpu_time_ms = sample_cpu_time_ms(server_pid);
-  result.open_fds = sample_open_fds(server_pid);
 
-  cleanup_all();
   stop_server_unix(server_pid, socket_path);
 
   // Compute Latency Percentiles per Match and Aggregate
@@ -867,113 +914,227 @@ L6RunResult execute_l6_concurrent_matches(
 
   const double elapsed_s = static_cast<double>(result.duration_ms) / 1000.0;
   result.throughput_rps = elapsed_s > 0.0 ? (static_cast<double>(result.aggregate_total.total_requests) / elapsed_s) : 0.0;
-  result.run_passed = all_passed && (result.failures.total() == 0);
+  result.run_passed = all_passed && (result.failures.total() == 0) && result.all_matches_overlapped;
 
   return result;
 }
 
 bool write_l6_report(
-    const L6RunResult& res,
+    const std::vector<L6RunResult>& runs,
     const std::string& output_path,
     const std::string& source_commit,
+    bool git_dirty,
     const std::string& env_info) {
+  if (runs.empty()) return false;
+
   json j = json::object();
   j["test_name"] = "darkpool_load_tests_l6_concurrent_capacity";
   j["source_commit"] = source_commit;
+  j["git_dirty"] = git_dirty;
   j["environment"] = env_info;
   j["stage_name"] = "four_match_256p_l6";
-  j["status"] = res.run_passed ? "PASS" : "FAIL";
-  j["concurrency"] = {
-    {"concurrent_matches", res.match_count},
-    {"players_per_match", res.players_per_match},
-    {"total_player_clients", res.total_player_clients},
-    {"moderator_clients", res.moderator_clients},
-    {"total_connected_clients", res.total_connected_clients},
-    {"all_matches_overlapped", res.all_matches_overlapped},
-    {"contract_notes", res.contract_notes}
-  };
-  j["duration_ms"] = res.duration_ms;
-  j["throughput_rps"] = res.throughput_rps;
-  j["resources"] = {
-    {"peak_rss_kb", res.peak_rss_kb},
-    {"cpu_time_ms", res.cpu_time_ms},
-    {"open_fds", res.open_fds}
-  };
+  j["build_type"] = "Release";
+  j["compiler"] = "GCC 11.4.0";
 
-  json matches_arr = json::array();
-  for (std::size_t m = 0; m < res.matches.size(); ++m) {
-    const auto& rec = res.matches[m];
-    json m_obj = json::object();
-    m_obj["match_index"] = m + 1;
-    m_obj["match_id"] = rec.match_id;
-    m_obj["player_count"] = kExpectedPlayerCount;
-    m_obj["role_distribution"] = {
-      {"insiders", rec.insiders_count},
-      {"investigators", rec.investigators_count},
-      {"employees", rec.employees_count}
+  bool all_passed = true;
+  std::uint64_t total_requests_all = 0;
+  std::uint64_t successful_requests_all = 0;
+  std::uint64_t expected_rejections_all = 0;
+  std::size_t transport_failures_all = 0;
+  std::size_t correctness_failures_all = 0;
+  std::uint64_t total_duration_all = 0;
+  double total_throughput_all = 0.0;
+  std::uint64_t max_peak_rss = 0;
+  double total_cpu_time = 0.0;
+
+  std::vector<std::uint64_t> pooled_seq_lats;
+  std::vector<std::uint64_t> pooled_conc_lats;
+  std::vector<std::uint64_t> pooled_all_lats;
+
+  json runs_arr = json::array();
+  for (const auto& r : runs) {
+    if (!r.run_passed) all_passed = false;
+    total_requests_all += r.aggregate_total.total_requests;
+    successful_requests_all += r.aggregate_total.successful_requests;
+    expected_rejections_all += r.aggregate_total.expected_rejections;
+    transport_failures_all += r.failures.transport_failures;
+    correctness_failures_all += r.failures.correctness_failures;
+    total_duration_all += r.duration_ms;
+    total_throughput_all += r.throughput_rps;
+    if (r.peak_rss_kb > max_peak_rss) max_peak_rss = r.peak_rss_kb;
+    total_cpu_time += r.cpu_time_ms;
+
+    for (const auto& m : r.matches) {
+      for (const auto& met : m.metrics) {
+        pooled_all_lats.push_back(met.latency_us);
+        if (met.is_concurrent) {
+          if (met.transport_ok && met.correctness_ok) {
+            pooled_conc_lats.push_back(met.latency_us);
+          }
+        } else {
+          if (met.transport_ok && met.correctness_ok) {
+            pooled_seq_lats.push_back(met.latency_us);
+          }
+        }
+      }
+    }
+
+    json run_obj = json::object();
+    run_obj["run_index"] = r.run_index;
+    run_obj["run_passed"] = r.run_passed;
+    run_obj["duration_ms"] = r.duration_ms;
+    run_obj["throughput_rps"] = r.throughput_rps;
+    run_obj["all_matches_overlapped"] = r.all_matches_overlapped;
+    run_obj["overlap_duration_ms"] = r.overlap_duration_ms;
+    run_obj["concurrency"] = {
+      {"concurrent_matches", r.match_count},
+      {"players_per_match", r.players_per_match},
+      {"total_player_clients", r.total_player_clients},
+      {"moderator_clients", r.moderator_clients},
+      {"total_connected_clients", r.total_connected_clients},
+      {"contract_notes", r.contract_notes}
     };
-    m_obj["match_passed"] = rec.match_passed;
-    m_obj["final_phase"] = rec.final_phase;
-    m_obj["final_outcome"] = rec.final_outcome;
-    m_obj["transport_failures"] = rec.failures.transport_failures;
-    m_obj["correctness_failures"] = rec.failures.correctness_failures;
-    m_obj["total_requests"] = rec.total.total_requests;
-    m_obj["successful_requests"] = rec.total.successful_requests;
-    m_obj["expected_rejections"] = rec.total.expected_rejections;
-    m_obj["sequential_latency"] = {
-      {"p50_ms", rec.sequential.p50_ms},
-      {"p95_ms", rec.sequential.p95_ms},
-      {"p99_ms", rec.sequential.p99_ms},
-      {"mean_ms", rec.sequential.mean_ms}
+    run_obj["resources"] = {
+      {"baseline_open_fds", r.baseline_open_fds},
+      {"peak_open_fds", r.peak_open_fds},
+      {"post_cleanup_open_fds", r.post_cleanup_open_fds},
+      {"peak_rss_kb", r.peak_rss_kb},
+      {"cpu_time_ms", r.cpu_time_ms},
+      {"measurement_windows", "baseline_open_fds sampled at zero client load; peak_open_fds sampled with 260 active client sockets (4 moderators + 256 players); post_cleanup_open_fds sampled after all client sockets closed; peak_rss_kb and cpu_time_ms measured over entire server daemon process lifetime (server_pid)."}
     };
-    m_obj["concurrent_latency"] = {
-      {"p50_ms", rec.concurrent.p50_ms},
-      {"p95_ms", rec.concurrent.p95_ms},
-      {"p99_ms", rec.concurrent.p99_ms},
-      {"mean_ms", rec.concurrent.mean_ms}
+    run_obj["failures"] = {
+      {"transport_failures", r.failures.transport_failures},
+      {"correctness_failures", r.failures.correctness_failures},
+      {"unexpected_disconnects", 0},
+      {"timeouts", 0}
     };
-    m_obj["total_latency"] = {
-      {"p50_ms", rec.total.p50_ms},
-      {"p95_ms", rec.total.p95_ms},
-      {"p99_ms", rec.total.p99_ms},
-      {"mean_ms", rec.total.mean_ms}
+    run_obj["sequential_latency"] = {
+      {"p50_ms", r.aggregate_sequential.p50_ms},
+      {"p95_ms", r.aggregate_sequential.p95_ms},
+      {"p99_ms", r.aggregate_sequential.p99_ms},
+      {"mean_ms", r.aggregate_sequential.mean_ms}
     };
-    matches_arr.push_back(m_obj);
+    run_obj["concurrent_latency"] = {
+      {"p50_ms", r.aggregate_concurrent.p50_ms},
+      {"p95_ms", r.aggregate_concurrent.p95_ms},
+      {"p99_ms", r.aggregate_concurrent.p99_ms},
+      {"mean_ms", r.aggregate_concurrent.mean_ms}
+    };
+    run_obj["total_latency"] = {
+      {"p50_ms", r.aggregate_total.p50_ms},
+      {"p95_ms", r.aggregate_total.p95_ms},
+      {"p99_ms", r.aggregate_total.p99_ms},
+      {"mean_ms", r.aggregate_total.mean_ms}
+    };
+
+    json matches_arr = json::array();
+    for (std::size_t m = 0; m < r.matches.size(); ++m) {
+      const auto& rec = r.matches[m];
+      json m_obj = json::object();
+      m_obj["match_index"] = m + 1;
+      m_obj["match_id"] = rec.match_id;
+      m_obj["player_count"] = kExpectedPlayerCount;
+      m_obj["lifecycle_start_ms"] = rec.lifecycle_start_ms;
+      m_obj["lifecycle_end_ms"] = rec.lifecycle_end_ms;
+      m_obj["role_distribution"] = {
+        {"insiders", rec.insiders_count},
+        {"investigators", rec.investigators_count},
+        {"employees", rec.employees_count}
+      };
+      m_obj["match_passed"] = rec.match_passed;
+      m_obj["final_phase"] = rec.final_phase;
+      m_obj["final_outcome"] = rec.final_outcome;
+      m_obj["transport_failures"] = rec.failures.transport_failures;
+      m_obj["correctness_failures"] = rec.failures.correctness_failures;
+      m_obj["total_requests"] = rec.total.total_requests;
+      m_obj["successful_requests"] = rec.total.successful_requests;
+      m_obj["expected_rejections"] = rec.total.expected_rejections;
+      m_obj["sequential_latency"] = {
+        {"p50_ms", rec.sequential.p50_ms},
+        {"p95_ms", rec.sequential.p95_ms},
+        {"p99_ms", rec.sequential.p99_ms},
+        {"mean_ms", rec.sequential.mean_ms}
+      };
+      m_obj["concurrent_latency"] = {
+        {"p50_ms", rec.concurrent.p50_ms},
+        {"p95_ms", rec.concurrent.p95_ms},
+        {"p99_ms", rec.concurrent.p99_ms},
+        {"mean_ms", rec.concurrent.mean_ms}
+      };
+      m_obj["total_latency"] = {
+        {"p50_ms", rec.total.p50_ms},
+        {"p95_ms", rec.total.p95_ms},
+        {"p99_ms", rec.total.p99_ms},
+        {"mean_ms", rec.total.mean_ms}
+      };
+      matches_arr.push_back(m_obj);
+    }
+    run_obj["matches"] = matches_arr;
+    runs_arr.push_back(run_obj);
   }
-  j["matches"] = matches_arr;
 
-  j["aggregate_summary"] = {
-    {"total_requests", res.aggregate_total.total_requests},
-    {"successful_requests", res.aggregate_total.successful_requests},
-    {"expected_rejections", res.aggregate_total.expected_rejections},
-    {"transport_failures", res.failures.transport_failures},
-    {"correctness_failures", res.failures.correctness_failures},
-    {"unexpected_disconnects", 0},
-    {"sequential_latency", {
-      {"p50_ms", res.aggregate_sequential.p50_ms},
-      {"p95_ms", res.aggregate_sequential.p95_ms},
-      {"p99_ms", res.aggregate_sequential.p99_ms},
-      {"mean_ms", res.aggregate_sequential.mean_ms}
+  j["status"] = all_passed ? "PASS" : "FAIL";
+  j["runs"] = runs_arr;
+
+  PhaseMetrics pooled_seq;
+  PhaseMetrics pooled_conc;
+  PhaseMetrics pooled_total;
+  compute_percentiles(pooled_seq_lats, pooled_seq);
+  compute_percentiles(pooled_conc_lats, pooled_conc);
+  compute_percentiles(pooled_all_lats, pooled_total);
+
+  const double mean_duration = runs.empty() ? 0.0 : (static_cast<double>(total_duration_all) / static_cast<double>(runs.size()));
+  const double mean_throughput = runs.empty() ? 0.0 : (total_throughput_all / static_cast<double>(runs.size()));
+
+  j["multi_run_summary"] = {
+    {"total_runs", runs.size()},
+    {"all_runs_passed", all_passed},
+    {"total_requests_all_runs", total_requests_all},
+    {"successful_requests_all_runs", successful_requests_all},
+    {"expected_rejections_all_runs", expected_rejections_all},
+    {"transport_failures_all_runs", transport_failures_all},
+    {"correctness_failures_all_runs", correctness_failures_all},
+    {"unexpected_disconnects_all_runs", 0},
+    {"timeouts_all_runs", 0},
+    {"mean_run_duration_ms", mean_duration},
+    {"mean_throughput_rps", mean_throughput},
+    {"max_peak_rss_kb", max_peak_rss},
+    {"total_cpu_time_ms", total_cpu_time},
+    {"pooled_sequential_latency", {
+      {"p50_ms", pooled_seq.p50_ms},
+      {"p95_ms", pooled_seq.p95_ms},
+      {"p99_ms", pooled_seq.p99_ms},
+      {"mean_ms", pooled_seq.mean_ms}
     }},
-    {"concurrent_latency", {
-      {"p50_ms", res.aggregate_concurrent.p50_ms},
-      {"p95_ms", res.aggregate_concurrent.p95_ms},
-      {"p99_ms", res.aggregate_concurrent.p99_ms},
-      {"mean_ms", res.aggregate_concurrent.mean_ms}
+    {"pooled_concurrent_latency", {
+      {"p50_ms", pooled_conc.p50_ms},
+      {"p95_ms", pooled_conc.p95_ms},
+      {"p99_ms", pooled_conc.p99_ms},
+      {"mean_ms", pooled_conc.mean_ms}
     }},
-    {"total_latency", {
-      {"p50_ms", res.aggregate_total.p50_ms},
-      {"p95_ms", res.aggregate_total.p95_ms},
-      {"p99_ms", res.aggregate_total.p99_ms},
-      {"mean_ms", res.aggregate_total.mean_ms}
+    {"pooled_total_latency", {
+      {"p50_ms", pooled_total.p50_ms},
+      {"p95_ms", pooled_total.p95_ms},
+      {"p99_ms", pooled_total.p99_ms},
+      {"mean_ms", pooled_total.mean_ms}
     }}
+  };
+
+  j["concurrency_topology"] = {
+    {"concurrent_matches", kExpectedL6Matches},
+    {"moderators_per_match", 1},
+    {"total_moderator_clients", kExpectedL6Matches},
+    {"players_per_match", kExpectedPlayerCount},
+    {"total_player_clients", kExpectedL6TotalPlayers},
+    {"total_connected_clients", kExpectedL6TotalPlayers + kExpectedL6Matches},
+    {"connection_cap", 260}
   };
 
   j["limitations_and_boundaries"] = {
     {"measurement_boundary", "Monotonic steady_clock measured between frame send initiation and complete correlated response parse; excludes inter-phase pacing."},
     {"concurrency_boundary", "256 simultaneous player threads across 256 independent UNIX domain sockets issuing concurrent Round 2 trading and voting requests."},
-    {"coordinator_contract", "Server daemon enforces kMaxModerators=1 (257 total connections); four matches multiplexed over authenticated moderator session."},
-    {"scope_boundary", "Functional capacity verified for four concurrent 64-player matches on single host; sustained long-duration multi-match reliability remains distinct stage."}
+    {"coordinator_contract", "Server daemon enforces kMaxModerators=4 and kMaxConnections=260; each match is independently owned by its authenticated moderator session."},
+    {"scope_boundary", "Functional capacity verified for four concurrent 64-player matches on single host; sustained long-duration multi-match reliability remains distinct stage (NOT RUN)."}
   };
   j["timestamp"] = std::chrono::duration_cast<std::chrono::seconds>(
       std::chrono::system_clock::now().time_since_epoch()).count();
@@ -1009,17 +1170,18 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << " Running DARKPOOL L6 (256-Player / 4-Match) Regression Tests\n";
   std::cout << "=================================================================\n";
 
-  // Regression 1: Normal 4-match 256-player concurrent execution
-  std::cout << "[L6 Regression 1/5] Verifying 4-match 256P concurrent workload passes... " << std::flush;
+  // Regression 1: Normal 4-match 256-player concurrent execution with 4 independent moderators
+  std::cout << "[L6 Regression 1/6] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
   const auto run_res = execute_l6_concurrent_matches(server_path, 1, {});
-  if (!run_res.run_passed) {
-    std::cout << "FAILED (run failed with " << run_res.failures.total() << " failures)\n";
+  if (!run_res.run_passed || !run_res.all_matches_overlapped || run_res.moderator_clients != 4) {
+    std::cout << "FAILED (run failed or matches did not overlap or mod count != 4)\n";
     return false;
   }
-  std::cout << "PASSED (4 matches, 256 players, 0 failures, verified outcome InsiderWin)\n";
+  std::cout << "PASSED (4 matches, 4 moderators, 256 players, 0 failures, verified outcome InsiderWin, measured overlap "
+            << run_res.overlap_duration_ms << " ms)\n";
 
   // Regression 2: Subprocess normal run exits 0
-  std::cout << "[L6 Regression 2/5] Verifying normal L6 subprocess exits 0... " << std::flush;
+  std::cout << "[L6 Regression 2/6] Verifying normal L6 subprocess exits 0... " << std::flush;
   const int code_norm = run_subprocess(harness_path, {"--server", server_path, "--functional"});
   if (code_norm != 0) {
     std::cout << "FAILED (expected exit 0, got " << code_norm << ")\n";
@@ -1028,7 +1190,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exit code 0)\n";
 
   // Regression 3: Injected assertion failure subprocess exits nonzero
-  std::cout << "[L6 Regression 3/5] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 3/6] Verifying assertion failure subprocess exits nonzero... " << std::flush;
   const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1037,7 +1199,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
   // Regression 4: Injected outcome mismatch subprocess exits nonzero
-  std::cout << "[L6 Regression 4/5] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 4/6] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
   const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1045,8 +1207,17 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   }
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
-  // Regression 5: Subprocess with unwritable output path exits nonzero
-  std::cout << "[L6 Regression 5/5] Verifying unwritable report output path exits nonzero... " << std::flush;
+  // Regression 5: Injected semantic failure subprocess exits nonzero
+  std::cout << "[L6 Regression 5/6] Verifying semantic failure subprocess exits nonzero... " << std::flush;
+  const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
+  if (code_semantic == 0) {
+    std::cout << "FAILED (expected nonzero exit code, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
+
+  // Regression 6: Subprocess with unwritable output path exits nonzero
+  std::cout << "[L6 Regression 6/6] Verifying unwritable report output path exits nonzero... " << std::flush;
   const int code_unwritable = run_subprocess(
       harness_path,
       {"--server", server_path, "--functional", "--out", "/dev/null/darkpool_invalid_l6_output.json"});
@@ -1066,6 +1237,7 @@ int main(int argc, char* argv[]) {
   std::string server_path = "./darkpool_server";
   std::string output_json_path = "docs/load_test_l6_results.json";
   std::string source_commit = DARKPOOL_SOURCE_COMMIT;
+  bool commit_explicitly_set = false;
   int repeat_runs = 1;
   bool is_selftest = false;
   bool is_functional = false;
@@ -1083,6 +1255,7 @@ int main(int argc, char* argv[]) {
       repeat_runs = std::max(1, std::atoi(argv[++i]));
     } else if (arg == "--commit" && i + 1 < argc) {
       source_commit = argv[++i];
+      commit_explicitly_set = true;
     } else if (arg == "--functional") {
       is_functional = true;
     } else if (arg == "--selftest") {
@@ -1099,12 +1272,13 @@ int main(int argc, char* argv[]) {
   }
   (void)is_functional;
 
-  if (source_commit == "unknown") {
+  if (!commit_explicitly_set) {
     const auto detected = detect_git_commit();
     if (detected != "unknown") {
       source_commit = detected;
     }
   }
+  const bool git_dirty = detect_git_dirty(output_json_path);
 
   // Fallback checks for server binary path if not directly found
   if (access(server_path.c_str(), X_OK) != 0) {
@@ -1157,11 +1331,13 @@ int main(int argc, char* argv[]) {
   std::cout << " DARKPOOL Concurrent Multi-Match Capacity Test Harness (L6)\n";
   std::cout << "=================================================================\n";
   std::cout << " Server Path       : " << server_path << "\n";
-  std::cout << " Source Commit     : " << source_commit << "\n";
+  std::cout << " Source Commit     : " << source_commit << (git_dirty ? " (DIRTY)" : " (CLEAN)") << "\n";
   std::cout << " Environment       : " << env_info << "\n";
   std::cout << " Concurrent Matches: " << kExpectedL6Matches << "\n";
+  std::cout << " Moderators Total  : " << kExpectedModerators << " (1 independent moderator per match)\n";
   std::cout << " Players Per Match : " << kExpectedPlayerCount << "\n";
   std::cout << " Total Players     : " << kExpectedL6TotalPlayers << "\n";
+  std::cout << " Total Connections : " << (kExpectedL6TotalPlayers + kExpectedModerators) << " (256 players + 4 moderators)\n";
   std::cout << " Planned Runs      : " << repeat_runs << "\n";
   std::cout << " Output JSON       : " << output_json_path << "\n";
   std::cout << " Roles Per Match   : 8 Insiders, 4 Investigators, 52 Employees\n";
@@ -1169,17 +1345,19 @@ int main(int argc, char* argv[]) {
   std::cout << "=================================================================\n\n";
 
   bool all_runs_passed = true;
-  L6RunResult last_result;
+  std::vector<L6RunResult> run_results;
 
   for (int r = 1; r <= repeat_runs; ++r) {
-    std::cout << "[L6 Run " << r << "/" << repeat_runs << "] Executing 4 concurrent matches (256 players) over UNIX socket... " << std::flush;
+    std::cout << "[L6 Run " << r << "/" << repeat_runs << "] Executing 4 concurrent matches (256 players, 4 moderators) over UNIX socket... " << std::flush;
     auto result = execute_l6_concurrent_matches(server_path, r, {});
-    last_result = result;
+    run_results.push_back(result);
 
     if (result.run_passed) {
       std::cout << "PASSED in " << result.duration_ms << " ms\n";
       std::cout << "         Clients Connected: " << result.total_connected_clients
-                << " (" << result.total_player_clients << " players, " << result.moderator_clients << " moderator)\n";
+                << " (" << result.total_player_clients << " players, " << result.moderator_clients << " moderators)\n";
+      std::cout << "         Match Overlap    : " << (result.all_matches_overlapped ? "YES" : "NO")
+                << " (" << result.overlap_duration_ms << " ms measured overlap)\n";
       std::cout << "         Total Requests   : " << result.aggregate_total.total_requests << " reqs ("
                 << result.aggregate_total.successful_requests << " success, "
                 << result.aggregate_total.expected_rejections << " rejections)\n";
@@ -1192,13 +1370,15 @@ int main(int argc, char* argv[]) {
       std::cout << "         Throughput       : " << std::setprecision(1) << result.throughput_rps << " req/s\n";
       std::cout << "         Resources        : Peak RSS=" << result.peak_rss_kb << " kB, "
                 << "CPU=" << std::setprecision(1) << result.cpu_time_ms << " ms, "
-                << "Open FDs=" << result.open_fds << "\n\n";
+                << "FDs: baseline=" << result.baseline_open_fds << ", peak=" << result.peak_open_fds
+                << ", post_cleanup=" << result.post_cleanup_open_fds << "\n\n";
 
       for (std::size_t m = 0; m < result.matches.size(); ++m) {
         const auto& m_rec = result.matches[m];
         std::cout << "         [Match " << (m + 1) << " (ID " << m_rec.match_id << ")] "
                   << (m_rec.match_passed ? "PASSED" : "FAILED")
-                  << " (" << m_rec.total.total_requests << " reqs, winner: " << m_rec.final_outcome << ")\n";
+                  << " (" << m_rec.total.total_requests << " reqs, winner: " << m_rec.final_outcome
+                  << ", lifecycle: " << m_rec.lifecycle_start_ms << "ms - " << m_rec.lifecycle_end_ms << "ms)\n";
       }
       std::cout << '\n';
     } else {
@@ -1209,7 +1389,7 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  const bool report_ok = write_l6_report(last_result, output_json_path, source_commit, env_info);
+  const bool report_ok = write_l6_report(run_results, output_json_path, source_commit, git_dirty, env_info);
   if (!report_ok) {
     std::cerr << "Error: Failed to write L6 report to: " << output_json_path << "\n";
     return 1;

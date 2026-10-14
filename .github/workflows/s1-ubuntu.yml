@@ -10,6 +10,8 @@ on:
   pull_request:
     branches:
       - main
+      - perf/64-player-load-test
+      - 'perf/**'
   workflow_dispatch:
 
 permissions:
