@@ -50,7 +50,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | Run | Configuration | Status | Evidence / Notes |
 |---|---|:---:|---|
 | L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
-| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.27 ms, p95=0.50 ms, p99=0.66 ms. Concurrent burst: p50=0.64 ms, p95=1.51 ms, p99=2.09 ms. Verified winner: `InsiderWin`. |
+| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.29 ms, p95=0.52 ms, p99=0.64 ms. Concurrent burst: p50=0.70 ms, p95=1.71 ms, p99=4.29 ms. Verified winner: `InsiderWin`. |
 | L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
 | L4 | 64 players/1 match | **NOT RUN** | Single 64-player match capacity remains unverified. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
@@ -65,13 +65,13 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   # Standalone 3-run load harness execution
   ./build/darkpool_load_tests ./build/darkpool_server --players 16 --runs 3 --out docs/load_test_16p_results.json
 
-  # Automated regression selftest verifying fatal failures on assertion/outcome errors
+  # Automated regression selftest executing subprocesses to verify real process exit status on assertion/outcome errors
   ./build/darkpool_load_tests ./build/darkpool_server --selftest
 
   # Automated CTest suite execution
   ctest --test-dir build --output-on-failure -R '^darkpool_load_'
   ```
-- **Source Commit**: `458faa3cc451389831f3c5f047bae422f3b58dfb`
+- **Source Commit**: `fffed8535a2191a183c3a3a142305e0c6f14ddb9`
 - **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
 - **Timing & ACK Boundary**:
   Timing is captured using `std::chrono::steady_clock` (monotonic clock). The measurement interval begins immediately before the client writes the request frame bytes to the socket and ends immediately when the complete correlated response frame is received and parsed. Intentional phase waits and intervals are excluded from latency measurements.
@@ -84,10 +84,10 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 | Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Verified Winner |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Run 1 | 17 (16P + 1M) | 72 ms | 0.26 / 0.38 / 0.49 ms | 0.60 / 0.77 / 1.39 ms | 0 / 0 | 4,144 kB | 20.0 ms | `InsiderWin` |
-| Run 2 | 17 (16P + 1M) | 93 ms | 0.36 / 0.64 / 0.84 ms | 1.09 / 1.62 / 1.68 ms | 0 / 0 | 4,108 kB | 30.0 ms | `InsiderWin` |
-| Run 3 | 17 (16P + 1M) | 67 ms | 0.24 / 0.36 / 0.44 ms | 0.57 / 1.32 / 2.09 ms | 0 / 0 | 4,144 kB | 20.0 ms | `InsiderWin` |
-| **Aggregate** | **17** | **232 ms** | **0.27 / 0.50 / 0.66 ms** | **0.64 / 1.51 / 2.09 ms** | **0 / 0 (100% Pass)** | **4,144 kB max** | **70.0 ms total** | **`InsiderWin`** |
+| Run 1 | 17 (16P + 1M) | 74 ms | 0.25 / 0.49 / 0.58 ms | 0.57 / 1.63 / 1.71 ms | 0 / 0 | 4,092 kB | 30.0 ms | `InsiderWin` |
+| Run 2 | 17 (16P + 1M) | 74 ms | 0.25 / 0.43 / 0.52 ms | 0.80 / 1.50 / 1.60 ms | 0 / 0 | 4,136 kB | 20.0 ms | `InsiderWin` |
+| Run 3 | 17 (16P + 1M) | 99 ms | 0.37 / 0.57 / 0.64 ms | 0.73 / 2.82 / 4.29 ms | 0 / 0 | 4,092 kB | 30.0 ms | `InsiderWin` |
+| **Aggregate** | **17** | **247 ms** | **0.29 / 0.52 / 0.64 ms** | **0.70 / 1.71 / 4.29 ms** | **0 / 0 (100% Pass)** | **4,136 kB max** | **80.0 ms total** | **`InsiderWin`** |
 
 *Machine-readable report stored in: [`docs/load_test_16p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_16p_results.json)*
 
