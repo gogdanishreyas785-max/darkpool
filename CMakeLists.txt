@@ -127,6 +127,28 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_regression_tests
     COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --selftest)
   set_tests_properties(darkpool_load_regression_tests PROPERTIES TIMEOUT 30)
+  add_executable(darkpool_load_tests_64p tests/load_test_64p_harness.cpp)
+  target_link_libraries(darkpool_load_tests_64p PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_64p)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_64p PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_64p_functional
+    COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --functional)
+  set_tests_properties(darkpool_load_64p_functional PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_64p_regression
+    COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_64p_regression PROPERTIES TIMEOUT 60)
+
+  option(DARKPOOL_ENABLE_SUSTAINED_TESTS "Enable 10-minute and 30-minute sustained load tests in CTest" OFF)
+  if(DARKPOOL_ENABLE_SUSTAINED_TESTS)
+    add_test(NAME darkpool_load_64p_smoke_10m
+      COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --smoke-10m)
+    set_tests_properties(darkpool_load_64p_smoke_10m PROPERTIES TIMEOUT 700 LABELS "Sustained")
+    add_test(NAME darkpool_load_64p_reliability_30m
+      COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --reliability-30m)
+    set_tests_properties(darkpool_load_64p_reliability_30m PROPERTIES TIMEOUT 2000 LABELS "Sustained")
+  endif()
 else()
   message(STATUS "TCP/UNIX server and CLI client require Linux; engine and framing tests remain available")
 endif()
