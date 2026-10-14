@@ -20,6 +20,7 @@ int main() {
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <fcntl.h>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -285,16 +286,25 @@ double sample_cpu_time_ms(pid_t pid) {
 }
 
 std::string detect_git_commit() {
-  FILE* fp = popen("git rev-parse HEAD 2>/dev/null", "r");
-  if (!fp) return "unknown";
-  char buf[64];
-  if (fgets(buf, sizeof(buf), fp)) {
-    pclose(fp);
-    std::string s(buf);
-    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
-    return s;
+  const char* cmds[] = {
+    "git rev-parse HEAD 2>/dev/null",
+    "git -C /mnt/c/darkpool-antigravity/darkpool rev-parse HEAD 2>/dev/null",
+    "git -C .. rev-parse HEAD 2>/dev/null"
+  };
+  for (const auto* cmd : cmds) {
+    FILE* fp = popen(cmd, "r");
+    if (fp) {
+      char buf[64];
+      if (fgets(buf, sizeof(buf), fp)) {
+        pclose(fp);
+        std::string s(buf);
+        while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+        if (!s.empty()) return s;
+      } else {
+        pclose(fp);
+      }
+    }
   }
-  pclose(fp);
   return "unknown";
 }
 
@@ -801,46 +811,82 @@ RunResult execute_16_player_match(
   return result;
 }
 
+// Execute harness in a subprocess and return its exit code
+int run_subprocess(const std::string& binary, const std::vector<std::string>& args) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    const int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null >= 0) {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    std::vector<char*> c_args;
+    c_args.push_back(const_cast<char*>(binary.c_str()));
+    for (const auto& a : args) {
+      c_args.push_back(const_cast<char*>(a.c_str()));
+    }
+    c_args.push_back(nullptr);
+    execv(binary.c_str(), c_args.data());
+    _exit(127);
+  }
+  int status = 0;
+  if (waitpid(child, &status, 0) != child) return -1;
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status);
+  }
+  if (WIFSIGNALED(status)) {
+    return 128 + WTERMSIG(status);
+  }
+  return -1;
+}
+
+std::string get_self_executable_path(const char* argv0) {
+  char buf[4096];
+  const auto len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+  if (len > 0) {
+    buf[len] = '\0';
+    return std::string(buf);
+  }
+  return std::string(argv0 ? argv0 : "./darkpool_load_tests");
+}
+
 // Regression tests that prove assertion failures and invalid final outcomes result in a non-zero exit status
-bool run_regression_selftest(const std::string& server_path) {
+// via real subprocess execution
+bool run_regression_selftest(const std::string& harness_path, const std::string& server_path) {
   std::cout << "=================================================================\n";
-  std::cout << " Running Load Test Harness Regression Verification Tests\n";
+  std::cout << " Running Load Test Harness Subprocess Regression Tests\n";
   std::cout << "=================================================================\n";
 
-  // Test 1: Normal 16-player run must pass with 0 failures
-  std::cout << "[Regression 1/3] Verifying valid 16-player run passes... " << std::flush;
-  const auto normal_res = execute_16_player_match(server_path, 1, 16, {});
-  if (!normal_res.run_passed || normal_res.failures.total() != 0) {
-    std::cout << "FAILED (expected pass, got " << normal_res.failures.total() << " failures)\n";
+  // Test 1: Normal 16-player run subprocess must exit 0
+  std::cout << "[Regression 1/3] Verifying normal run subprocess exits 0... " << std::flush;
+  const int code_normal = run_subprocess(harness_path, {"--server", server_path, "--smoke-run"});
+  if (code_normal != 0) {
+    std::cout << "FAILED (expected exit code 0, got " << code_normal << ")\n";
     return false;
   }
-  std::cout << "PASSED (0 failures, outcome=" << normal_res.final_outcome << ")\n";
+  std::cout << "PASSED (exit code 0)\n";
 
-  // Test 2: Injected assertion failure must cause run to fail (fatal)
-  std::cout << "[Regression 2/3] Verifying assertion failure is fatal... " << std::flush;
-  TestFaultConfig fault_assert;
-  fault_assert.inject_assertion_failure = true;
-  const auto assert_res = execute_16_player_match(server_path, 2, 16, fault_assert);
-  if (assert_res.run_passed || assert_res.failures.correctness_failures == 0) {
-    std::cout << "FAILED (expected failure, but run passed!)\n";
+  // Test 2: Injected assertion failure subprocess must exit nonzero
+  std::cout << "[Regression 2/3] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure"});
+  if (code_assert == 0) {
+    std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
   }
-  std::cout << "PASSED (fatal failure correctly triggered: "
-            << assert_res.failures.correctness_failures << " correctness failure)\n";
+  std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
-  // Test 3: Injected outcome mismatch must cause run to fail (fatal)
-  std::cout << "[Regression 3/3] Verifying outcome mismatch is fatal... " << std::flush;
-  TestFaultConfig fault_outcome;
-  fault_outcome.inject_outcome_mismatch = true;
-  const auto outcome_res = execute_16_player_match(server_path, 3, 16, fault_outcome);
-  if (outcome_res.run_passed || outcome_res.failures.correctness_failures == 0) {
-    std::cout << "FAILED (expected failure, but run passed!)\n";
+  // Test 3: Injected outcome mismatch subprocess must exit nonzero
+  std::cout << "[Regression 3/3] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch"});
+  if (code_outcome == 0) {
+    std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
   }
-  std::cout << "PASSED (fatal failure correctly triggered: "
-            << outcome_res.failures.correctness_failures << " correctness failure)\n";
+  std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
-  std::cout << "\nAll regression checks PASSED: correctness failures and outcome mismatches are strictly fatal.\n\n";
+  std::cout << "\nAll regression checks PASSED: real subprocess exit statuses verified.\n\n";
   return true;
 }
 
@@ -853,6 +899,9 @@ int main(int argc, char* argv[]) {
   int repeat_runs = 3;
   std::size_t player_count = 16;
   bool is_selftest = false;
+  bool is_smoke_run = false;
+  bool is_inject_assertion = false;
+  bool is_inject_outcome = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -868,6 +917,12 @@ int main(int argc, char* argv[]) {
       source_commit = argv[++i];
     } else if (arg == "--selftest") {
       is_selftest = true;
+    } else if (arg == "--smoke-run") {
+      is_smoke_run = true;
+    } else if (arg == "--inject-assertion-failure") {
+      is_inject_assertion = true;
+    } else if (arg == "--inject-outcome-mismatch") {
+      is_inject_outcome = true;
     } else if (!arg.starts_with("--") && i == 1) {
       server_path = argv[1];
     }
@@ -902,8 +957,25 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (is_smoke_run) {
+    const auto res = execute_16_player_match(server_path, 1, player_count, {});
+    return res.run_passed ? 0 : 1;
+  }
+  if (is_inject_assertion) {
+    TestFaultConfig fault;
+    fault.inject_assertion_failure = true;
+    const auto res = execute_16_player_match(server_path, 1, player_count, fault);
+    return res.run_passed ? 0 : 1;
+  }
+  if (is_inject_outcome) {
+    TestFaultConfig fault;
+    fault.inject_outcome_mismatch = true;
+    const auto res = execute_16_player_match(server_path, 1, player_count, fault);
+    return res.run_passed ? 0 : 1;
+  }
   if (is_selftest) {
-    return run_regression_selftest(server_path) ? 0 : 1;
+    const auto self_exe = get_self_executable_path(argv[0]);
+    return run_regression_selftest(self_exe, server_path) ? 0 : 1;
   }
 
   const std::string env_info = get_environment_info();
