@@ -41,6 +41,10 @@ Engine test sizes and protocol E2E sizes are reported separately: engine roster 
 
 Use automated clients speaking the real protocol; opening sockets alone does not establish capacity.
 
+## Verification status
+
+The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest run for implementation commit `54e3e28287de3840caef2ec65009dfee0e5719a5` (GitHub Actions run 62) passed the engine roster cases for N=3,4,5,8,9,16,24,32,64 and complete real-TCP matches at N=5 and N=8. No load test has run. In particular, a 64-player live match, four concurrent 64-player matches, and the 256-player server target remain unverified.
+
 | Run | Configuration | Evidence |
 |---|---|---|
 | L1 | 5 players/1 match, full game | Correctness, CPU/RSS, protocol errors. |

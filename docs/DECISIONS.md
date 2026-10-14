@@ -7,7 +7,7 @@ Status note: the S1 follow-up approved the five-player baseline mechanics. A lat
 | ID | Requirement |
 |---|---|
 | REQ-01 | C++20 on Ubuntu; separate clients; one authoritative server owns official state. |
-| REQ-02 | Five-player baseline: one Insider, one Investigator, three Employees; moderator status unresolved. |
+| REQ-02 | Five-player baseline: one Insider, one Investigator, three Employees. The moderator is a separate non-player by approved S1 decision. |
 | REQ-03 | Three rounds with events, public/authorized private chat, BUY/HOLD/SELL, resolution, clue, vote, final evaluation. |
 | REQ-04 | UNIX sockets initially; nonblocking epoll; no thread per client. |
 | REQ-05 | Independent matches isolate members, roles, messages, clues, trades, votes, timers and logs. |
