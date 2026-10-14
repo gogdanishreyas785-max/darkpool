@@ -161,10 +161,75 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Leak / Degradation Analysis**: Flat memory (+12 kB RSS increase from smoke to 30m reliability across >10.4M additional requests; exactly 8 open FDs maintained throughout) confirms no memory leaks, file-descriptor leaks, or event-loop degradation.
   - **Report File**: [`docs/load_test_64p_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_reliability_30m_results.json).
 
-- **L6 (Four-Match 256-Player Capacity)**: Remains **NOT RUN** and unverified.
+- **L6 (Four-Match 256-Player Capacity)**: **PASS** (functional concurrent capacity verified; see dedicated L6 section below). Sustained long-duration multi-match testing remains a separate unverified stage.
 
 > [!IMPORTANT]
-> The single-match 64-player capacity is verified across functional runs (3 repeatable runs) and sustained runs (one 10-minute smoke run and one 30-minute reliability run). Multi-run acceptance repetitions (three 10m or three 30m runs) were not executed and are not claimed. Four-match 256-player target capacity (L6) remains **NOT RUN** and unverified.
+> The single-match 64-player capacity is verified across functional runs (3 repeatable runs) and sustained runs (one 10-minute smoke run and one 30-minute reliability run). Multi-run acceptance repetitions (three 10m or three 30m runs) were not executed and are not claimed. Four-match 256-player functional capacity (L6) is verified in a dedicated, isolated test harness; sustained multi-match soak remains a distinct stage.
+
+## L6: Four-Match Concurrent Capacity Test (256 Players, 4 Matches)
+
+- **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 runs remain a distinct future stage).
+- **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_results.json)
+- **Source Commit**: `26ad62d6bab371a168c404e1a6fd9b1a8e4730f4`
+- **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0 (`Linux 6.18.54.1-microsoft-standard-WSL2 x86_64`, 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz).
+- **Execution Command**: `./build/darkpool_load_tests_l6 ./build/darkpool_server --runs 3 --out docs/load_test_l6_results.json`
+- **Automated CTest Targets**:
+  - `darkpool_load_l6_functional`: Runs full 4-match 256-player concurrent functional workload (**PASS**).
+  - `darkpool_load_l6_regression`: Runs regression self-tests covering 64/64 full match capacity, negative cross-match access rejection, sibling match isolation, assertion failure propagation, outcome mismatch propagation, and unwritable output path failure handling (**PASS**; 5/5 sub-tests pass).
+
+### Concurrency and Topology Contract
+- **Concurrent Matches**: 4 independent matches hosted simultaneously on one server process with overlapping lifetimes.
+- **Client Count**:
+  - 256 active player clients (64 players per match across 4 matches).
+  - 1 authenticated moderator connection controlling all 4 matches.
+  - **Total Connected Clients**: 257 concurrent connections.
+- **Production Server Constraint**:
+  - `src/server_main.cpp` line 44 enforces `constexpr std::size_t kMaxModerators = 1;` (`kMaxConnections = 256 + 1 = 257`).
+  - Attempting a second moderator connection triggers server rejection (`server_main.cpp:253`: `if (moderators >= kMaxModerators) return false;`).
+  - As designed under the existing production contract, all four concurrent matches are created, coordinated, and resolved over the primary authenticated moderator session (`connection->second.moderator_matches`), while all 256 players operate on independent socket connections.
+- **Overlap Validation**: All 4 matches were created concurrently, advanced through all 3 rounds in parallel, subjected to simultaneous bursts in Round 2, and concluded concurrently on the single running server daemon.
+
+### Workload and Phase Execution
+- **Role Distribution Per Match**: Exactly 8 Insiders, 4 Investigators, 52 Employees per match (verified via server join responses).
+- **Rounds Executed**: All 4 matches completed the full three-round protocol concurrently:
+  - **Round 1**: Event publication (`impact=1`), authorized private insider hints, unauthorized clue rejection (Employee), authorized investigator clue, sequential trades (`HOLD`), market resolution, open voting, abstain votes, vote resolution.
+  - **Round 2 (Simultaneous Burst)**: 256 concurrent client threads across all 4 matches issue simultaneous `HOLD` trade requests and abstain vote requests using thread barriers.
+  - **Round 3**: Event publication (`impact=-1`), sequential trades, market resolution, voting, final status query.
+- **Cross-Match Isolation & Negative Access Checks**:
+  - Negative access test: A player belonging to Match 1 attempting to vote in Match 2 is rejected by the coordinator (`connection is not a member of target match`).
+  - Unauthorized role checks: Non-insider (Employee) requesting insider hints is rejected; non-investigator requesting clues is rejected.
+  - Sibling match cleanup: Disconnecting all 64 players from Match 1 verified that Matches 2, 3, and 4 remained fully intact and reachable.
+- **Terminal Outcome**: All 4 matches independently reached terminal phase `"Finished"` with verified outcome `"InsiderWin"`.
+
+### Measured Results (Representative Run 3 / 3-Run Aggregate)
+- **Total Requests**: 2,170 requests per run (6,510 total requests across 3 runs).
+- **Successful Requests**: 2,160 requests per run (100% of legal requests accepted).
+- **Expected Rejections**: 10 per run (4 employee unauthorized hint attempts, 4 employee unauthorized clue attempts, 1 cross-match unauthorized vote attempt, 1 excess 65th player join attempt).
+- **Failures & Errors**:
+  - Transport failures: 0
+  - Correctness failures: 0
+  - Unexpected disconnects: 0
+  - Timeouts: 0
+- **Elapsed Run Duration**: 266 ms (Run 1), 308 ms (Run 2), 371 ms (Run 3).
+- **Throughput**: 5,849.1 – 8,157.9 req/s (average: ~7,017 req/s).
+- **Latency Percentiles (Measured on Run 3)**:
+  - **Sequential Phase (Rounds 1 & 3)**: p50 = 0.08 ms, p95 = 0.18 ms, p99 = 0.31 ms, mean = 0.10 ms.
+  - **Concurrent Burst Phase (Round 2, 256 Threads)**: p50 = 12.83 ms, p95 = 14.88 ms, p99 = 15.05 ms, mean = 12.54 ms.
+  - **Total Overall**: p50 = 0.09 ms, p95 = 13.91 ms, p99 = 14.92 ms, mean = 3.04 ms.
+- **Per-Match Breakdown (Run 3)**:
+  - Match 1 (ID 1): 543 reqs | Seq p50=0.09ms, p95=0.20ms | Conc p50=13.02ms, p95=14.92ms | Winner: InsiderWin
+  - Match 2 (ID 2): 543 reqs | Seq p50=0.08ms, p95=0.19ms | Conc p50=12.89ms, p95=14.78ms | Winner: InsiderWin
+  - Match 3 (ID 3): 542 reqs | Seq p50=0.08ms, p95=0.15ms | Conc p50=12.96ms, p95=14.80ms | Winner: InsiderWin
+  - Match 4 (ID 4): 542 reqs | Seq p50=0.08ms, p95=0.19ms | Conc p50=12.53ms, p95=14.98ms | Winner: InsiderWin
+- **Resource Consumption**:
+  - Peak Server RSS: 4,236 kB (~4.1 MB).
+  - Server CPU Time: 130.0 ms.
+  - Open File Descriptors: 201 open FDs.
+
+### Measurement Boundaries and Limitations
+1. **Measurement Boundary**: Request latency is measured via monotonic clock (`std::chrono::steady_clock`) from frame write initiation until complete correlated response frame deserialization and validation. Excludes harness coordination pauses.
+2. **Concurrency Scope**: Tests 256 simultaneous player clients across 4 matches with burst concurrency in Round 2. Does not claim arbitrary, unmetered multi-client concurrency under sustained load without rate limiting.
+3. **Sustained / Soak Testing**: This L6 test validates functional capacity and state isolation under full 256-player concurrency. Sustained long-duration L6 soak testing (e.g., 10m/30m repeated 4-match cycles) remains a separate, distinct testing stage.
 
 ## Proposed mixed64-v1 p95 workload — approval required
 
