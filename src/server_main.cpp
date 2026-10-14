@@ -1,3 +1,14 @@
+#if !defined(__linux__)
+
+#include <iostream>
+
+int main() {
+  std::cerr << "darkpool_server requires Linux (epoll/signalfd/unix sockets)\n";
+  return 1;
+}
+
+#else
+
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
 
@@ -618,3 +629,5 @@ int main(int argc, char **argv) {
     (void)close(unix_listener);
   return exit_status;
 }
+
+#endif  // !defined(__linux__)
