@@ -1244,6 +1244,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
 
         int insider_fd = -1;
         int investigator_fd = -1;
+        uint32_t employee_target = 0;
         for (std::size_t i = 0; i < players.size(); ++i) {
           const auto join_resp = request_json(
               players[i], json{{"type", "join_match"}, {"match_id", 1U}});
@@ -1252,10 +1253,14 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
             const auto role = (*join_resp)["private_role"].get<std::string>();
             if (role == "Insider") insider_fd = players[i];
             if (role == "Investigator") investigator_fd = players[i];
+            if (role == "Employee" && employee_target == 0U) {
+              employee_target = static_cast<uint32_t>(i + 1U);
+            }
           }
         }
         CHECK(insider_fd >= 0);
         CHECK(investigator_fd >= 0);
+        CHECK(employee_target > 0U);
 
         const auto start_resp = request_json(
             mod_fd, json{{"type", "start_match"}, {"match_id", 1U}});
@@ -1285,9 +1290,9 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
             mod_fd, json{{"type", "resolve_market"}, {"match_id", 1U}});
         CHECK(market_resp && (*market_resp)["type"] == "market_result");
 
-        if (investigator_fd >= 0) {
+        if (investigator_fd >= 0 && employee_target > 0U) {
           const auto clue_resp = request_json(
-              investigator_fd, json{{"type", "request_clue"}, {"match_id", 1U}, {"target_id", 1U}});
+              investigator_fd, json{{"type", "request_clue"}, {"match_id", 1U}, {"target_id", employee_target}});
           CHECK(clue_resp && (*clue_resp)["type"] == "clue_private");
         }
 
