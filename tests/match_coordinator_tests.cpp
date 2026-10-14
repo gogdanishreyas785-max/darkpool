@@ -273,6 +273,130 @@ void test_multiple_investigator_clues_remain_private() {
   CHECK(public_status && !public_status->contains("clue_result") && !public_status->contains("clue_target"));
 }
 
+void test_multiple_investigator_clues_reverse_order() {
+  MatchCoordinator coordinator;
+  coordinator.register_session(900, SessionRole::Moderator);
+  for (std::uint64_t session = 1; session <= 24; ++session) {
+    coordinator.register_session(session, SessionRole::Player);
+  }
+  const auto created = create(coordinator, 900, 24);
+  const auto match_id = created["match_id"].get<std::uint64_t>();
+  std::vector<std::uint64_t> investigator_sessions;
+  std::vector<darkpool::PlayerId> insider_ids;
+  for (std::uint64_t session = 1; session <= 24; ++session) {
+    const auto joined = join(coordinator, session, match_id);
+    const auto role = joined["private_role"].get<std::string>();
+    if (role == "Insider") insider_ids.push_back(joined["player_id"].get<darkpool::PlayerId>());
+    else if (role == "Investigator") investigator_sessions.push_back(session);
+  }
+  CHECK(insider_ids.size() == 3U && investigator_sessions.size() == 2U);
+  CHECK((*coordinator.handle(900, json{{"type", "start_match"}, {"match_id", match_id}}))["ok"]);
+  CHECK((*coordinator.handle(900, json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}))["ok"]);
+  CHECK((*coordinator.handle(900, json{{"type", "open_trading"}, {"match_id", match_id}}))["ok"]);
+  for (std::uint64_t session = 1; session <= 24; ++session) {
+    (void)coordinator.handle(session, json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}});
+  }
+  CHECK((*coordinator.handle(900, json{{"type", "resolve_market"}, {"match_id", match_id}}))["ok"]);
+
+  // Reverse order: second investigator acts BEFORE first investigator
+  const auto clue_b = coordinator.handle(investigator_sessions[1], json{{"type", "request_clue"},
+      {"match_id", match_id}, {"target_id", insider_ids[1]}});
+  const auto clue_a = coordinator.handle(investigator_sessions[0], json{{"type", "request_clue"},
+      {"match_id", match_id}, {"target_id", insider_ids[0]}});
+  CHECK(clue_b && (*clue_b)["type"] == "clue_private" && (*clue_b)["is_insider"]);
+  CHECK(clue_a && (*clue_a)["type"] == "clue_private" && (*clue_a)["is_insider"]);
+}
+
+void test_match_lifecycle_cleanup_and_isolation() {
+  MatchCoordinator coordinator;
+  coordinator.register_session(100, SessionRole::Moderator);
+  coordinator.register_session(200, SessionRole::Moderator);
+
+  for (std::uint64_t session = 1; session <= 15; ++session) {
+    coordinator.register_session(session, SessionRole::Player);
+  }
+
+  // Moderator 100 creates two matches: Match A (5 players) and Match B (3 players)
+  const auto match_a_info = create(coordinator, 100, 5);
+  const auto match_b_info = create(coordinator, 100, 3);
+  CHECK(match_a_info["type"] == "match_created");
+  CHECK(match_b_info["type"] == "match_created");
+  const auto match_a = match_a_info["match_id"].get<std::uint64_t>();
+  const auto match_b = match_b_info["match_id"].get<std::uint64_t>();
+
+  // Moderator 200 creates Match C (3 players)
+  const auto match_c_info = create(coordinator, 200, 3);
+  CHECK(match_c_info["type"] == "match_created");
+  const auto match_c = match_c_info["match_id"].get<std::uint64_t>();
+
+  // Players 1..4 join Match A (leaving 1 seat open)
+  for (std::uint64_t s = 1; s <= 4; ++s) {
+    CHECK(join(coordinator, s, match_a)["type"] == "joined_match");
+  }
+  // Players 6..8 join Match B
+  for (std::uint64_t s = 6; s <= 8; ++s) {
+    CHECK(join(coordinator, s, match_b)["type"] == "joined_match");
+  }
+  // Player 11 joins Match C (leaving seats open)
+  CHECK(join(coordinator, 11, match_c)["type"] == "joined_match");
+
+  // Player 2 disconnects from Match A in Lobby
+  coordinator.unregister_session(2);
+  // Repeated unregister is safe
+  coordinator.unregister_session(2);
+  coordinator.unregister_session(999);  // nonexistent session
+
+  // Unregistered player cannot act
+  const auto unreg_act = coordinator.handle(2, json{{"type", "match_status"}, {"match_id", match_a}});
+  CHECK(unreg_act && (*unreg_act)["type"] == "error");
+
+  // Player 5 joins Match A in the seat previously held or empty seat
+  const auto p5_join = join(coordinator, 5, match_a);
+  CHECK(p5_join["type"] == "joined_match");
+
+  // Register a new player session 12 and let them fill the remaining seat in Match A
+  coordinator.register_session(12, SessionRole::Player);
+  const auto p12_join = join(coordinator, 12, match_a);
+  CHECK(p12_join["type"] == "joined_match");
+
+  // All 5 seats in Match A filled; Match A starts
+  CHECK((*coordinator.handle(100, json{{"type", "start_match"}, {"match_id", match_a}}))["ok"]);
+
+  // Stale match ID handling
+  const auto stale = coordinator.handle(1, json{{"type", "match_status"}, {"match_id", 99999}});
+  CHECK(stale && (*stale)["type"] == "error" && (*stale)["error"] == "unknown match");
+
+  // Ordinary player disconnect does not affect unrelated Match B or Match C
+  const auto b_status_before = coordinator.handle(6, json{{"type", "match_status"}, {"match_id", match_b}});
+  const auto c_status_before = coordinator.handle(11, json{{"type", "match_status"}, {"match_id", match_c}});
+  CHECK(b_status_before && (*b_status_before)["phase"] == "Lobby");
+  CHECK(c_status_before && (*c_status_before)["phase"] == "Lobby");
+
+  // Moderator 100 disconnects after creating multiple matches (Match A and Match B)
+  coordinator.unregister_session(100);
+
+  // Match A and Match B are cleaned up
+  const auto act_a = coordinator.handle(1, json{{"type", "match_status"}, {"match_id", match_a}});
+  const auto act_b = coordinator.handle(6, json{{"type", "match_status"}, {"match_id", match_b}});
+  CHECK(act_a && (*act_a)["type"] == "error" && (*act_a)["error"] == "unknown match");
+  CHECK(act_b && (*act_b)["type"] == "error" && (*act_b)["error"] == "unknown match");
+
+  // Detached player 1 can now join valid Match C (created by Moderator 200) without stale identity
+  const auto p1_join_c = join(coordinator, 1, match_c);
+  CHECK(p1_join_c["type"] == "joined_match");
+  CHECK(p1_join_c["match_id"] == match_c);
+
+  // Detached player 6 can also join Match C
+  const auto p6_join_c = join(coordinator, 6, match_c);
+  CHECK(p6_join_c["type"] == "joined_match");
+  CHECK(p6_join_c["match_id"] == match_c);
+
+  // Match C now has 3 players (11, 1, 6) and can start successfully under Moderator 200
+  CHECK((*coordinator.handle(200, json{{"type", "start_match"}, {"match_id", match_c}}))["ok"]);
+  const auto c_status_after = coordinator.handle(1, json{{"type", "match_status"}, {"match_id", match_c}});
+  CHECK(c_status_after && (*c_status_after)["phase"] == "AwaitingEvent");
+}
+
 }  // namespace
 
 int main() {
@@ -281,6 +405,8 @@ int main() {
   test_private_responses_and_malformed_requests();
   test_mixed_capacity_matches_and_server_assigned_roles();
   test_multiple_investigator_clues_remain_private();
+  test_multiple_investigator_clues_reverse_order();
+  test_match_lifecycle_cleanup_and_isolation();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Match coordinator isolation tests passed.\n";
   return EXIT_SUCCESS;

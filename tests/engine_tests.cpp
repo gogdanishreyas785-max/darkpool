@@ -641,6 +641,80 @@ void test_multiple_investigators_have_independent_clues() {
   CHECK(match.canonical_state().find("clue=5:2:1") != std::string::npos);
 }
 
+void test_multiple_investigators_independent_clues_reverse_order() {
+  Match match(scaled_roster(24));
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market().has_value());
+  // Second investigator (ID 5) acts BEFORE first investigator (ID 4)
+  OperationResult second_result;
+  const auto second = match.use_clue(5, 2, second_result);
+  CHECK(second && *second && second_result);
+  const auto retry_second = match.use_clue(5, 2, second_result);
+  CHECK(retry_second && *retry_second && second_result);
+  CHECK(!match.use_clue(5, 3, second_result) && second_result.error == ErrorCode::ClueAlreadyUsed);
+
+  // First investigator (ID 4) acts after second investigator has used clue
+  OperationResult first_result;
+  const auto first = match.use_clue(4, 1, first_result);
+  CHECK(first && *first && first_result);
+  const auto retry_first = match.use_clue(4, 1, first_result);
+  CHECK(retry_first && *retry_first && first_result);
+  CHECK(!match.use_clue(4, 3, first_result) && first_result.error == ErrorCode::ClueAlreadyUsed);
+
+  // Non-investigator rejected
+  OperationResult non_inv_result;
+  CHECK(!match.use_clue(6, 1, non_inv_result) && non_inv_result.error == ErrorCode::NotInvestigator);
+
+  CHECK(match.state().players[3].clue_used && match.state().players[4].clue_used);
+  CHECK(match.state().clue_used);
+  CHECK(match.state().clue_target && *match.state().clue_target == 1U);
+  CHECK(match.state().clue_result && *match.state().clue_result == true);
+
+  // State must validate and recreate cleanly via from_state
+  CHECK(Match::from_state(match.state()).state().clue_used);
+}
+
+void test_multiple_investigators_clues_across_rounds() {
+  Match match(scaled_roster(24));
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market().has_value());
+
+  // Round 1: only second investigator (ID 5) uses clue
+  OperationResult r1_result;
+  const auto clue_5 = match.use_clue(5, 2, r1_result);
+  CHECK(clue_5 && *clue_5 && r1_result);
+  CHECK(match.state().clue_used);
+  CHECK(!match.state().clue_target.has_value());  // first investigator hasn't used clue yet
+  CHECK(Match::from_state(match.state()).state().clue_used);
+
+  // Advance through voting without elimination
+  CHECK(match.open_voting());
+  const auto vote_res = match.resolve_votes();
+  CHECK(vote_res.has_value() && !vote_res->eliminated.has_value());
+  CHECK(match.state().round == 2U);
+
+  // Round 2: advance to Clue phase
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market().has_value());
+
+  // Second investigator repeats request: same answer
+  const auto repeat_5 = match.use_clue(5, 2, r1_result);
+  CHECK(repeat_5 && *repeat_5 && r1_result);
+  CHECK(!match.use_clue(5, 3, r1_result) && r1_result.error == ErrorCode::ClueAlreadyUsed);
+
+  // First investigator (ID 4) now uses clue in Round 2
+  OperationResult r2_result;
+  const auto clue_4 = match.use_clue(4, 1, r2_result);
+  CHECK(clue_4 && *clue_4 && r2_result);
+  CHECK(match.state().clue_target && *match.state().clue_target == 1U);
+  CHECK(Match::from_state(match.state()).state().clue_used);
+}
+
 void test_same_target_clue_retry_after_target_elimination() {
   Match match(roster());
   CHECK(match.start());
@@ -854,6 +928,8 @@ int main() {
   test_formula_bounds();
   test_clue_scope_and_idempotency();
   test_multiple_investigators_have_independent_clues();
+  test_multiple_investigators_independent_clues_reverse_order();
+  test_multiple_investigators_clues_across_rounds();
   test_same_target_clue_retry_after_target_elimination();
   test_multi_insider_victory_is_team_based();
   test_variable_voting_thresholds_and_team_survival();

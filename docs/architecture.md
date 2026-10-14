@@ -2,15 +2,15 @@
 
 ## System design
 
-One authoritative server process owns official game state. Separate client processes connect through UNIX domain sockets initially. Server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
+One authoritative server process owns official game state. The current prototype implementation connects client processes through nonblocking localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). The original architecture specification in Draft 3 required UNIX domain stream sockets; a dedicated UNIX domain transport adapter, remote TCP/TLS 1.3, and remote certificate lifecycle remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
 
-Flow: client processes → UNIX transport → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
+Flow: client processes → localhost TCP transport (implemented prototype) / UNIX transport (original specification) → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
 
 One event loop owns mutations initially; no thread per client. Optional workers only for measured CPU-heavy tasks, returning results to the owner loop. Workers never mutate matches. Use monotonic deadlines via timerfd or a deadline heap.
 
 ## Components
 
-- **Transport adapter:** UNIX sockets initially; later TCP/TLS adapter. No game rules.
+- **Transport adapter:** Prototype implemented using nonblocking localhost TCP sockets (`127.0.0.1`) with epoll; UNIX-domain stream sockets (original requirement) and remote TCP/TLS 1.3 adapter remain deferred. No game rules in transport.
 - **Connection manager:** connection IDs, framing, lifecycle, bounded input/output queues, rates, backpressure, disconnects.
 - **Protocol:** versioned envelope, schema/length validation, request correlation, error codes.
 - **Session manager:** server-assigned identity, authentication, permissions, reconnect/cleanup.
@@ -27,7 +27,7 @@ The approved per-match player range is 3–64, with five as the default; the mod
 
 Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
 
-The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 players plus moderators). This is design support only. p95 acknowledgement ≤100 ms and 30-minute steady reliability are proposed acceptance thresholds, not achieved results; the 64-player/four-match capacity remains unverified until measured.
+The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 players plus moderators). This is design support only. p95 acknowledgement ≤100 ms and 30-minute steady reliability are proposed acceptance thresholds, not achieved results; the 64-player/four-match capacity remains explicitly unverified until measured under a real load test.
 
 ## Proposed repository layout
 

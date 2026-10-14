@@ -2,18 +2,19 @@
 
 The C++20 engine and coordinator support matches configured for 3–64 active players. Five remains the default and the original baseline is one Insider, one Investigator, and three Employees. The moderator is a separate non-player.
 
-The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server uses nonblocking sockets with epoll and binds to `127.0.0.1` by default.
+The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server prototype uses nonblocking stream sockets with epoll and binds to `127.0.0.1` by default.
 
 ## Scope and implementation status
 
-- Valid match sizes are 3–64. Role counts are deterministic: `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, and the remaining Employees. The server shuffles and assigns roles; clients cannot supply roles. Five remains the default.
-- Business-event impacts are injected by the match's creating moderator. The game engine itself has no random source, clock, sockets, epoll, client, server, or persistence; match/session coordination is a separate server module.
-- Shares are conserved between players and each match's finite reserve using the approved 20N total / 10N player-held / 10N reserve formula.
-- A match ends with an Insider-team win if health reaches zero, or if at least one Insider survives through round three. Eliminating an Insider only gives Employees the win when no Insiders remain. Each Investigator has an independent once-per-match clue.
-- The coordinator allows four matches. The server is configured for at most 256 player connections plus one moderator connection (257 total); that moderator can create and control all four matches. These are resource caps and design support, not verified load capacity. Four concurrent 64-player matches, the 256-player server target, latency, and reliability remain unverified.
-- Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
-- Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
-- Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Full TCP gameplay tests cover five-player regression and N=8. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
+- **Transport and CLI:** The prototype implementation is a nonblocking localhost TCP server (`127.0.0.1:4782`) with epoll (`src/server_main.cpp`) and an interactive terminal CLI (`src/client_main.cpp`). The original architecture specification in Draft 3 required UNIX-domain stream sockets; a dedicated UNIX-domain transport adapter, remote TCP/TLS 1.3, and production certificate lifecycle remain deferred future work.
+- **Valid match sizes:** Valid match sizes are 3–64. Role counts are deterministic: `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, and the remaining Employees. The server shuffles and assigns roles; clients cannot supply roles. Five remains the default.
+- **Event injection and engine separation:** Business-event impacts are injected by the match's creating moderator. The game engine itself has no random source, clock, sockets, epoll, client, server, or persistence; match/session coordination is a separate server module.
+- **Share conservation:** Shares are conserved between players and each match's finite reserve using the approved 20N total / 10N player-held / 10N reserve formula.
+- **Victory and clue invariants:** A match ends with an Insider-team win if health reaches zero, or if at least one Insider survives through round three. Eliminating an Insider only gives Employees the win when no Insiders remain. Each Investigator has an independent once-per-match clue; legacy match-level clue fields mirror the first Investigator's clue.
+- **Capacity limits explicitly unverified:** The coordinator allows four matches. The server is configured for at most 256 player connections plus one moderator connection (257 total); that moderator can create and control all four matches. These limits are design ceilings and configured resource caps only; they do not establish that 64-player matches or four simultaneous matches meet latency, throughput, or reliability targets. Four concurrent 64-player matches, the 256-player server target, latency (p95 ≤ 100 ms), and 30-minute steady-state reliability remain explicitly unverified; no load test has been conducted.
+- **Credits:** Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
+- **Canonical view privacy:** Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
+- **Test coverage:** Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Full TCP gameplay tests cover five-player regression and N=8. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
 
 ## Build and test on Ubuntu
 

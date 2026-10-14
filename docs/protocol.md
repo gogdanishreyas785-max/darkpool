@@ -2,7 +2,10 @@
 
 **Direct PDF requirements:** versioned length-prefixed envelope, request IDs, match IDs, payload, bounded input, validation, authorization, backpressure, initial UNIX sockets. **Proposed choices requiring approval:** encoding, field widths, ACK semantics and numeric limits.
 
-Initial transport: nonblocking UNIX domain stream sockets monitored by epoll. Bounded buffers handle partial/coalesced reads; transport contains no game rules. Future TCP/TLS 1.3 uses same message/game interface and is deferred.
+**Transport status:**
+- **Currently implemented:** Nonblocking localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll in `src/server_main.cpp`, with an interactive terminal client CLI in `src/client_main.cpp`.
+- **Original architecture requirement:** Nonblocking UNIX domain stream sockets monitored by epoll.
+- **Deferred future work:** UNIX domain transport adapter, production TCP/TLS 1.3 remote transport, and certificate lifecycle. Transport contains no game rules.
 
 **Proposed framing:** 4-byte unsigned big-endian frame length, then fixed header (version u16, message type u16, request ID u64, match ID 16 bytes, payload length u32), then UTF-8 JSON payload. Length counts header+payload; validate exact payload length before allocation. Zero match ID only for pre-match/control requests.
 

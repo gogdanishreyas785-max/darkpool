@@ -107,10 +107,10 @@ bool closed_within_timeout(int fd, int timeout_ms) {
   timeval timeout{static_cast<time_t>(timeout_ms / 1000),
                   static_cast<suseconds_t>((timeout_ms % 1000) * 1000)};
   (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  char byte = 0;
+  char buffer[4096];
   while (true) {
     errno = 0;
-    const auto received = recv(fd, &byte, 1U, 0);
+    const auto received = recv(fd, buffer, sizeof(buffer), 0);
     if (received == 0) return true;  // Orderly peer shutdown (EOF/FIN)
     if (received < 0) {
       if (errno == EINTR) continue;
@@ -931,12 +931,17 @@ void test_malformed_tcp_isolation(const char* server_path) {
   // The server buffers responses in OutputQueue until the 64 KiB limit is exceeded,
   // then cleanly closes the offending connection without disrupting the existing 4 players or moderator.
   {
-    int offender = connect_to(port);
+    int offender = socket(AF_INET, SOCK_STREAM, 0);
     CHECK(offender >= 0);
     if (offender >= 0) {
       open_fds.push_back(offender);
       int rcvbuf = 2048;
       (void)setsockopt(offender, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(port);
+      address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+      CHECK(connect(offender, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
 
       // Offender connects as player
       CHECK(exchange(offender, json{{"type", "connect"}, {"role", "player"}}, false));
@@ -951,7 +956,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
       // in its pending output queue when responses are not drained by the client:
       const auto min_frames_for_overflow =
           (darkpool::network::kMaxQueuedBytes / big_frame.size()) + 1U;
-      constexpr int target_frames = 30;
+      constexpr int target_frames = 50;
       CHECK(target_frames >= static_cast<int>(min_frames_for_overflow));
 
       // Flood the server with requests without reading responses.

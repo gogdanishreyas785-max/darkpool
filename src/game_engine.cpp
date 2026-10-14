@@ -560,10 +560,18 @@ std::optional<bool> Match::use_clue(PlayerId investigator, PlayerId target, Oper
       [](const PlayerState& player) { return player.role == Role::Investigator; });
   const bool is_first_investigator = first_investigator != state_.players.end() &&
       requester == &*first_investigator;
-  if (requester->clue_used || (is_first_investigator && state_.clue_used)) {
+  if (requester->clue_used || (is_first_investigator && state_.clue_target.has_value())) {
     const auto prior_target = requester->clue_used ? requester->clue_target : state_.clue_target;
     const auto prior_result = requester->clue_used ? requester->clue_result : state_.clue_result;
-    if (prior_target == target) { result = {}; return prior_result; }
+    if (prior_target == target) {
+      if (!requester->clue_used) {
+        requester->clue_used = true;
+        requester->clue_target = prior_target;
+        requester->clue_result = prior_result;
+      }
+      result = {};
+      return prior_result;
+    }
     return reject(ErrorCode::ClueAlreadyUsed, "clue already used on another target");
   }
   if (!target_player->active) return reject(ErrorCode::InvalidClueTarget, "target must be another active player");
