@@ -19,19 +19,28 @@ std::int32_t clamp_value(std::int32_t value, std::int32_t low, std::int32_t high
 }  // namespace
 
 std::optional<SupplyPlan> supply_plan(std::size_t seated_players) noexcept {
-  if (seated_players < kPlayerCount || seated_players > 64U) return std::nullopt;
+  if (seated_players < kMinPlayerCount || seated_players > kMaxPlayerCount) return std::nullopt;
   const auto players = static_cast<Shares>(seated_players);
   const auto held = players * kStartingShares;
   return SupplyPlan{held * 2U, held, held};
 }
 
+std::optional<RoleCounts> role_counts(std::size_t seated_players) noexcept {
+  if (seated_players < kMinPlayerCount || seated_players > kMaxPlayerCount) return std::nullopt;
+  const auto insiders = 1U + (seated_players - 1U) / 8U;
+  const auto investigators = 1U + (seated_players - 1U) / 16U;
+  return RoleCounts{insiders, investigators, seated_players - insiders - investigators};
+}
+
 Match::Match(const std::vector<PlayerSetup>& roster) {
-  if (roster.size() != kPlayerCount) throw std::invalid_argument("roster must contain exactly five players");
+  const auto expected_roles = role_counts(roster.size());
+  if (!expected_roles) throw std::invalid_argument("roster must contain between 3 and 64 players");
   std::unordered_set<PlayerId> ids;
   std::uint32_t insiders = 0;
   std::uint32_t investigators = 0;
   std::uint32_t employees = 0;
   for (const auto& seat : roster) {
+    if (seat.id == 0U) throw std::invalid_argument("player IDs must be nonzero and unique");
     if (!ids.insert(seat.id).second) throw std::invalid_argument("player IDs must be unique");
     switch (seat.role) {
       case Role::Insider: ++insiders; break;
@@ -43,13 +52,16 @@ Match::Match(const std::vector<PlayerSetup>& roster) {
     player.role = seat.role;
     state_.players.push_back(player);
   }
-  if (insiders != 1 || investigators != 1 || employees != 3) {
-    throw std::invalid_argument("roster requires one Insider, one Investigator, and three Employees");
+  if (insiders != expected_roles->insiders || investigators != expected_roles->investigators ||
+      employees != expected_roles->employees) {
+    throw std::invalid_argument("roster role counts do not match the configured player count");
   }
-  const auto supply = supply_plan(kPlayerCount).value();
+  const auto supply = supply_plan(roster.size()).value();
   state_.total_supply = supply.total;
   state_.reserve = supply.reserve;
-  events_.push_back("init|players=5|supply=100|reserve=50|health=5|price=10");
+  events_.push_back("init|players=" + std::to_string(roster.size()) +
+                    "|supply=" + std::to_string(supply.total) +
+                    "|reserve=" + std::to_string(supply.reserve) + "|health=5|price=10");
 }
 
 Match::Match(MatchState state, bool validate) : state_(std::move(state)) {
@@ -67,9 +79,10 @@ bool Match::validate_state(std::string& why) const {
     why = message;
     return false;
   };
-  if (state_.players.size() != kPlayerCount) return invalid("five players required");
-  const auto expected_supply = supply_plan(kPlayerCount).value().total;
-  if (state_.total_supply != expected_supply) return invalid("total supply does not match five-player economy");
+  const auto expected_roles = role_counts(state_.players.size());
+  const auto expected_supply = supply_plan(state_.players.size());
+  if (!expected_roles || !expected_supply) return invalid("player count must be between 3 and 64");
+  if (state_.total_supply != expected_supply->total) return invalid("total supply does not match roster economy");
 
   switch (state_.phase) {
     case Phase::Lobby: case Phase::AwaitingEvent: case Phase::Discussion:
@@ -84,10 +97,11 @@ bool Match::validate_state(std::string& why) const {
   std::unordered_set<PlayerId> ids;
   std::uint32_t insiders = 0, investigators = 0, employees = 0, active = 0;
   std::uint64_t held = 0;
-  const PlayerState* insider = nullptr;
-  const PlayerState* investigator = nullptr;
+  std::uint32_t active_insiders = 0;
+  std::uint32_t used_clues = 0;
+  const PlayerState* first_investigator = nullptr;
   for (const auto& p : state_.players) {
-    if (!ids.insert(p.id).second) return invalid("duplicate player ID");
+    if (p.id == 0U || !ids.insert(p.id).second) return invalid("player IDs must be nonzero and unique");
     if (p.credits > kCreditBalanceCap) return invalid("credit balance exceeds cap");
     held += p.shares;
     if ((p.order.has_value() && !p.action_submitted) ||
@@ -97,14 +111,32 @@ bool Match::validate_state(std::string& why) const {
     if (p.order && *p.order != TradeAction::Buy && *p.order != TradeAction::Hold &&
         *p.order != TradeAction::Sell) return invalid("unknown trade action");
     switch (p.role) {
-      case Role::Insider: ++insiders; insider = &p; break;
-      case Role::Investigator: ++investigators; investigator = &p; break;
+      case Role::Insider: ++insiders; if (p.active) ++active_insiders; break;
+      case Role::Investigator:
+        ++investigators;
+        if (first_investigator == nullptr) first_investigator = &p;
+        break;
       case Role::Employee: ++employees; break;
       default: return invalid("unknown role");
     }
     if (p.active) ++active;
+    if (p.clue_used) {
+      ++used_clues;
+      if (!p.clue_target || !p.clue_result || *p.clue_target == p.id) {
+        return invalid("investigator clue-use fields are inconsistent");
+      }
+      const auto target = std::find_if(state_.players.begin(), state_.players.end(),
+          [&p](const PlayerState& candidate) { return candidate.id == *p.clue_target; });
+      if (target == state_.players.end() || *p.clue_result != (target->role == Role::Insider)) {
+        return invalid("investigator clue target/result does not match roster");
+      }
+      if (p.role != Role::Investigator) return invalid("only Investigators may retain clue state");
+    } else if (p.clue_target || p.clue_result) {
+      return invalid("unused investigator clue has target or result");
+    }
   }
-  if (insiders != 1 || investigators != 1 || employees != 3) return invalid("role counts invalid");
+  if (insiders != expected_roles->insiders || investigators != expected_roles->investigators ||
+      employees != expected_roles->employees) return invalid("role counts do not match configured player count");
   if (held + state_.reserve != state_.total_supply) return invalid("share supply is not conserved");
   if (state_.company.health < kMinHealth || state_.company.health > kMaxHealth ||
       state_.company.price < kMinPrice || state_.company.price > kMaxPrice) {
@@ -131,16 +163,25 @@ bool Match::validate_state(std::string& why) const {
     return invalid("trading seat priority does not match round");
   }
 
-  if (state_.clue_used) {
-    if (!state_.clue_target || !state_.clue_result || investigator == nullptr ||
-        !ids.contains(*state_.clue_target) || *state_.clue_target == investigator->id) {
-      return invalid("clue-use fields are inconsistent");
+  if (state_.clue_used != (used_clues > 0U || state_.clue_target.has_value() || state_.clue_result.has_value())) {
+    return invalid("aggregate clue-use flag is inconsistent");
+  }
+  if (state_.clue_target.has_value() != state_.clue_result.has_value()) {
+    return invalid("legacy clue target/result fields are inconsistent");
+  }
+  if (state_.clue_target) {
+    if (first_investigator == nullptr ||
+        !ids.contains(*state_.clue_target) || *state_.clue_target == first_investigator->id) {
+      return invalid("legacy first-Investigator clue fields are inconsistent");
     }
     const auto target = std::find_if(state_.players.begin(), state_.players.end(),
-                                     [this](const PlayerState& p) { return p.id == *state_.clue_target; });
-    if (target == state_.players.end() ||
-        *state_.clue_result != (target->role == Role::Insider)) {
-      return invalid("clue target/result does not match roster");
+        [this](const PlayerState& p) { return p.id == *state_.clue_target; });
+    if (target == state_.players.end() || *state_.clue_result != (target->role == Role::Insider)) {
+      return invalid("legacy clue target/result does not match roster");
+    }
+    if (state_.round == 1U &&
+        (state_.phase == Phase::Clue || state_.phase == Phase::Voting) && !target->active) {
+      return invalid("first-round clue target cannot be eliminated before voting resolves");
     }
     if (state_.phase == Phase::Lobby ||
         (state_.round == 1U &&
@@ -149,14 +190,31 @@ bool Match::validate_state(std::string& why) const {
           (state_.phase == Phase::Finished && state_.company.health == 0)))) {
       return invalid("clue cannot be used before the first-round clue phase");
     }
-    if (state_.round == 1U && (state_.phase == Phase::Clue || state_.phase == Phase::Voting) &&
-        !target->active) {
-      return invalid("first-round clue target cannot be eliminated before voting resolves");
+  } else if (first_investigator != nullptr && first_investigator->clue_used) {
+    return invalid("first Investigator clue must be mirrored in legacy clue fields");
+  }
+  if (state_.round == 1U && (state_.phase == Phase::Clue || state_.phase == Phase::Voting)) {
+    for (const auto& player : state_.players) {
+      if (player.clue_used && player.clue_target) {
+        const auto target = find_player(*player.clue_target);
+        if (target != nullptr && !target->active) {
+          return invalid("first-round clue target cannot be eliminated before voting resolves");
+        }
+      }
     }
-    if (state_.round == 1U && state_.phase == Phase::Finished &&
-        state_.outcome == Outcome::EmployeesWin && !target->active &&
-        target->role != Role::Insider) {
-      return invalid("only the Insider can be eliminated in a first-round Employees win");
+  }
+  if (state_.clue_used) {
+    if (first_investigator != nullptr && first_investigator->clue_used &&
+        (first_investigator->clue_target != state_.clue_target ||
+         first_investigator->clue_result != state_.clue_result)) {
+      return invalid("legacy clue fields must mirror the first Investigator's clue");
+    }
+    if (state_.phase == Phase::Lobby ||
+        (state_.round == 1U &&
+         (state_.phase == Phase::AwaitingEvent || state_.phase == Phase::Discussion ||
+          state_.phase == Phase::Trading ||
+          (state_.phase == Phase::Finished && state_.company.health == 0)))) {
+      return invalid("clue cannot be used before the first-round clue phase");
     }
   } else if (state_.clue_target || state_.clue_result) {
     return invalid("unused clue has target or result");
@@ -222,14 +280,18 @@ bool Match::validate_state(std::string& why) const {
         }
       }
       const bool insider_caught = state_.players[*majority_target].role == Role::Insider;
-      if (insider_caught &&
+      if (insider_caught && active_insiders == 0U &&
           (state_.phase != Phase::Finished || state_.outcome != Outcome::EmployeesWin ||
            state_.company.health == 0)) {
-        return invalid("Insider majority must end the match with an Employees win");
+        return invalid("eliminating the last Insider must end the match with an Employees win");
+      }
+      if (insider_caught && active_insiders > 0U && state_.phase == Phase::Finished &&
+          state_.outcome == Outcome::EmployeesWin) {
+        return invalid("Employees win requires all Insiders to be eliminated");
       }
       if (!insider_caught && state_.phase == Phase::Finished &&
           state_.outcome == Outcome::EmployeesWin) {
-        return invalid("Employees win requires the Insider as the eliminated majority target");
+        return invalid("Employees win requires the last Insider as the eliminated majority target");
       }
     } else {
       if (state_.eligible_voters_at_open != active) {
@@ -309,26 +371,26 @@ bool Match::validate_state(std::string& why) const {
     }
   }
 
-  // Victory precedence: health zero is an immediate Insider win; the match
+  // Victory precedence: health zero is an immediate Insider-team win; the match
   // cannot enter another live phase or later eliminate the Insider.
   if (state_.company.health == 0) {
     if (state_.phase != Phase::Finished || state_.outcome != Outcome::InsiderWin ||
-        !insider->active) return invalid("zero health requires a finished Insider win");
+        active_insiders == 0U) return invalid("zero health requires a finished Insider-team win");
   }
   if (state_.phase == Phase::Finished) {
     if (state_.outcome == Outcome::None) return invalid("finished match requires an outcome");
     if (state_.outcome == Outcome::InsiderWin) {
       if (state_.company.health > 0 &&
-          (state_.round != kRoundCount || !insider->active)) {
-        return invalid("Insider win requires zero health or final-round survival");
+          (state_.round != kRoundCount || active_insiders == 0U)) {
+        return invalid("Insider-team win requires zero health or final-round survival");
       }
-    } else if (state_.company.health == 0 || insider->active) {
-      return invalid("Employees win requires the Insider eliminated while health is positive");
+    } else if (state_.company.health == 0 || active_insiders != 0U) {
+      return invalid("Employees win requires all Insiders eliminated while health is positive");
     }
   } else {
     if (state_.outcome != Outcome::None) return invalid("live match cannot have an outcome");
-    if (insider != nullptr && !insider->active) {
-      return invalid("Insider elimination must finish the match immediately");
+    if (active_insiders == 0U) {
+      return invalid("eliminating the last Insider must finish the match immediately");
     }
   }
   return true;
@@ -483,22 +545,45 @@ MarketResolution Match::resolve_market() {
 }
 
 std::optional<bool> Match::use_clue(PlayerId investigator, PlayerId target, OperationResult& result) {
-  if (state_.phase != Phase::Clue) { result = fail(ErrorCode::WrongPhase, "clue requires clue phase"); return std::nullopt; }
-  const auto* requester = find_player(investigator);
-  const auto* target_player = find_player(target);
-  if (requester == nullptr || target_player == nullptr) { result = fail(ErrorCode::UnknownPlayer, "unknown player"); return std::nullopt; }
-  if (!requester->active) { result = fail(ErrorCode::InactivePlayer, "inactive investigator"); return std::nullopt; }
-  if (requester->role != Role::Investigator) { result = fail(ErrorCode::NotInvestigator, "only Investigator may request clue"); return std::nullopt; }
-  if (investigator == target || !target_player->active) { result = fail(ErrorCode::InvalidClueTarget, "target must be another active player"); return std::nullopt; }
-  if (state_.clue_used) {
-    if (state_.clue_target == target) { result = {}; return state_.clue_result; }
-    result = fail(ErrorCode::ClueAlreadyUsed, "clue already used on another target");
+  const auto reject = [&result](ErrorCode code, const char* detail) -> std::optional<bool> {
+    result = {code, detail};
     return std::nullopt;
+  };
+  if (state_.phase != Phase::Clue) return reject(ErrorCode::WrongPhase, "clue requires clue phase");
+  auto* requester = find_player(investigator);
+  const auto* target_player = find_player(target);
+  if (requester == nullptr || target_player == nullptr) return reject(ErrorCode::UnknownPlayer, "unknown player");
+  if (!requester->active) return reject(ErrorCode::InactivePlayer, "inactive investigator");
+  if (requester->role != Role::Investigator) return reject(ErrorCode::NotInvestigator, "only Investigator may request clue");
+  if (investigator == target) return reject(ErrorCode::InvalidClueTarget, "target must be another active player");
+  const auto first_investigator = std::find_if(state_.players.begin(), state_.players.end(),
+      [](const PlayerState& player) { return player.role == Role::Investigator; });
+  const bool is_first_investigator = first_investigator != state_.players.end() &&
+      requester == &*first_investigator;
+  if (requester->clue_used || (is_first_investigator && state_.clue_target.has_value())) {
+    const auto prior_target = requester->clue_used ? requester->clue_target : state_.clue_target;
+    const auto prior_result = requester->clue_used ? requester->clue_result : state_.clue_result;
+    if (prior_target == target) {
+      if (!requester->clue_used) {
+        requester->clue_used = true;
+        requester->clue_target = prior_target;
+        requester->clue_result = prior_result;
+      }
+      result = {};
+      return prior_result;
+    }
+    return reject(ErrorCode::ClueAlreadyUsed, "clue already used on another target");
   }
+  if (!target_player->active) return reject(ErrorCode::InvalidClueTarget, "target must be another active player");
   const auto answer = target_player->role == Role::Insider;
   state_.clue_used = true;
-  state_.clue_target = target;
-  state_.clue_result = answer;
+  requester->clue_used = true;
+  requester->clue_target = target;
+  requester->clue_result = answer;
+  if (is_first_investigator) {
+    state_.clue_target = target;
+    state_.clue_result = answer;
+  }
   record("clue_used|requester=" + std::to_string(investigator) + "|target=" + std::to_string(target));
   result = {};
   return answer;
@@ -547,18 +632,21 @@ VoteResolution Match::resolve_votes() {
     if (target != state_.players.end()) ++counts[static_cast<std::size_t>(std::distance(state_.players.begin(), target))];
   }
   const auto threshold = result.eligible_voters / 2U;
-  bool insider_eliminated = false;
+  bool last_insider_eliminated = false;
   for (std::size_t i = 0; i < counts.size(); ++i) {
     if (state_.players[i].active && counts[i] > threshold) {
       result.eliminated = state_.players[i].id;
       result.votes_received = counts[i];
       state_.players[i].active = false;
-      insider_eliminated = state_.players[i].role == Role::Insider && state_.company.health > 0;
+      if (state_.players[i].role == Role::Insider && state_.company.health > 0) {
+        last_insider_eliminated = std::none_of(state_.players.begin(), state_.players.end(),
+            [](const PlayerState& player) { return player.active && player.role == Role::Insider; });
+      }
       break;
     }
   }
   record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(result.votes_received));
-  if (insider_eliminated) finish(Outcome::EmployeesWin);
+  if (last_insider_eliminated) finish(Outcome::EmployeesWin);
   else if (state_.round == kRoundCount) finish(Outcome::InsiderWin);
   else {
     ++state_.round;
@@ -596,7 +684,9 @@ std::string Match::canonical_state() const {
     out << "\nseat" << i << '=' << p.id << ',' << to_string(p.role) << ',' << p.credits << ',' << p.shares
         << ',' << (p.active ? 1 : 0) << ',' << (p.action_submitted ? 1 : 0) << ','
         << (p.order ? (*p.order == TradeAction::Buy ? "BUY" : *p.order == TradeAction::Sell ? "SELL" : "HOLD") : "-")
-        << ',' << (p.vote_submitted ? 1 : 0) << ',' << (p.vote_target ? std::to_string(*p.vote_target) : "-");
+        << ',' << (p.vote_submitted ? 1 : 0) << ',' << (p.vote_target ? std::to_string(*p.vote_target) : "-")
+        << ",clue=" << (p.clue_used ? std::to_string(p.id) + ":" + std::to_string(*p.clue_target) + ":" +
+            (*p.clue_result ? "1" : "0") : "-");
   }
   return out.str();
 }

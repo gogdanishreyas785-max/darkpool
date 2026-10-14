@@ -1,6 +1,6 @@
-# DARKPOOL — game rules and S1-approved prototype
+# DARKPOOL — game rules, five-player baseline, and approved variable-size rules
 
-**Source status:** Draft 3 directly specifies the baseline sequence and roles; detailed mechanics below were S0 proposals. The user's S1 follow-up explicitly approves the S1 gameplay rules listed there. Proposals outside that follow-up (including larger-match scaling and scoring) remain open.
+**Source status:** Draft 3 directly specifies the five-player baseline and round sequence. The user's S1 follow-up approved the listed baseline mechanics. A later explicit follow-up approves variable-size matches and role scaling below. Scoring remains open.
 
 ## Roles and scaling
 
@@ -8,7 +8,8 @@
 - Insider damages company performance and avoids identification; receives one confidential event hint; may trade like others.
 - Investigator helps Employees identify the Insider; may request one limited clue per match.
 - Employees discuss, trade and vote to protect the company and identify the Insider.
-- **Larger-match policy remains open:** one Insider and one Investigator with remaining seats Employees is a recommendation only, not an approved scaling rule.
+- **Approved variable-size rule:** N is configured active-player capacity (3–64); the moderator is excluded. Five remains the default. Insiders=`ceil(N/8)`, Investigators=`ceil(N/16)`, Employees=`N-Insiders-Investigators`. Use integer arithmetic: `1+(N-1)/8` and `1+(N-1)/16` for valid N. The server builds exactly those role counts and shuffles the role list before assigning server-owned seats; clients cannot choose roles.
+- Role examples: N=3 → 1/1/1; N=5 → 1/1/3; N=8 → 1/1/6; N=9 → 2/1/6; N=16 → 2/1/13; N=24 → 3/2/19; N=32 → 4/2/26; N=64 → 8/4/52.
 - **Approved S1 moderator boundary:** separate non-player, not one of the five; may create, start, close and inspect operational status. Secret audit access and chat/audit retention remain separate decisions.
 
 ## Three rounds
@@ -25,7 +26,7 @@ Draft 3 does not define deadlines. The approved S1 engine exposes phase transiti
 
 ## S1-approved share supply and trading
 
-The PDF gives no starting balances/supply model. S1 implements exactly five active seats. For later supply arithmetic, N means filled active seats at match start; do not issue shares for empty configured seats.
+The PDF gives no starting balances/supply model. N is the match's configured active-player count; all configured seats must join before start, so no empty seat receives shares.
 
 - Start each player with 100 fictional credits and 10 shares; total issued supply is 20N shares. The match-local reserve starts with 10N; initial player holdings total 10N. Five seats: total 100/reserve 50. Sixty-four seats: total 1,280/reserve 640.
 - Reserve is finite and supply conserved. BUY transfers one share from reserve to player and credits to reserve. SELL transfers one share from player to reserve and pays the player. Both settle at the share price frozen at round open. HOLD has no effect.
@@ -70,13 +71,13 @@ The examples illustrate the S1-approved formulas and reserve boundary fixture; r
 
 Draft 3 only says one limited clue per match. A randomly revealed player's trade may be weak or redundant if trades are visible.
 
-**Approved S1 clue:** once per match, after trade resolution and before that round's vote, Investigator selects one other active player and privately receives a binary result: “target is the Insider” or “target is not the Insider.” A same-target retry returns the same result without consuming another use. Playtest balance remains reviewable.
+**Approved clue:** each active Investigator may use one clue per match after trade resolution and before that round's vote. The Investigator selects one other active player and privately receives a binary result: “target is an Insider” or “target is not an Insider.” A same-target retry by the same Investigator returns the same result without consuming another use; a different target after a successful clue is rejected. Clues and clue-use state are independent per Investigator. A target eliminated later does not invalidate its historical clue.
 
 ## S1-approved voting
 
 PDF does not define eligibility, abstentions, missing votes, ties, threshold or consequences.
 
-- All active players at vote open, including Insider and Investigator, may cast one secret vote for another active player or abstain. No self-vote. Eliminated players cannot vote or be targets.
+- All active players at vote open, including every Insider and Investigator, may cast one secret vote for another active player or abstain. No self-vote. Eliminated players cannot vote or be targets.
 - Missing vote at deadline counts as abstention.
 - Let E be active eligible voters at vote open. Eliminate a target only if they receive strictly more than E/2 votes. Abstentions remain in denominator. Tie/no strict majority means no elimination.
 - Eliminated Employee cannot trade, clue, vote or send game chat later; their cash/shares remain. They may receive public phase/results. No second vote that round.
@@ -87,10 +88,10 @@ These edge rules are approved for the S1 prototype by the user's follow-up.
 
 Draft 3 requires final evaluation but gives no victory rules.
 
-- If health reaches zero at market resolution, Insider wins immediately before clue/vote; calculate/report final price.
-- If a vote eliminates Insider while health is above zero, Employees win immediately after that vote.
+- If health reaches zero at market resolution, the Insider team wins immediately before clue/vote; calculate/report final price.
+- If a vote eliminates an Insider while health is positive, that player is eliminated. Employees win immediately only if no active Insiders remain.
 - Eliminating an Employee does not end the game.
-- If round three's vote resolves without eliminating Insider and health is above zero, Insider wins immediately at final evaluation.
+- If round three's vote resolves with health above zero and at least one Insider active, the Insider team wins immediately at final evaluation.
 - No draw under this proposal. Immediate outcomes avoid conflicts: the match ends on zero health or Insider elimination.
 
 These outcomes and precedence are approved for S1 by the user's follow-up; they are not rules supplied by the PDF.

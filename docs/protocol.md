@@ -2,7 +2,10 @@
 
 **Direct PDF requirements:** versioned length-prefixed envelope, request IDs, match IDs, payload, bounded input, validation, authorization, backpressure, initial UNIX sockets. **Proposed choices requiring approval:** encoding, field widths, ACK semantics and numeric limits.
 
-Initial transport: nonblocking UNIX domain stream sockets monitored by epoll. Bounded buffers handle partial/coalesced reads; transport contains no game rules. Future TCP/TLS 1.3 uses same message/game interface and is deferred.
+**Transport status:**
+- **Currently implemented:** Nonblocking localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll in `src/server_main.cpp`, with an interactive terminal client CLI in `src/client_main.cpp`.
+- **Original architecture requirement:** Nonblocking UNIX domain stream sockets monitored by epoll.
+- **Deferred future work:** UNIX domain transport adapter, production TCP/TLS 1.3 remote transport, and certificate lifecycle. Transport contains no game rules.
 
 **Proposed framing:** 4-byte unsigned big-endian frame length, then fixed header (version u16, message type u16, request ID u64, match ID 16 bytes, payload length u32), then UTF-8 JSON payload. Length counts header+payload; validate exact payload length before allocation. Zero match ID only for pre-match/control requests.
 
@@ -13,6 +16,8 @@ Proposed server types: WELCOME, ACK, MATCH_CREATED, JOINED, PHASE, EVENT, ROLE_P
 **Proposed ACK semantics requiring approval:** Each well-framed correlated command receives exactly one ACK after validation/transition and response enqueue, or ERROR on rejection. ACK includes request ID, result code, and authoritative sequence where relevant. PING returns PONG. Exact retry replays the same outcome without a second mutation. Malformed framing may close without ACK. This defines the p95 boundary in test-plan.md.
 
 Connection flow: accept and assign connection ID; authenticate peer; create/resume server session; assign player identity server-side; join by validated operation; route using server-side session-to-match mapping; validate frame/schema/session/membership/phase/role/rate; apply transition, audit and enqueue authorized output; cleanup on disconnect under approved grace policy.
+
+The current coordinator `create_match` command accepts optional integer `player_count` in [3,64]; omission preserves the five-player default. The server derives the role counts using DEC-02, shuffles that role list, and assigns roles to server-owned seats. Client-supplied `roles` are rejected. `join_match` only fills an unoccupied seat in that match, and `start_match` requires all configured seats. The moderator is not a player seat. Four match records and 256 player plus one moderator connection (257 total) are configured limits, not measured capacity.
 
 Proposed local authentication requiring approval: Linux peer credentials, restrictive socket ownership/mode, server session IDs; same UID does not distinguish humans. No persistent accounts. Reconnect secret policy remains open.
 

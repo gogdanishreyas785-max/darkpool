@@ -14,6 +14,8 @@ using Credits = std::uint32_t;
 using Shares = std::uint32_t;
 
 inline constexpr std::size_t kPlayerCount = 5;
+inline constexpr std::size_t kMinPlayerCount = 3;
+inline constexpr std::size_t kMaxPlayerCount = 64;
 inline constexpr std::uint32_t kRoundCount = 3;
 inline constexpr Credits kStartingCredits = 100;
 inline constexpr Shares kStartingShares = 10;
@@ -65,6 +67,9 @@ struct PlayerState {
   std::optional<TradeAction> order;
   bool vote_submitted{false};
   std::optional<PlayerId> vote_target;  // null means abstention
+  bool clue_used{false};
+  std::optional<PlayerId> clue_target;
+  std::optional<bool> clue_result;
 };
 
 struct CompanyState {
@@ -78,9 +83,15 @@ struct SupplyPlan {
   Shares reserve{};
 };
 
-// Economy arithmetic is useful for larger-seat planning without approving a
-// larger-match role policy or enabling >5-player matches in this milestone.
+struct RoleCounts {
+  std::size_t insiders{};
+  std::size_t investigators{};
+  std::size_t employees{};
+};
+
+// Five seats remain the default; variable-size games support 3..64 active players.
 [[nodiscard]] std::optional<SupplyPlan> supply_plan(std::size_t seated_players) noexcept;
+[[nodiscard]] std::optional<RoleCounts> role_counts(std::size_t seated_players) noexcept;
 
 struct MatchState {
   std::vector<PlayerState> players;
@@ -150,7 +161,7 @@ struct VoteResolution {
 
 class Match {
  public:
-  // Roles are injected explicitly: S1 has no approved role-shuffling policy.
+  // Role assignment is deterministic and validated against role_counts(N).
   explicit Match(const std::vector<PlayerSetup>& roster);
 
   // Allows deterministic, invariant-checked fixtures such as reserve=1.
