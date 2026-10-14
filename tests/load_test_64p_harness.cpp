@@ -23,11 +23,11 @@ int main() {
 #include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <numeric>
 #include <optional>
-#include <random>
 #include <sstream>
 #include <string>
 #include <string_view>
@@ -61,6 +61,7 @@ constexpr const char* kDefaultModeratorToken = "test-mod-token-64p";
 struct FailureCounts {
   std::size_t transport_failures{0};
   std::size_t correctness_failures{0};
+  std::string last_failure_reason;
 
   [[nodiscard]] std::size_t total() const noexcept {
     return transport_failures + correctness_failures;
@@ -73,11 +74,13 @@ struct RequestMetric {
   bool is_concurrent{false};
   bool transport_ok{false};
   bool correctness_ok{false};
+  bool is_expected_rejection{false};
 };
 
 struct PhaseMetrics {
   std::size_t total_requests{0};
   std::size_t successful_requests{0};
+  std::size_t expected_rejections{0};
   std::size_t transport_failures{0};
   std::size_t correctness_failures{0};
   double p50_ms{0.0};
@@ -110,6 +113,7 @@ struct SustainedStageResult {
   std::string stage_name;
   std::string status{"NOT RUN"};  // PASS, FAIL, NOT RUN, BLOCKED
   std::string reason;
+  std::string diagnostic_details;
   std::uint64_t target_duration_s{0};
   std::uint64_t actual_duration_ms{0};
   std::size_t completed_matches{0};
@@ -126,7 +130,211 @@ struct SustainedStageResult {
 struct TestFaultConfig {
   bool inject_assertion_failure{false};
   bool inject_outcome_mismatch{false};
+  bool inject_semantic_failure{false};
 };
+
+struct ValidationResult {
+  bool correctness_ok{true};
+  bool is_expected_rejection{false};
+  std::string failure_reason;
+
+  static ValidationResult Success() {
+    return {true, false, ""};
+  }
+
+  static ValidationResult ExpectedRejection() {
+    return {true, true, ""};
+  }
+
+  static ValidationResult Failure(std::string reason) {
+    return {false, false, std::move(reason)};
+  }
+};
+
+using ResponseValidator = std::function<ValidationResult(const json&)>;
+
+inline ResponseValidator expect_connect(const std::string& role) {
+  return [role](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "connect") {
+      return ValidationResult::Failure("Expected type 'connect', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("role", "") != role) {
+      return ValidationResult::Failure("Expected role '" + role + "', got '" + j.value("role", "") + "'");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_match_created(
+    std::size_t player_count,
+    std::size_t insiders,
+    std::size_t investigators,
+    std::size_t employees) {
+  return [=](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "match_created") {
+      return ValidationResult::Failure("Expected type 'match_created', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("player_count", 0ULL) != player_count) {
+      return ValidationResult::Failure("Expected player_count " + std::to_string(player_count) +
+                                       ", got " + std::to_string(j.value("player_count", 0ULL)));
+    }
+    if (j.value("insiders", 0ULL) != insiders) {
+      return ValidationResult::Failure("Expected insiders " + std::to_string(insiders) +
+                                       ", got " + std::to_string(j.value("insiders", 0ULL)));
+    }
+    if (j.value("investigators", 0ULL) != investigators) {
+      return ValidationResult::Failure("Expected investigators " + std::to_string(investigators) +
+                                       ", got " + std::to_string(j.value("investigators", 0ULL)));
+    }
+    if (j.value("employees", 0ULL) != employees) {
+      return ValidationResult::Failure("Expected employees " + std::to_string(employees) +
+                                       ", got " + std::to_string(j.value("employees", 0ULL)));
+    }
+    if (!j.contains("match_id") || j["match_id"].get<std::uint64_t>() == 0U) {
+      return ValidationResult::Failure("Missing or zero match_id");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_joined_match(std::uint32_t expected_player_id) {
+  return [expected_player_id](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "joined_match") {
+      return ValidationResult::Failure("Expected type 'joined_match', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("player_id", 0U) != expected_player_id) {
+      return ValidationResult::Failure("Expected player_id " + std::to_string(expected_player_id) +
+                                       ", got " + std::to_string(j.value("player_id", 0U)));
+    }
+    if (!j.contains("private_role") || !j["private_role"].is_string()) {
+      return ValidationResult::Failure("Missing or invalid private_role");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_transition(const std::string& expected_phase) {
+  return [expected_phase](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "transition_result") {
+      return ValidationResult::Failure("Expected type 'transition_result', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("phase", "") != expected_phase) {
+      return ValidationResult::Failure("Expected phase '" + expected_phase + "', got '" + j.value("phase", "") + "'");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_insider_hint(int expected_impact) {
+  return [expected_impact](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "hint_private") {
+      return ValidationResult::Failure("Expected type 'hint_private', got '" + j.value("type", "") + "'");
+    }
+    if (!j.contains("event_impact") || j["event_impact"].get<int>() != expected_impact) {
+      return ValidationResult::Failure("Event impact mismatch in hint");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_trade_accepted() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "trade_result") {
+      return ValidationResult::Failure("Expected type 'trade_result', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("code", "") != "Accepted") {
+      return ValidationResult::Failure("Expected trade code 'Accepted', got '" + j.value("code", "") + "'");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_market_result() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "market_result") {
+      return ValidationResult::Failure("Expected type 'market_result', got '" + j.value("type", "") + "'");
+    }
+    if (!j.value("ok", false)) {
+      return ValidationResult::Failure("Market resolution ok is false");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_vote_accepted() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "vote_result") {
+      return ValidationResult::Failure("Expected type 'vote_result', got '" + j.value("type", "") + "'");
+    }
+    if (!j.value("accepted", false)) {
+      return ValidationResult::Failure("Vote accepted is false");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_vote_resolution() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "vote_resolution") {
+      return ValidationResult::Failure("Expected type 'vote_resolution', got '" + j.value("type", "") + "'");
+    }
+    if (!j.value("ok", false)) {
+      return ValidationResult::Failure("Vote resolution ok is false");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_match_status(const std::string& expected_phase, const std::string& expected_outcome) {
+  return [expected_phase, expected_outcome](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "match_status") {
+      return ValidationResult::Failure("Expected type 'match_status', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("phase", "") != expected_phase) {
+      return ValidationResult::Failure("Expected status phase '" + expected_phase + "', got '" + j.value("phase", "") + "'");
+    }
+    if (j.value("outcome", "") != expected_outcome) {
+      return ValidationResult::Failure("Expected status outcome '" + expected_outcome + "', got '" + j.value("outcome", "") + "'");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_investigator_clue() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "clue_private") {
+      return ValidationResult::Failure("Expected type 'clue_private', got '" + j.value("type", "") + "'");
+    }
+    if (!j.contains("is_insider")) {
+      return ValidationResult::Failure("Missing is_insider field in clue response");
+    }
+    return ValidationResult::Success();
+  };
+}
+
+inline ResponseValidator expect_error(const std::string& expected_error) {
+  return [expected_error](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "error") {
+      return ValidationResult::Failure("Expected error response, got '" + j.value("type", "") + "'");
+    }
+    if (j.value("error", "") != expected_error) {
+      return ValidationResult::Failure("Expected error '" + expected_error + "', got '" + j.value("error", "") + "'");
+    }
+    return ValidationResult::ExpectedRejection();
+  };
+}
+
+inline ResponseValidator expect_operation_rejected() {
+  return [](const json& j) -> ValidationResult {
+    if (j.value("type", "") != "operation_result") {
+      return ValidationResult::Failure("Expected type 'operation_result', got '" + j.value("type", "") + "'");
+    }
+    if (j.value("ok", true)) {
+      return ValidationResult::Failure("Expected operation ok=false (rejection), got ok=true");
+    }
+    return ValidationResult::ExpectedRejection();
+  };
+}
 
 bool send_all(int fd, const char* data, std::size_t size) {
   std::size_t offset = 0;
@@ -161,6 +369,7 @@ std::optional<json> timed_request(
     const json& payload,
     std::vector<RequestMetric>& out_metrics,
     FailureCounts& failures,
+    const ResponseValidator& validator = nullptr,
     bool is_concurrent = false) {
   const std::string req_type = payload.value("type", "unknown");
   const auto outgoing = Frame(payload).serialize();
@@ -173,7 +382,8 @@ std::optional<json> timed_request(
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
+    failures.last_failure_reason = "send_all failed for " + req_type;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 
@@ -183,7 +393,8 @@ std::optional<json> timed_request(
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
+    failures.last_failure_reason = "receive header failed for " + req_type;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 
@@ -197,7 +408,8 @@ std::optional<json> timed_request(
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
+    failures.last_failure_reason = "invalid frame length (" + std::to_string(length) + ") for " + req_type;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 
@@ -208,7 +420,8 @@ std::optional<json> timed_request(
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
+    failures.last_failure_reason = "receive payload bytes failed for " + req_type;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 
@@ -222,14 +435,27 @@ std::optional<json> timed_request(
     const auto response = Frame::parse(bytes, consumed);
     if (!response || consumed != bytes.size()) {
       failures.transport_failures++;
-      out_metrics.push_back({req_type, us, is_concurrent, false, false});
+      failures.last_failure_reason = "Frame::parse failed for " + req_type;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
       return std::nullopt;
     }
-    out_metrics.push_back({req_type, us, is_concurrent, true, true});
-    return response->payload();
-  } catch (const std::exception&) {
+
+    const auto resp_payload = response->payload();
+    const ValidationResult v = validator ? validator(resp_payload) : ValidationResult::Success();
+
+    if (!v.correctness_ok) {
+      failures.correctness_failures++;
+      failures.last_failure_reason = v.failure_reason.empty() ? ("Validation failed for " + req_type) : v.failure_reason;
+      out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/false, /*is_expected_rejection=*/false});
+      return std::nullopt;
+    }
+
+    out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/true, v.is_expected_rejection});
+    return resp_payload;
+  } catch (const std::exception& e) {
     failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
+    failures.last_failure_reason = std::string("Exception during frame parse for ") + req_type + ": " + e.what();
+    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 }
@@ -462,10 +688,18 @@ RunResult execute_64_player_match(
 
   const auto run_start = std::chrono::steady_clock::now();
 
-  #define VERIFY(cond, err_msg) \
+  #define VERIFY_REQUEST(resp_opt, err_msg) \
+    do { \
+      if (!(resp_opt).has_value()) { \
+        std::cerr << "Run " << run_index << " REQUEST ERROR: " << (err_msg) \
+                  << " (" << result.failures.last_failure_reason << ") at line " << __LINE__ << '\n'; \
+      } \
+    } while (0)
+
+  #define VERIFY_STATE(cond, err_msg) \
     do { \
       if (!(cond)) { \
-        std::cerr << "Run " << run_index << " CORRECTNESS ERROR: " << (err_msg) \
+        std::cerr << "Run " << run_index << " STATE ERROR: " << (err_msg) \
                   << " at line " << __LINE__ << '\n'; \
         result.failures.correctness_failures++; \
       } \
@@ -485,9 +719,9 @@ RunResult execute_64_player_match(
       mod_fd,
       json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
       result.metrics,
-      result.failures);
-  VERIFY(mod_hello && (*mod_hello)["type"] == "connect" && (*mod_hello)["role"] == "moderator",
-         "Moderator handshake failed");
+      result.failures,
+      expect_connect("moderator"));
+  VERIFY_REQUEST(mod_hello, "Moderator handshake failed");
 
   // 2. Establish 64 Player Connections over UNIX Socket
   for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
@@ -504,9 +738,9 @@ RunResult execute_64_player_match(
         pfd,
         json{{"type", "connect"}, {"role", "player"}},
         result.metrics,
-        result.failures);
-    VERIFY(player_hello && (*player_hello)["type"] == "connect" && (*player_hello)["role"] == "player",
-           "Player connect handshake response mismatch");
+        result.failures,
+        expect_connect("player"));
+    VERIFY_REQUEST(player_hello, "Player connect handshake failed");
   }
 
   // 3. Create 64-Player Match
@@ -514,16 +748,12 @@ RunResult execute_64_player_match(
       mod_fd,
       json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}},
       result.metrics,
-      result.failures);
-  VERIFY(create_resp && (*create_resp)["type"] == "match_created" &&
-             (*create_resp)["player_count"] == kExpectedPlayerCount &&
-             (*create_resp)["insiders"] == kExpectedInsiders &&
-             (*create_resp)["investigators"] == kExpectedInvestigators &&
-             (*create_resp)["employees"] == kExpectedEmployees,
-         "Failed to create 64-player match or role count mismatch");
+      result.failures,
+      expect_match_created(kExpectedPlayerCount, kExpectedInsiders, kExpectedInvestigators, kExpectedEmployees));
+  VERIFY_REQUEST(create_resp, "Failed to create 64-player match or role count mismatch");
 
   const auto match_id = create_resp ? (*create_resp)["match_id"].get<std::uint64_t>() : 0U;
-  VERIFY(match_id > 0U, "Invalid match_id received");
+  VERIFY_STATE(match_id > 0U, "Invalid match_id received");
 
   // 4. Have first 63 players join
   std::vector<int> insider_fds;
@@ -536,10 +766,9 @@ RunResult execute_64_player_match(
         player_fds[i],
         json{{"type", "join_match"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(join_resp && (*join_resp)["type"] == "joined_match" &&
-               (*join_resp)["player_id"] == i + 1U,
-           "Player failed to join match");
+        result.failures,
+        expect_joined_match(static_cast<std::uint32_t>(i + 1U)));
+    VERIFY_REQUEST(join_resp, "Player failed to join match");
 
     if (join_resp && join_resp->contains("private_role")) {
       const auto role = (*join_resp)["private_role"].get<std::string>();
@@ -559,20 +788,18 @@ RunResult execute_64_player_match(
       mod_fd,
       json{{"type", "start_match"}, {"match_id", match_id}},
       result.metrics,
-      result.failures);
-  VERIFY(premature_start && (*premature_start)["type"] == "error" &&
-             (*premature_start)["error"] == "all configured players must join before start",
-         "Expected premature start_match to be rejected before complete roster");
+      result.failures,
+      expect_error("all configured players must join before start"));
+  VERIFY_REQUEST(premature_start, "Expected premature start_match to be rejected before complete roster");
 
   // 6. Join 64th player
   const auto join_64 = timed_request(
       player_fds[kExpectedPlayerCount - 1U],
       json{{"type", "join_match"}, {"match_id", match_id}},
       result.metrics,
-      result.failures);
-  VERIFY(join_64 && (*join_64)["type"] == "joined_match" &&
-             (*join_64)["player_id"] == kExpectedPlayerCount,
-         "64th player join failed");
+      result.failures,
+      expect_joined_match(static_cast<std::uint32_t>(kExpectedPlayerCount)));
+  VERIFY_REQUEST(join_64, "64th player join failed");
   if (join_64 && join_64->contains("private_role")) {
     const auto role = (*join_64)["private_role"].get<std::string>();
     if (role == "Insider") {
@@ -588,26 +815,25 @@ RunResult execute_64_player_match(
   // 7. Excess join validation: Verify 65th player join is rejected (match is full)
   const int extra_pfd = connect_unix(socket_path);
   if (extra_pfd >= 0) {
-    (void)timed_request(extra_pfd, json{{"type", "connect"}, {"role", "player"}}, result.metrics, result.failures);
+    (void)timed_request(extra_pfd, json{{"type", "connect"}, {"role", "player"}}, result.metrics, result.failures, expect_connect("player"));
     const auto excess_join = timed_request(
         extra_pfd,
         json{{"type", "join_match"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(excess_join && (*excess_join)["type"] == "error" &&
-               (*excess_join)["error"] == "match is full",
-           "Expected excess 65th join to be rejected with 'match is full'");
+        result.failures,
+        expect_error("match is full"));
+    VERIFY_REQUEST(excess_join, "Expected excess 65th join to be rejected with 'match is full'");
     (void)close(extra_pfd);
   }
 
   // 8. Verify exact role distribution for N=64
-  VERIFY(insider_fds.size() == kExpectedInsiders, "Expected exactly 8 Insiders for N=64");
-  VERIFY(investigator_fds.size() == kExpectedInvestigators, "Expected exactly 4 Investigators for N=64");
-  VERIFY(employee_fds.size() == kExpectedEmployees, "Expected exactly 52 Employees for N=64");
+  VERIFY_STATE(insider_fds.size() == kExpectedInsiders, "Expected exactly 8 Insiders for N=64");
+  VERIFY_STATE(investigator_fds.size() == kExpectedInvestigators, "Expected exactly 4 Investigators for N=64");
+  VERIFY_STATE(employee_fds.size() == kExpectedEmployees, "Expected exactly 52 Employees for N=64");
 
   // Injected fault test: simulate assertion failure if configured
   if (fault_cfg.inject_assertion_failure) {
-    VERIFY(false, "Simulated injected assertion failure for regression testing");
+    VERIFY_STATE(false, "Simulated injected assertion failure for regression testing");
   }
 
   // 9. Start Match (now valid with all 64 players joined)
@@ -615,10 +841,9 @@ RunResult execute_64_player_match(
       mod_fd,
       json{{"type", "start_match"}, {"match_id", match_id}},
       result.metrics,
-      result.failures);
-  VERIFY(start_resp && (*start_resp)["type"] == "transition_result" &&
-             (*start_resp)["phase"] == "AwaitingEvent",
-         "Failed to start match or phase is not AwaitingEvent");
+      result.failures,
+      expect_transition("AwaitingEvent"));
+  VERIFY_REQUEST(start_resp, "Failed to start match or phase is not AwaitingEvent");
 
   // 10. Execute All 3 Rounds
   // Round 1: Sequential requests + Privacy visibility checks
@@ -633,10 +858,9 @@ RunResult execute_64_player_match(
         mod_fd,
         json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", event_impact}},
         result.metrics,
-        result.failures);
-    VERIFY(event_resp && (*event_resp)["type"] == "transition_result" &&
-               (*event_resp)["phase"] == "Discussion",
-           "Publish event failed or phase not Discussion");
+        result.failures,
+        expect_transition("Discussion"));
+    VERIFY_REQUEST(event_resp, "Publish event failed or phase not Discussion");
 
     // 10b. Privacy Visibility Check: Employee attempting insider hint must be rejected
     if (round == 1U && !employee_fds.empty()) {
@@ -644,10 +868,9 @@ RunResult execute_64_player_match(
           employee_fds[0],
           json{{"type", "insider_hint"}, {"match_id", match_id}},
           result.metrics,
-          result.failures);
-      VERIFY(unauth_hint && (*unauth_hint)["type"] == "operation_result" &&
-                 (*unauth_hint)["ok"] == false,
-             "Expected unauthorized insider_hint from Employee to be rejected");
+          result.failures,
+          expect_operation_rejected());
+      VERIFY_REQUEST(unauth_hint, "Expected unauthorized insider_hint from Employee to be rejected");
     }
 
     // 10c. Authorized Insider Hints: All 8 Insiders receive private hint
@@ -656,10 +879,9 @@ RunResult execute_64_player_match(
           ifd,
           json{{"type", "insider_hint"}, {"match_id", match_id}},
           result.metrics,
-          result.failures);
-      VERIFY(hint_resp && (*hint_resp)["type"] == "hint_private" &&
-                 (*hint_resp)["event_impact"] == event_impact,
-             "Insider hint response mismatch or incorrect impact");
+          result.failures,
+          expect_insider_hint(event_impact));
+      VERIFY_REQUEST(hint_resp, "Insider hint response mismatch or incorrect impact");
     }
 
     // 10d. Open Trading
@@ -667,10 +889,9 @@ RunResult execute_64_player_match(
         mod_fd,
         json{{"type", "open_trading"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(trade_phase && (*trade_phase)["type"] == "transition_result" &&
-               (*trade_phase)["phase"] == "Trading",
-           "Open trading failed or phase not Trading");
+        result.failures,
+        expect_transition("Trading"));
+    VERIFY_REQUEST(trade_phase, "Open trading failed or phase not Trading");
 
     // 10e. Player Trades
     if (is_concurrent_round) {
@@ -688,8 +909,9 @@ RunResult execute_64_player_match(
               json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}},
               thread_metrics[i],
               thread_failures[i],
+              expect_trade_accepted(),
               true);
-          if (resp && (*resp)["type"] == "trade_result" && (*resp)["code"] == "Accepted") {
+          if (resp) {
             thread_passed[i] = 1;
           }
         });
@@ -703,19 +925,22 @@ RunResult execute_64_player_match(
         for (const auto& m : thread_metrics[i]) result.metrics.push_back(m);
         result.failures.transport_failures += thread_failures[i].transport_failures;
         result.failures.correctness_failures += thread_failures[i].correctness_failures;
-        VERIFY(thread_passed[i] == 1, "Concurrent trade request failed or rejected");
+        VERIFY_STATE(thread_passed[i] == 1, "Concurrent trade request failed or rejected");
       }
     } else {
       // Sequential trade submissions
       for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
+        json trade_req = json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}};
+        if (fault_cfg.inject_semantic_failure && round == 1U && i == 0U) {
+          trade_req["match_id"] = match_id + 999999U; // intentional mismatch to trigger server error
+        }
         const auto trade_resp = timed_request(
             player_fds[i],
-            json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}},
+            trade_req,
             result.metrics,
-            result.failures);
-        VERIFY(trade_resp && (*trade_resp)["type"] == "trade_result" &&
-                   (*trade_resp)["code"] == "Accepted",
-               "Sequential trade request failed or rejected");
+            result.failures,
+            expect_trade_accepted());
+        VERIFY_REQUEST(trade_resp, "Sequential trade request failed or rejected");
       }
     }
 
@@ -724,10 +949,9 @@ RunResult execute_64_player_match(
         mod_fd,
         json{{"type", "resolve_market"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(market_resp && (*market_resp)["type"] == "market_result" &&
-               (*market_resp)["ok"] == true,
-           "Resolve market failed");
+        result.failures,
+        expect_market_result());
+    VERIFY_REQUEST(market_resp, "Resolve market failed");
 
     // 10g. Clue Phase & Privacy Validation (Round 1 only)
     if (round == 1U) {
@@ -738,10 +962,9 @@ RunResult execute_64_player_match(
             employee_fds[0],
             json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", unauth_target}},
             result.metrics,
-            result.failures);
-        VERIFY(unauth_clue && (*unauth_clue)["type"] == "operation_result" &&
-                   (*unauth_clue)["ok"] == false,
-               "Expected unauthorized request_clue from Employee to be rejected");
+            result.failures,
+            expect_operation_rejected());
+        VERIFY_REQUEST(unauth_clue, "Expected unauthorized request_clue from Employee to be rejected");
       }
 
       if (!investigator_fds.empty() && employee_target > 0U) {
@@ -750,9 +973,9 @@ RunResult execute_64_player_match(
             investigator_fds[0],
             json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", employee_target}},
             result.metrics,
-            result.failures);
-        VERIFY(clue_resp && (*clue_resp)["type"] == "clue_private" && clue_resp->contains("is_insider"),
-               "Investigator clue request failed or missing is_insider field");
+            result.failures,
+            expect_investigator_clue());
+        VERIFY_REQUEST(clue_resp, "Investigator clue request failed or missing is_insider field");
       }
     }
 
@@ -761,10 +984,9 @@ RunResult execute_64_player_match(
         mod_fd,
         json{{"type", "open_voting"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(vote_phase && (*vote_phase)["type"] == "transition_result" &&
-               (*vote_phase)["phase"] == "Voting",
-           "Open voting failed or phase not Voting");
+        result.failures,
+        expect_transition("Voting"));
+    VERIFY_REQUEST(vote_phase, "Open voting failed or phase not Voting");
 
     // 10i. Player Votes
     if (is_concurrent_round) {
@@ -782,8 +1004,9 @@ RunResult execute_64_player_match(
               json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
               thread_metrics[i],
               thread_failures[i],
+              expect_vote_accepted(),
               true);
-          if (resp && (*resp)["type"] == "vote_result" && (*resp)["accepted"] == true) {
+          if (resp) {
             thread_passed[i] = 1;
           }
         });
@@ -797,7 +1020,7 @@ RunResult execute_64_player_match(
         for (const auto& m : thread_metrics[i]) result.metrics.push_back(m);
         result.failures.transport_failures += thread_failures[i].transport_failures;
         result.failures.correctness_failures += thread_failures[i].correctness_failures;
-        VERIFY(thread_passed[i] == 1, "Concurrent vote request failed or rejected");
+        VERIFY_STATE(thread_passed[i] == 1, "Concurrent vote request failed or rejected");
       }
     } else {
       // Sequential vote submissions (all abstain)
@@ -806,10 +1029,9 @@ RunResult execute_64_player_match(
             player_fds[i],
             json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
             result.metrics,
-            result.failures);
-        VERIFY(vote_resp && (*vote_resp)["type"] == "vote_result" &&
-                   (*vote_resp)["accepted"] == true,
-               "Sequential vote request failed or rejected");
+            result.failures,
+            expect_vote_accepted());
+        VERIFY_REQUEST(vote_resp, "Sequential vote request failed or rejected");
       }
     }
 
@@ -818,10 +1040,9 @@ RunResult execute_64_player_match(
         mod_fd,
         json{{"type", "resolve_votes"}, {"match_id", match_id}},
         result.metrics,
-        result.failures);
-    VERIFY(resolve_resp && (*resolve_resp)["type"] == "vote_resolution" &&
-               (*resolve_resp)["ok"] == true,
-           "Resolve votes failed");
+        result.failures,
+        expect_vote_resolution());
+    VERIFY_REQUEST(resolve_resp, "Resolve votes failed");
   }
 
   // 11. Verify Final Terminal Outcome
@@ -829,20 +1050,21 @@ RunResult execute_64_player_match(
       mod_fd,
       json{{"type", "match_status"}, {"match_id", match_id}},
       result.metrics,
-      result.failures);
-  VERIFY(status_resp && (*status_resp)["type"] == "match_status", "Failed to retrieve final match status");
+      result.failures,
+      expect_match_status("Finished", "InsiderWin"));
+  VERIFY_REQUEST(status_resp, "Failed to retrieve final match status");
 
   if (status_resp) {
     result.final_phase = status_resp->value("phase", "Unknown");
     result.final_outcome = status_resp->value("outcome", "Unknown");
   }
 
-  VERIFY(result.final_phase == "Finished", "Expected final phase to be Finished");
-  VERIFY(result.final_outcome == "InsiderWin", "Expected guaranteed outcome to be InsiderWin");
+  VERIFY_STATE(result.final_phase == "Finished", "Expected final phase to be Finished");
+  VERIFY_STATE(result.final_outcome == "InsiderWin", "Expected guaranteed outcome to be InsiderWin");
 
   // Injected fault test: simulate outcome mismatch if configured
   if (fault_cfg.inject_outcome_mismatch) {
-    VERIFY(result.final_outcome == "EmployeesWin", "Simulated injected outcome mismatch for regression testing");
+    VERIFY_STATE(result.final_outcome == "EmployeesWin", "Simulated injected outcome mismatch for regression testing");
   }
 
   const auto run_end = std::chrono::steady_clock::now();
@@ -869,7 +1091,11 @@ RunResult execute_64_player_match(
     if (m.is_concurrent) {
       result.concurrent.total_requests++;
       if (m.transport_ok && m.correctness_ok) {
-        result.concurrent.successful_requests++;
+        if (m.is_expected_rejection) {
+          result.concurrent.expected_rejections++;
+        } else {
+          result.concurrent.successful_requests++;
+        }
         conc_latencies.push_back(m.latency_us);
       } else {
         if (!m.transport_ok) result.concurrent.transport_failures++;
@@ -878,7 +1104,11 @@ RunResult execute_64_player_match(
     } else {
       result.sequential.total_requests++;
       if (m.transport_ok && m.correctness_ok) {
-        result.sequential.successful_requests++;
+        if (m.is_expected_rejection) {
+          result.sequential.expected_rejections++;
+        } else {
+          result.sequential.successful_requests++;
+        }
         seq_latencies.push_back(m.latency_us);
       } else {
         if (!m.transport_ok) result.sequential.transport_failures++;
@@ -888,6 +1118,7 @@ RunResult execute_64_player_match(
   }
 
   result.total.successful_requests = result.sequential.successful_requests + result.concurrent.successful_requests;
+  result.total.expected_rejections = result.sequential.expected_rejections + result.concurrent.expected_rejections;
   result.total.transport_failures = result.failures.transport_failures;
   result.total.correctness_failures = result.failures.correctness_failures;
 
@@ -904,7 +1135,8 @@ SustainedStageResult execute_sustained_workload(
     const std::string& server_path,
     std::uint64_t duration_seconds,
     std::uint64_t seed,
-    const std::string& stage_name) {
+    const std::string& stage_name,
+    const TestFaultConfig& fault_cfg = {}) {
   SustainedStageResult result;
   result.stage_name = stage_name;
   result.target_duration_s = duration_seconds;
@@ -916,7 +1148,8 @@ SustainedStageResult execute_sustained_workload(
   const auto server_pid = spawn_server_unix(server_path, socket_path, mod_token);
   if (server_pid <= 0) {
     result.status = "FAIL";
-    result.reason = "Failed to spawn server";
+    result.reason = "Failed to spawn darkpool_server";
+    result.diagnostic_details = "spawn_server_unix failed for path: " + server_path;
     return result;
   }
 
@@ -924,12 +1157,12 @@ SustainedStageResult execute_sustained_workload(
   if (probe_fd < 0) {
     result.status = "FAIL";
     result.reason = "Failed to probe server on unix socket";
+    result.diagnostic_details = "connect_unix failed for path: " + socket_path;
     stop_server_unix(server_pid, socket_path);
     return result;
   }
   (void)close(probe_fd);
 
-  std::mt19937_64 rng(seed);
   std::vector<std::uint64_t> all_latencies;
   FailureCounts failures;
   std::vector<RequestMetric> metrics;
@@ -938,16 +1171,18 @@ SustainedStageResult execute_sustained_workload(
   const auto deadline = start_time + std::chrono::seconds(duration_seconds);
 
   std::cout << "[" << stage_name << "] Beginning sustained repeated-match workload (target: "
-            << duration_seconds << "s, seed: " << seed << ")..." << std::endl;
+            << duration_seconds << "s, metadata seed: " << seed << ")..." << std::endl;
 
   bool abort_due_to_failure = false;
 
   while (std::chrono::steady_clock::now() < deadline && !abort_due_to_failure) {
-    // Connect moderator and 64 players for this match (planned reset)
+    // 1. Moderator Connect
     int mod_fd = connect_unix(socket_path);
     if (mod_fd < 0) {
       result.unexpected_disconnects++;
       failures.transport_failures++;
+      failures.last_failure_reason = "Failed to connect moderator socket";
+      result.reason = failures.last_failure_reason;
       abort_due_to_failure = true;
       break;
     }
@@ -955,14 +1190,16 @@ SustainedStageResult execute_sustained_workload(
     const auto mod_hello = timed_request(
         mod_fd,
         json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
-        metrics, failures);
-    if (!mod_hello || (*mod_hello)["type"] != "connect") {
-      failures.correctness_failures++;
+        metrics, failures,
+        expect_connect("moderator"));
+    if (!mod_hello) {
+      result.reason = "Moderator handshake failed: " + failures.last_failure_reason;
       abort_due_to_failure = true;
       (void)close(mod_fd);
       break;
     }
 
+    // 2. 64 Players Connect
     std::vector<int> player_fds;
     player_fds.reserve(kExpectedPlayerCount);
     for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
@@ -970,14 +1207,18 @@ SustainedStageResult execute_sustained_workload(
       if (pfd < 0) {
         result.unexpected_disconnects++;
         failures.transport_failures++;
+        failures.last_failure_reason = "Failed to connect socket for player " + std::to_string(i);
+        result.reason = failures.last_failure_reason;
         abort_due_to_failure = true;
         break;
       }
       player_fds.push_back(pfd);
       const auto p_hello = timed_request(
-          pfd, json{{"type", "connect"}, {"role", "player"}}, metrics, failures);
-      if (!p_hello || (*p_hello)["type"] != "connect") {
-        failures.correctness_failures++;
+          pfd, json{{"type", "connect"}, {"role", "player"}},
+          metrics, failures,
+          expect_connect("player"));
+      if (!p_hello) {
+        result.reason = "Player " + std::to_string(i) + " connect failed: " + failures.last_failure_reason;
         abort_due_to_failure = true;
         break;
       }
@@ -988,11 +1229,14 @@ SustainedStageResult execute_sustained_workload(
       break;
     }
 
-    // Create match
+    // 3. Create Match
     const auto create_resp = timed_request(
-        mod_fd, json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}}, metrics, failures);
-    if (!create_resp || (*create_resp)["type"] != "match_created") {
-      failures.correctness_failures++;
+        mod_fd,
+        json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}},
+        metrics, failures,
+        expect_match_created(kExpectedPlayerCount, kExpectedInsiders, kExpectedInvestigators, kExpectedEmployees));
+    if (!create_resp) {
+      result.reason = "Create match failed: " + failures.last_failure_reason;
       abort_due_to_failure = true;
       for (const auto pfd : player_fds) (void)close(pfd);
       (void)close(mod_fd);
@@ -1000,13 +1244,16 @@ SustainedStageResult execute_sustained_workload(
     }
     const auto match_id = (*create_resp)["match_id"].get<std::uint64_t>();
 
-    // Players join
+    // 4. Players Join
     std::vector<int> insider_fds;
     for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
       const auto join_resp = timed_request(
-          player_fds[i], json{{"type", "join_match"}, {"match_id", match_id}}, metrics, failures);
-      if (!join_resp || (*join_resp)["type"] != "joined_match") {
-        failures.correctness_failures++;
+          player_fds[i],
+          json{{"type", "join_match"}, {"match_id", match_id}},
+          metrics, failures,
+          expect_joined_match(static_cast<std::uint32_t>(i + 1U)));
+      if (!join_resp) {
+        result.reason = "Player " + std::to_string(i + 1U) + " join failed: " + failures.last_failure_reason;
         abort_due_to_failure = true;
         break;
       }
@@ -1020,47 +1267,165 @@ SustainedStageResult execute_sustained_workload(
       break;
     }
 
-    // Start match
-    const auto start_resp = timed_request(
-        mod_fd, json{{"type", "start_match"}, {"match_id", match_id}}, metrics, failures);
-    if (!start_resp || (*start_resp)["type"] != "transition_result") {
+    if (insider_fds.size() != kExpectedInsiders) {
       failures.correctness_failures++;
+      failures.last_failure_reason = "Insider count mismatch in sustained workload: expected " +
+                                     std::to_string(kExpectedInsiders) + ", got " +
+                                     std::to_string(insider_fds.size());
+      result.reason = failures.last_failure_reason;
       abort_due_to_failure = true;
       for (const auto pfd : player_fds) (void)close(pfd);
       (void)close(mod_fd);
       break;
     }
 
-    // Run 3 rounds
-    for (std::uint32_t round = 1; round <= 3U && !abort_due_to_failure; ++round) {
-      const int event_impact = (round == 1U) ? 1 : (round == 2U) ? 0 : -1;
-      (void)timed_request(mod_fd, json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", event_impact}}, metrics, failures);
-
-      // Hints
-      for (const auto ifd : insider_fds) {
-        (void)timed_request(ifd, json{{"type", "insider_hint"}, {"match_id", match_id}}, metrics, failures);
-      }
-
-      // Trading
-      (void)timed_request(mod_fd, json{{"type", "open_trading"}, {"match_id", match_id}}, metrics, failures);
-      for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
-        (void)timed_request(player_fds[i], json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}, metrics, failures);
-      }
-      (void)timed_request(mod_fd, json{{"type", "resolve_market"}, {"match_id", match_id}}, metrics, failures);
-
-      // Voting
-      (void)timed_request(mod_fd, json{{"type", "open_voting"}, {"match_id", match_id}}, metrics, failures);
-      for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
-        (void)timed_request(player_fds[i], json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}}, metrics, failures);
-      }
-      (void)timed_request(mod_fd, json{{"type", "resolve_votes"}, {"match_id", match_id}}, metrics, failures);
+    // 5. Start Match
+    const auto start_resp = timed_request(
+        mod_fd,
+        json{{"type", "start_match"}, {"match_id", match_id}},
+        metrics, failures,
+        expect_transition("AwaitingEvent"));
+    if (!start_resp) {
+      result.reason = "Start match failed: " + failures.last_failure_reason;
+      abort_due_to_failure = true;
+      for (const auto pfd : player_fds) (void)close(pfd);
+      (void)close(mod_fd);
+      break;
     }
 
-    // Verify terminal outcome
-    const auto status_resp = timed_request(mod_fd, json{{"type", "match_status"}, {"match_id", match_id}}, metrics, failures);
-    if (!status_resp || (*status_resp)["phase"] != "Finished" || (*status_resp)["outcome"] != "InsiderWin") {
-      failures.correctness_failures++;
+    // 6. Run 3 Rounds
+    for (std::uint32_t round = 1; round <= 3U && !abort_due_to_failure; ++round) {
+      // 6a. Publish Event
+      const int event_impact = (round == 1U) ? 1 : (round == 2U) ? 0 : -1;
+      const auto event_resp = timed_request(
+          mod_fd,
+          json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", event_impact}},
+          metrics, failures,
+          expect_transition("Discussion"));
+      if (!event_resp) {
+        result.reason = "Publish event round " + std::to_string(round) + " failed: " + failures.last_failure_reason;
+        abort_due_to_failure = true;
+        break;
+      }
+
+      // 6b. Hints for all Insiders
+      for (std::size_t idx = 0; idx < insider_fds.size(); ++idx) {
+        const auto hint_resp = timed_request(
+            insider_fds[idx],
+            json{{"type", "insider_hint"}, {"match_id", match_id}},
+            metrics, failures,
+            expect_insider_hint(event_impact));
+        if (!hint_resp) {
+          result.reason = "Insider hint round " + std::to_string(round) + " failed for insider " +
+                          std::to_string(idx) + ": " + failures.last_failure_reason;
+          abort_due_to_failure = true;
+          break;
+        }
+      }
+      if (abort_due_to_failure) break;
+
+      // 6c. Open Trading
+      const auto trade_phase = timed_request(
+          mod_fd,
+          json{{"type", "open_trading"}, {"match_id", match_id}},
+          metrics, failures,
+          expect_transition("Trading"));
+      if (!trade_phase) {
+        result.reason = "Open trading round " + std::to_string(round) + " failed: " + failures.last_failure_reason;
+        abort_due_to_failure = true;
+        break;
+      }
+
+      // 6d. Player Trades
+      for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
+        json trade_req = json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}};
+        if (fault_cfg.inject_semantic_failure && round == 1U && i == 0U) {
+          trade_req["match_id"] = match_id + 999999U; // intentional mismatch to trigger server error
+        }
+        const auto trade_resp = timed_request(
+            player_fds[i],
+            trade_req,
+            metrics, failures,
+            expect_trade_accepted());
+        if (!trade_resp) {
+          result.reason = "Trade round " + std::to_string(round) + " failed for player " +
+                          std::to_string(i + 1U) + ": " + failures.last_failure_reason;
+          abort_due_to_failure = true;
+          break;
+        }
+      }
+      if (abort_due_to_failure) break;
+
+      // 6e. Resolve Market
+      const auto market_resp = timed_request(
+          mod_fd,
+          json{{"type", "resolve_market"}, {"match_id", match_id}},
+          metrics, failures,
+          expect_market_result());
+      if (!market_resp) {
+        result.reason = "Resolve market round " + std::to_string(round) + " failed: " + failures.last_failure_reason;
+        abort_due_to_failure = true;
+        break;
+      }
+
+      // 6f. Open Voting
+      const auto vote_phase = timed_request(
+          mod_fd,
+          json{{"type", "open_voting"}, {"match_id", match_id}},
+          metrics, failures,
+          expect_transition("Voting"));
+      if (!vote_phase) {
+        result.reason = "Open voting round " + std::to_string(round) + " failed: " + failures.last_failure_reason;
+        abort_due_to_failure = true;
+        break;
+      }
+
+      // 6g. Player Votes
+      for (std::size_t i = 0; i < kExpectedPlayerCount; ++i) {
+        const auto vote_resp = timed_request(
+            player_fds[i],
+            json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
+            metrics, failures,
+            expect_vote_accepted());
+        if (!vote_resp) {
+          result.reason = "Vote round " + std::to_string(round) + " failed for player " +
+                          std::to_string(i + 1U) + ": " + failures.last_failure_reason;
+          abort_due_to_failure = true;
+          break;
+        }
+      }
+      if (abort_due_to_failure) break;
+
+      // 6h. Resolve Votes
+      const auto resolve_resp = timed_request(
+          mod_fd,
+          json{{"type", "resolve_votes"}, {"match_id", match_id}},
+          metrics, failures,
+          expect_vote_resolution());
+      if (!resolve_resp) {
+        result.reason = "Resolve votes round " + std::to_string(round) + " failed: " + failures.last_failure_reason;
+        abort_due_to_failure = true;
+        break;
+      }
+    }
+    if (abort_due_to_failure) {
+      for (const auto pfd : player_fds) (void)close(pfd);
+      (void)close(mod_fd);
+      break;
+    }
+
+    // 7. Verify Terminal Match Status
+    const auto status_resp = timed_request(
+        mod_fd,
+        json{{"type", "match_status"}, {"match_id", match_id}},
+        metrics, failures,
+        expect_match_status("Finished", "InsiderWin"));
+    if (!status_resp) {
+      result.reason = "Terminal match status check failed: " + failures.last_failure_reason;
       abort_due_to_failure = true;
+      for (const auto pfd : player_fds) (void)close(pfd);
+      (void)close(mod_fd);
+      break;
     }
 
     // Clean disconnect of this match's clients (planned reset)
@@ -1087,7 +1452,11 @@ SustainedStageResult execute_sustained_workload(
     all_latencies.push_back(m.latency_us);
     result.metrics.total_requests++;
     if (m.transport_ok && m.correctness_ok) {
-      result.metrics.successful_requests++;
+      if (m.is_expected_rejection) {
+        result.metrics.expected_rejections++;
+      } else {
+        result.metrics.successful_requests++;
+      }
     } else {
       if (!m.transport_ok) result.metrics.transport_failures++;
       if (!m.correctness_ok) result.metrics.correctness_failures++;
@@ -1099,20 +1468,134 @@ SustainedStageResult execute_sustained_workload(
   const double elapsed_s = static_cast<double>(result.actual_duration_ms) / 1000.0;
   result.throughput_rps = elapsed_s > 0.0 ? (static_cast<double>(result.metrics.total_requests) / elapsed_s) : 0.0;
 
-  if (failures.total() == 0 && !abort_due_to_failure && result.completed_matches > 0) {
-    result.status = "PASS";
-  } else {
+  const bool reached_target_duration = (result.actual_duration_ms + 1000 >= result.target_duration_s * 1000);
+
+  if (abort_due_to_failure || failures.total() > 0) {
     result.status = "FAIL";
-    result.reason = "Encountered " + std::to_string(failures.total()) + " failures during workload";
+    if (result.reason.empty()) {
+      result.reason = "Encountered " + std::to_string(failures.total()) + " failures (" +
+                      std::to_string(failures.transport_failures) + " transport, " +
+                      std::to_string(failures.correctness_failures) + " correctness)";
+    }
+    result.diagnostic_details = "Workload aborted after " + std::to_string(result.completed_matches) +
+                                " completed matches and " + std::to_string(result.metrics.total_requests) +
+                                " requests: " + result.reason;
+  } else if (!reached_target_duration) {
+    result.status = "BLOCKED";
+    result.reason = "Workload stopped early before reaching target duration of " +
+                    std::to_string(result.target_duration_s) + "s (actual: " +
+                    std::to_string(static_cast<std::uint64_t>(elapsed_s)) + "s)";
+    result.diagnostic_details = "Elapsed duration (" + std::to_string(result.actual_duration_ms) +
+                                " ms) fell short of target duration (" +
+                                std::to_string(result.target_duration_s * 1000) + " ms)";
+  } else if (result.completed_matches == 0) {
+    result.status = "FAIL";
+    result.reason = "Zero matches completed during workload";
+    result.diagnostic_details = "Workload reached target duration but zero complete matches were finished";
+  } else {
+    result.status = "PASS";
+    result.diagnostic_details = "Workload completed successfully with zero transport or correctness failures across " +
+                                std::to_string(result.completed_matches) + " matches";
   }
 
-  std::cout << "[" << stage_name << "] Complete. Status: " << result.status
-            << " (" << result.completed_matches << " matches, "
-            << result.metrics.total_requests << " reqs in "
-            << (result.actual_duration_ms / 1000) << "s, throughput: "
-            << std::fixed << std::setprecision(1) << result.throughput_rps << " req/s)\n";
+  std::cout << "\n=================================================================\n";
+  std::cout << " SUSTAINED WORKLOAD REPORT (" << result.stage_name << ")\n";
+  std::cout << "=================================================================\n";
+  std::cout << " Status              : " << result.status << "\n";
+  std::cout << " Target Duration     : " << result.target_duration_s << " s\n";
+  std::cout << " Actual Duration     : " << std::fixed << std::setprecision(2)
+            << elapsed_s << " s (" << result.actual_duration_ms << " ms)\n";
+  std::cout << " Completed Matches   : " << result.completed_matches << "\n";
+  std::cout << " Planned Resets      : " << result.planned_resets << "\n";
+  std::cout << " Unexpected Disconn  : " << result.unexpected_disconnects << "\n";
+  std::cout << " Total Requests      : " << result.metrics.total_requests << "\n";
+  std::cout << " Successful Requests : " << result.metrics.successful_requests << "\n";
+  std::cout << " Expected Rejections : " << result.metrics.expected_rejections << "\n";
+  std::cout << " Transport Failures  : " << result.metrics.transport_failures << "\n";
+  std::cout << " Correctness Failures: " << result.metrics.correctness_failures << "\n";
+  std::cout << " Latency (p50/p95/p99: " << result.metrics.p50_ms << " / "
+            << result.metrics.p95_ms << " / " << result.metrics.p99_ms << " ms\n";
+  std::cout << " Throughput          : " << std::setprecision(1) << result.throughput_rps
+            << " req/s (denominator: actual elapsed duration in seconds)\n";
+  std::cout << " Resources           : Peak RSS=" << result.peak_rss_kb << " kB, CPU="
+            << result.cpu_time_ms << " ms, FDs=" << result.open_fds << "\n";
+  if (!result.reason.empty()) {
+    std::cout << " Failure Reason      : " << result.reason << "\n";
+  }
+  std::cout << "=================================================================\n\n";
 
   return result;
+}
+
+bool write_sustained_report(
+    const SustainedStageResult& res,
+    const std::string& output_path,
+    const std::string& source_commit,
+    const std::string& env_info) {
+  json j = json::object();
+  j["test_name"] = "darkpool_load_tests_64_player_sustained";
+  j["stage_name"] = res.stage_name;
+  j["status"] = res.status;  // PASS, FAIL, NOT RUN, or BLOCKED
+  j["source_commit"] = source_commit;
+  j["environment"] = env_info;
+  j["workload_seed"] = res.seed;
+  j["workload_seed_description"] = "Workload seed recorded as execution metadata; workload executes deterministic 64-player reference scenario";
+  j["target_duration_s"] = res.target_duration_s;
+  j["actual_duration_ms"] = res.actual_duration_ms;
+  j["actual_duration_s"] = static_cast<double>(res.actual_duration_ms) / 1000.0;
+  j["completed_matches"] = res.completed_matches;
+  j["planned_resets"] = res.planned_resets;
+  j["unexpected_disconnects"] = res.unexpected_disconnects;
+
+  j["requests"] = {
+    {"total_requests", res.metrics.total_requests},
+    {"successful_requests", res.metrics.successful_requests},
+    {"expected_rejections", res.metrics.expected_rejections},
+    {"transport_failures", res.metrics.transport_failures},
+    {"correctness_failures", res.metrics.correctness_failures}
+  };
+
+  j["total_requests"] = res.metrics.total_requests;
+  j["successful_requests"] = res.metrics.successful_requests;
+  j["expected_rejections"] = res.metrics.expected_rejections;
+  j["transport_failures"] = res.metrics.transport_failures;
+  j["correctness_failures"] = res.metrics.correctness_failures;
+
+  j["latency"] = {
+    {"p50_ms", res.metrics.p50_ms},
+    {"p95_ms", res.metrics.p95_ms},
+    {"p99_ms", res.metrics.p99_ms},
+    {"mean_ms", res.metrics.mean_ms},
+    {"min_ms", res.metrics.min_ms},
+    {"max_ms", res.metrics.max_ms},
+    {"measurement_definition", "Monotonic round-trip duration measured with std::chrono::steady_clock starting immediately before request frame bytes are written to socket and ending immediately when complete correlated response frame is received and parsed; excludes inter-match and inter-phase pacing."}
+  };
+
+  j["throughput"] = {
+    {"requests_per_second", res.throughput_rps},
+    {"denominator", "Actual elapsed duration in seconds (actual_duration_ms / 1000.0)"}
+  };
+
+  j["resources"] = {
+    {"peak_rss_kb", res.peak_rss_kb},
+    {"cpu_time_ms", res.cpu_time_ms},
+    {"open_fds", res.open_fds}
+  };
+
+  j["failure_reason"] = res.reason;
+  j["diagnostic_details"] = res.diagnostic_details.empty() ? (res.reason.empty() ? "None" : res.reason) : res.diagnostic_details;
+  j["timestamp"] = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+
+  std::ofstream out_file(output_path);
+  if (out_file.is_open()) {
+    out_file << j.dump(2) << '\n';
+    std::cout << "Machine-readable sustained report written to: " << output_path << "\n\n";
+    return true;
+  } else {
+    std::cerr << "Warning: Could not open output file: " << output_path << "\n";
+    return false;
+  }
 }
 
 // Subprocess execution for regression self-test
@@ -1156,12 +1639,108 @@ std::string get_self_executable_path(const char* argv0) {
   return std::string(argv0 ? argv0 : "./darkpool_load_tests_64p");
 }
 
+bool run_semantic_response_regression_test(const std::string& harness_path, const std::string& server_path) {
+  std::cout << "=================================================================\n";
+  std::cout << " Running Semantic Response Validation Regression Tests\n";
+  std::cout << "=================================================================\n";
+
+  // Test 1: Socketpair test with valid JSON frame containing semantic error payload
+  std::cout << "[Semantic 1/3] Verifying timed_request rejects parseable error frame... " << std::flush;
+  int sv[2];
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+    std::cout << "FAILED (socketpair creation error)\n";
+    return false;
+  }
+
+  json err_payload = {{"type", "error"}, {"error", "simulated protocol error"}};
+  const auto frame_bytes = Frame(err_payload).serialize();
+  if (!send_all(sv[1], frame_bytes.data(), frame_bytes.size())) {
+    (void)close(sv[0]);
+    (void)close(sv[1]);
+    std::cout << "FAILED (cannot write simulated frame)\n";
+    return false;
+  }
+
+  std::vector<RequestMetric> test_metrics;
+  FailureCounts test_failures;
+  // Request expects trade accepted, but will receive parseable error payload
+  const auto resp = timed_request(
+      sv[0],
+      json{{"type", "trade"}, {"match_id", 1}, {"action", "HOLD"}},
+      test_metrics,
+      test_failures,
+      expect_trade_accepted());
+
+  (void)close(sv[0]);
+  (void)close(sv[1]);
+
+  if (resp.has_value()) {
+    std::cout << "FAILED (timed_request returned value on semantic failure)\n";
+    return false;
+  }
+  if (test_failures.transport_failures != 0) {
+    std::cout << "FAILED (transport_failures should be 0 for valid JSON frame, got "
+              << test_failures.transport_failures << ")\n";
+    return false;
+  }
+  if (test_failures.correctness_failures != 1) {
+    std::cout << "FAILED (correctness_failures should be 1, got "
+              << test_failures.correctness_failures << ")\n";
+    return false;
+  }
+  if (test_metrics.size() != 1) {
+    std::cout << "FAILED (expected 1 metric, got " << test_metrics.size() << ")\n";
+    return false;
+  }
+  if (!test_metrics[0].transport_ok) {
+    std::cout << "FAILED (transport_ok should be true for valid frame)\n";
+    return false;
+  }
+  if (test_metrics[0].correctness_ok) {
+    std::cout << "FAILED (correctness_ok must be false for semantic error)\n";
+    return false;
+  }
+  std::cout << "PASSED (transport_ok=true, correctness_ok=false, correctness_failures=1)\n";
+
+  // Test 2: Verify sustained workload fails and accounts correctly on semantic error
+  std::cout << "[Semantic 2/3] Verifying sustained run aborts and fails on semantic error... " << std::flush;
+  TestFaultConfig fault;
+  fault.inject_semantic_failure = true;
+  const auto sustained_res = execute_sustained_workload(server_path, 5, 42, "semantic_test", fault);
+  if (sustained_res.status != "FAIL") {
+    std::cout << "FAILED (expected status FAIL, got " << sustained_res.status << ")\n";
+    return false;
+  }
+  if (sustained_res.metrics.correctness_failures == 0) {
+    std::cout << "FAILED (correctness_failures should be >= 1, got 0)\n";
+    return false;
+  }
+  if (sustained_res.reason.empty()) {
+    std::cout << "FAILED (expected non-empty failure reason)\n";
+    return false;
+  }
+  std::cout << "PASSED (status=FAIL, correctness_failures="
+            << sustained_res.metrics.correctness_failures << ", reason logged)\n";
+
+  // Test 3: Subprocess execution with --inject-semantic-failure
+  std::cout << "[Semantic 3/3] Verifying subprocess with semantic error exits nonzero... " << std::flush;
+  const int code = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
+  if (code == 0) {
+    std::cout << "FAILED (expected nonzero exit code, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code << ")\n";
+
+  std::cout << "\nAll semantic response validation regression tests PASSED.\n\n";
+  return true;
+}
+
 bool run_regression_selftest(const std::string& harness_path, const std::string& server_path) {
   std::cout << "=================================================================\n";
   std::cout << " Running 64-Player Load Harness Subprocess Regression Tests\n";
   std::cout << "=================================================================\n";
 
-  std::cout << "[Regression 1/3] Verifying normal 64P run subprocess exits 0... " << std::flush;
+  std::cout << "[Regression 1/4] Verifying normal 64P run subprocess exits 0... " << std::flush;
   const int code_normal = run_subprocess(harness_path, {"--server", server_path, "--smoke-run"});
   if (code_normal != 0) {
     std::cout << "FAILED (expected exit code 0, got " << code_normal << ")\n";
@@ -1169,7 +1748,7 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   }
   std::cout << "PASSED (exit code 0)\n";
 
-  std::cout << "[Regression 2/3] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[Regression 2/4] Verifying assertion failure subprocess exits nonzero... " << std::flush;
   const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1177,13 +1756,21 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
   }
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
-  std::cout << "[Regression 3/3] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  std::cout << "[Regression 3/4] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
   const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
   }
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
+
+  std::cout << "[Regression 4/4] Verifying semantic error subprocess exits nonzero... " << std::flush;
+  const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
+  if (code_semantic == 0) {
+    std::cout << "FAILED (expected nonzero exit code, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
 
   std::cout << "\nAll 64-player regression checks PASSED: real subprocess exit statuses verified.\n\n";
   return true;
@@ -1194,6 +1781,7 @@ bool run_regression_selftest(const std::string& harness_path, const std::string&
 int main(int argc, char* argv[]) {
   std::string server_path = "./darkpool_server";
   std::string output_json_path = "load_test_64p_results.json";
+  bool out_explicitly_set = false;
   std::string source_commit = DARKPOOL_SOURCE_COMMIT;
   int repeat_runs = 3;
   std::uint64_t custom_duration_s = 0;
@@ -1201,9 +1789,11 @@ int main(int argc, char* argv[]) {
   bool is_smoke_10m = false;
   bool is_reliability_30m = false;
   bool is_selftest = false;
+  bool is_test_semantic = false;
   bool is_smoke_run = false;
   bool is_inject_assertion = false;
   bool is_inject_outcome = false;
+  bool is_inject_semantic = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -1211,6 +1801,7 @@ int main(int argc, char* argv[]) {
       server_path = argv[++i];
     } else if (arg == "--out" && i + 1 < argc) {
       output_json_path = argv[++i];
+      out_explicitly_set = true;
     } else if (arg == "--runs" && i + 1 < argc) {
       repeat_runs = std::max(1, std::atoi(argv[++i]));
     } else if (arg == "--duration" && i + 1 < argc) {
@@ -1227,12 +1818,16 @@ int main(int argc, char* argv[]) {
       is_reliability_30m = true;
     } else if (arg == "--selftest") {
       is_selftest = true;
+    } else if (arg == "--test-semantic-response") {
+      is_test_semantic = true;
     } else if (arg == "--smoke-run") {
       is_smoke_run = true;
     } else if (arg == "--inject-assertion-failure") {
       is_inject_assertion = true;
     } else if (arg == "--inject-outcome-mismatch") {
       is_inject_outcome = true;
+    } else if (arg == "--inject-semantic-failure") {
+      is_inject_semantic = true;
     } else if (!arg.starts_with("--") && i == 1) {
       server_path = argv[1];
     }
@@ -1283,27 +1878,47 @@ int main(int argc, char* argv[]) {
     const auto res = execute_64_player_match(server_path, 1, fault);
     return res.run_passed ? 0 : 1;
   }
+  if (is_inject_semantic) {
+    TestFaultConfig fault;
+    fault.inject_semantic_failure = true;
+    const auto res = execute_64_player_match(server_path, 1, fault);
+    return res.run_passed ? 0 : 1;
+  }
   if (is_selftest) {
     const auto self_exe = get_self_executable_path(argv[0]);
     return run_regression_selftest(self_exe, server_path) ? 0 : 1;
   }
+  if (is_test_semantic) {
+    const auto self_exe = get_self_executable_path(argv[0]);
+    return run_semantic_response_regression_test(self_exe, server_path) ? 0 : 1;
+  }
 
-  if (is_smoke_10m) {
-    const auto res = execute_sustained_workload(server_path, 600, seed, "smoke_10m");
-    return res.status == "PASS" ? 0 : 1;
-  }
-  if (is_reliability_30m) {
-    const auto res = execute_sustained_workload(server_path, 1800, seed, "reliability_30m");
-    return res.status == "PASS" ? 0 : 1;
-  }
-  if (custom_duration_s > 0) {
-    const auto res = execute_sustained_workload(server_path, custom_duration_s, seed, "custom_sustained");
-    return res.status == "PASS" ? 0 : 1;
+  const std::string env_info = get_environment_info();
+
+  // Handle sustained workload execution paths
+  if (is_smoke_10m || is_reliability_30m || custom_duration_s > 0) {
+    if (!out_explicitly_set) {
+      output_json_path = "load_test_64p_sustained_results.json";
+    }
+
+    if (is_smoke_10m) {
+      const auto res = execute_sustained_workload(server_path, 600, seed, "smoke_10m");
+      write_sustained_report(res, output_json_path, source_commit, env_info);
+      return res.status == "PASS" ? 0 : 1;
+    }
+    if (is_reliability_30m) {
+      const auto res = execute_sustained_workload(server_path, 1800, seed, "reliability_30m");
+      write_sustained_report(res, output_json_path, source_commit, env_info);
+      return res.status == "PASS" ? 0 : 1;
+    }
+    if (custom_duration_s > 0) {
+      const auto res = execute_sustained_workload(server_path, custom_duration_s, seed, "custom_sustained");
+      write_sustained_report(res, output_json_path, source_commit, env_info);
+      return res.status == "PASS" ? 0 : 1;
+    }
   }
 
   // Default mode or --functional: Run 3-run 64-player functional match suite
-  const std::string env_info = get_environment_info();
-
   std::cout << "=================================================================\n";
   std::cout << " DARKPOOL Real-Server Load Test Harness (64-Player Match / L4)\n";
   std::cout << "=================================================================\n";
@@ -1330,11 +1945,14 @@ int main(int argc, char* argv[]) {
 
     if (result.run_passed) {
       std::cout << "PASSED in " << result.duration_ms << " ms (Winner: " << result.final_outcome << ")\n";
-      std::cout << "         Sequential : " << result.sequential.total_requests << " reqs, "
+      std::cout << "         Sequential : " << result.sequential.total_requests << " reqs ("
+                << result.sequential.successful_requests << " success, "
+                << result.sequential.expected_rejections << " rejections), "
                 << "p50=" << std::fixed << std::setprecision(2) << result.sequential.p50_ms << " ms, "
                 << "p95=" << result.sequential.p95_ms << " ms, "
                 << "p99=" << result.sequential.p99_ms << " ms\n";
-      std::cout << "         Concurrent : " << result.concurrent.total_requests << " reqs, "
+      std::cout << "         Concurrent : " << result.concurrent.total_requests << " reqs ("
+                << result.concurrent.successful_requests << " success), "
                 << "p50=" << result.concurrent.p50_ms << " ms, "
                 << "p95=" << result.concurrent.p95_ms << " ms, "
                 << "p99=" << result.concurrent.p99_ms << " ms\n";
@@ -1373,7 +1991,11 @@ int main(int argc, char* argv[]) {
       if (m.is_concurrent) {
         aggregate_conc.total_requests++;
         if (m.transport_ok && m.correctness_ok) {
-          aggregate_conc.successful_requests++;
+          if (m.is_expected_rejection) {
+            aggregate_conc.expected_rejections++;
+          } else {
+            aggregate_conc.successful_requests++;
+          }
           aggregate_conc_latencies.push_back(m.latency_us);
         } else {
           if (!m.transport_ok) aggregate_conc.transport_failures++;
@@ -1382,7 +2004,11 @@ int main(int argc, char* argv[]) {
       } else {
         aggregate_seq.total_requests++;
         if (m.transport_ok && m.correctness_ok) {
-          aggregate_seq.successful_requests++;
+          if (m.is_expected_rejection) {
+            aggregate_seq.expected_rejections++;
+          } else {
+            aggregate_seq.successful_requests++;
+          }
           aggregate_seq_latencies.push_back(m.latency_us);
         } else {
           if (!m.transport_ok) aggregate_seq.transport_failures++;
@@ -1393,6 +2019,7 @@ int main(int argc, char* argv[]) {
   }
 
   aggregate_total.successful_requests = aggregate_seq.successful_requests + aggregate_conc.successful_requests;
+  aggregate_total.expected_rejections = aggregate_seq.expected_rejections + aggregate_conc.expected_rejections;
   aggregate_total.transport_failures = aggregate_seq.transport_failures + aggregate_conc.transport_failures;
   aggregate_total.correctness_failures = aggregate_seq.correctness_failures + aggregate_conc.correctness_failures;
 
@@ -1403,14 +2030,15 @@ int main(int argc, char* argv[]) {
   std::cout << "=================================================================\n";
   std::cout << " SUMMARY RESULTS (Three Repeatable 64-Player Runs / L4)\n";
   std::cout << "=================================================================\n";
-  std::cout << "| Run | Clients | Duration | Sequential (p50/p95/p99) | Concurrent (p50/p95/p99) | Failures (Trans/Corr) | Peak RSS | CPU | FDs |\n";
-  std::cout << "|---|---|---|---|---|---|---|---|---|\n";
+  std::cout << "| Run | Clients | Duration | Sequential (p50/p95/p99) | Concurrent (p50/p95/p99) | Rejections | Failures (Trans/Corr) | Peak RSS | CPU | FDs |\n";
+  std::cout << "|---|---|---|---|---|---|---|---|---|---|\n";
   for (const auto& r : run_results) {
     std::cout << "| Run " << r.run_index << " | " << r.client_count << " | "
               << r.duration_ms << " ms | "
               << std::fixed << std::setprecision(2)
               << r.sequential.p50_ms << " / " << r.sequential.p95_ms << " / " << r.sequential.p99_ms << " ms | "
               << r.concurrent.p50_ms << " / " << r.concurrent.p95_ms << " / " << r.concurrent.p99_ms << " ms | "
+              << r.total.expected_rejections << " | "
               << r.failures.transport_failures << " / " << r.failures.correctness_failures << " | "
               << r.peak_rss_kb << " kB | " << std::setprecision(1) << r.cpu_time_ms << " ms | "
               << r.open_fds << " |\n";
@@ -1420,6 +2048,7 @@ int main(int argc, char* argv[]) {
             << std::fixed << std::setprecision(2)
             << aggregate_seq.p50_ms << " / " << aggregate_seq.p95_ms << " / " << aggregate_seq.p99_ms << " ms | "
             << aggregate_conc.p50_ms << " / " << aggregate_conc.p95_ms << " / " << aggregate_conc.p99_ms << " ms | "
+            << aggregate_total.expected_rejections << " | "
             << aggregate_total.transport_failures << " / " << aggregate_total.correctness_failures << " | "
             << max_peak_rss << " kB max | " << std::setprecision(1) << total_cpu_time << " ms total | "
             << max_open_fds << " max |\n\n";
@@ -1445,6 +2074,7 @@ int main(int argc, char* argv[]) {
     run_obj["run_passed"] = r.run_passed;
     run_obj["transport_failures"] = r.failures.transport_failures;
     run_obj["correctness_failures"] = r.failures.correctness_failures;
+    run_obj["expected_rejections"] = r.total.expected_rejections;
     run_obj["peak_rss_kb"] = r.peak_rss_kb;
     run_obj["cpu_time_ms"] = r.cpu_time_ms;
     run_obj["open_fds"] = r.open_fds;
@@ -1454,6 +2084,7 @@ int main(int argc, char* argv[]) {
     run_obj["sequential"] = {
       {"total_requests", r.sequential.total_requests},
       {"successful_requests", r.sequential.successful_requests},
+      {"expected_rejections", r.sequential.expected_rejections},
       {"p50_ms", r.sequential.p50_ms},
       {"p95_ms", r.sequential.p95_ms},
       {"p99_ms", r.sequential.p99_ms},
@@ -1462,6 +2093,7 @@ int main(int argc, char* argv[]) {
     run_obj["concurrent"] = {
       {"total_requests", r.concurrent.total_requests},
       {"successful_requests", r.concurrent.successful_requests},
+      {"expected_rejections", r.concurrent.expected_rejections},
       {"p50_ms", r.concurrent.p50_ms},
       {"p95_ms", r.concurrent.p95_ms},
       {"p99_ms", r.concurrent.p99_ms},
@@ -1474,6 +2106,7 @@ int main(int argc, char* argv[]) {
   report["sequential_summary"] = {
     {"total_requests", aggregate_seq.total_requests},
     {"successful_requests", aggregate_seq.successful_requests},
+    {"expected_rejections", aggregate_seq.expected_rejections},
     {"p50_ms", aggregate_seq.p50_ms},
     {"p95_ms", aggregate_seq.p95_ms},
     {"p99_ms", aggregate_seq.p99_ms},
@@ -1482,6 +2115,7 @@ int main(int argc, char* argv[]) {
   report["concurrent_summary"] = {
     {"total_requests", aggregate_conc.total_requests},
     {"successful_requests", aggregate_conc.successful_requests},
+    {"expected_rejections", aggregate_conc.expected_rejections},
     {"p50_ms", aggregate_conc.p50_ms},
     {"p95_ms", aggregate_conc.p95_ms},
     {"p99_ms", aggregate_conc.p99_ms},
@@ -1490,6 +2124,7 @@ int main(int argc, char* argv[]) {
   report["total_summary"] = {
     {"total_requests", aggregate_total.total_requests},
     {"successful_requests", aggregate_total.successful_requests},
+    {"expected_rejections", aggregate_total.expected_rejections},
     {"transport_failures", aggregate_total.transport_failures},
     {"correctness_failures", aggregate_total.correctness_failures},
     {"p50_ms", aggregate_total.p50_ms},

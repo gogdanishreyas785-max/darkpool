@@ -52,9 +52,9 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
 | L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.29 ms, p95=0.52 ms, p99=0.64 ms. Concurrent burst: p50=0.70 ms, p95=1.71 ms, p99=4.29 ms. Verified winner: `InsiderWin`. |
 | L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
-| L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.33 ms, p95=0.57 ms, p99=0.78 ms. Concurrent burst: p50=4.47 ms, p95=11.42 ms, p99=12.18 ms. Verified winner: `InsiderWin`. |
-| L4-Smoke | 64 players, 10-min sustained | NOT RUN | Harness supports `--smoke-10m`; multi-iteration acceptance runs not executed due to session time budget. |
-| L4-Reliability | 64 players, 30-min sustained | NOT RUN | Harness supports `--reliability-30m`; three 30-minute acceptance runs (90m total) not executed due to session time budget. |
+| L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total: 1,671 successful operations + 12 expected protocol rejections, 100% pass; 0 transport/correctness failures). Sequential: p50=0.10 ms, p95=0.17 ms, p99=0.65 ms. Concurrent burst: p50=0.13 ms, p95=0.58 ms, p99=1.32 ms. Verified winner: `InsiderWin`. |
+| L4-Smoke | 64 players, 10-min sustained | NOT RUN | Harness supports `--smoke-10m` with application-level semantic response validation; multi-iteration acceptance runs not executed due to session time budget. |
+| L4-Reliability | 64 players, 30-min sustained | NOT RUN | Harness supports `--reliability-30m` with application-level semantic response validation; three 30-minute acceptance runs (90m total) not executed due to session time budget. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
 | L6 | 4 × up to 64 (256-player server target) | **NOT RUN** | Four-match 256-player capacity remains unverified. |
 | L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
@@ -100,8 +100,11 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   # Standalone 3-run 64-player load harness execution over UNIX sockets
   ./build/darkpool_load_tests_64p ./build/darkpool_server --runs 3 --out docs/load_test_64p_results.json
 
-  # Automated regression selftest executing subprocesses to verify real process exit status on assertion/outcome errors
+  # Automated regression selftest executing subprocesses to verify real process exit status on assertion/outcome/semantic errors
   ./build/darkpool_load_tests_64p ./build/darkpool_server --selftest
+
+  # Automated semantic response validation regression test
+  ./build/darkpool_load_tests_64p ./build/darkpool_server --test-semantic-response
 
   # Automated CTest suite execution
   ctest --test-dir build --output-on-failure -R '^darkpool_load_64p_'
@@ -112,7 +115,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   # 30-minute sustained repeated-match reliability test (opt-in)
   ./build/darkpool_load_tests_64p ./build/darkpool_server --reliability-30m
   ```
-- **Source Commit**: `647bed9ae28678d4507902f588e0ac57302584aa`
+- **Source Commit**: `fd65fe2a9361684a6a881d118d504e803cb045f5`
 - **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
 - **Transport**: UNIX-Domain Socket (`SOCK_STREAM`) with non-blocking server epoll loop and client timeouts.
 - **Timing & ACK Boundary**:
@@ -121,23 +124,23 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   Real protocol clients driving a complete 64-player match (1 moderator + 64 players = 65 connected clients over UNIX sockets). Includes match creation, 64 player joins, pre-start roster validation (rejection of premature start with 63/64 joined), excess join rejection (rejection of 65th join with `match is full`), match start, and all 3 rounds.
   - **Role Distribution (N=64)**: Strictly asserted as exactly 8 Insiders, 4 Investigators, and 52 Employees per the approved role formula.
   - **Privacy Visibility Policies**: Verified that non-insiders (Employees) attempting `insider_hint` are rejected with `ok: false`, non-investigators (Employees) attempting `request_clue` are rejected with `ok: false`, all 8 Insiders receive authorized private hints, and Investigators receive authorized private clue results.
-  - **Sequential Phases (Rounds 1 & 3, match setup/resolution)**: Sequential event publication, insider hints, legal trades, market resolution, clue request, voting, and vote resolution (433 requests per run).
+  - **Sequential Phases (Rounds 1 & 3, match setup/resolution)**: Sequential event publication, insider hints, legal trades, market resolution, clue request, voting, and vote resolution (433 requests per run: 429 success, 4 expected rejections).
   - **Concurrent Burst Phase (Round 2)**: 64 simultaneous client threads sending legal trades (`HOLD`) and votes (`null` - abstain) concurrently over 64 independent UNIX socket connections (128 concurrent requests per run).
-  - **Fatal Correctness Assertions**: All protocol responses, types, fields, role counts, and outcomes are strictly asserted. Any correctness or transport failure immediately fails the run and harness.
+  - **Fatal Correctness Assertions**: All protocol responses, types, fields, role counts, and outcomes are strictly validated with explicit payload validators. Any correctness or transport failure immediately fails the run and harness.
   - **Guaranteed Outcome Verification**: In this deterministic workload, health remains > 0 (final health = 6) and all players abstain (no eliminations), guaranteeing `phase == "Finished"` and `outcome == "InsiderWin"`. Both are explicitly asserted.
 
 | Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Open FDs | Verified Winner |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Run 1 | 65 (64P + 1M) | 196 ms | 0.24 / 0.49 / 0.99 ms | 3.29 / 5.51 / 5.67 ms | 0 / 0 | 4,188 kB | 110.0 ms | 73 | `InsiderWin` |
-| Run 2 | 65 (64P + 1M) | 266 ms | 0.34 / 0.55 / 0.68 ms | 6.58 / 11.50 / 12.80 ms | 0 / 0 | 4,188 kB | 150.0 ms | 73 | `InsiderWin` |
-| Run 3 | 65 (64P + 1M) | 279 ms | 0.38 / 0.60 / 0.72 ms | 5.97 / 11.64 / 11.90 ms | 0 / 0 | 4,156 kB | 150.0 ms | 73 | `InsiderWin` |
-| **Aggregate** | **65** | **741 ms** | **0.33 / 0.57 / 0.78 ms** | **4.47 / 11.42 / 12.18 ms** | **0 / 0 (100% Pass)** | **4,188 kB max** | **410.0 ms total** | **73 max** | **`InsiderWin`** |
+| Run 1 | 65 (64P + 1M) | 82 ms | 0.10 / 0.19 / 0.78 ms | 0.14 / 0.39 / 0.53 ms | 0 / 0 | 3,872 kB | 40.0 ms | 73 | `InsiderWin` |
+| Run 2 | 65 (64P + 1M) | 68 ms | 0.09 / 0.15 / 0.39 ms | 0.13 / 1.15 / 1.65 ms | 0 / 0 | 3,876 kB | 40.0 ms | 73 | `InsiderWin` |
+| Run 3 | 65 (64P + 1M) | 152 ms | 0.10 / 0.17 / 0.54 ms | 0.14 / 0.39 / 0.46 ms | 0 / 0 | 3,848 kB | 50.0 ms | 73 | `InsiderWin` |
+| **Aggregate** | **65** | **302 ms** | **0.10 / 0.17 / 0.65 ms** | **0.13 / 0.58 / 1.32 ms** | **0 / 0 (100% Pass)** | **3,876 kB max** | **130.0 ms total** | **73 max** | **`InsiderWin`** |
 
 *Machine-readable report stored in: [`docs/load_test_64p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_results.json)*
 
 ### L4 Sustained Workload Stages (10-Minute Smoke & 30-Minute Reliability)
-- **10-Minute Repeated-Match Smoke Test (`--smoke-10m`)**: Fully implemented in harness. Diagnostic execution verified 64 repeated matches with 35,520 requests in 10s (throughput 3,539.6 req/s) with 0 failures and clean planned match resets. Multi-iteration acceptance runs are marked **NOT RUN** due to interactive session time constraints.
-- **30-Minute Repeated-Match Reliability Test (`--reliability-30m`)**: Fully implemented in harness with strict disconnect, timeout, and outcome tracking. Three 30-minute acceptance runs (90 minutes total) are marked **NOT RUN** due to interactive session time constraints.
+- **10-Minute Repeated-Match Smoke Test (`--smoke-10m`)**: Fully implemented in harness with strict response validation on all operations and separate sustained JSON output reporting. Multi-iteration acceptance runs are marked **NOT RUN** due to interactive session time constraints.
+- **30-Minute Repeated-Match Reliability Test (`--reliability-30m`)**: Fully implemented in harness with strict disconnect, timeout, outcome tracking, and separate sustained JSON output reporting. Three 30-minute acceptance runs (90 minutes total) are marked **NOT RUN** due to interactive session time constraints.
 - **L6 (Four-Match 256-Player Capacity)**: Remains **NOT RUN** and unverified.
 
 > [!IMPORTANT]

@@ -139,6 +139,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_64p_regression
     COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --selftest)
   set_tests_properties(darkpool_load_64p_regression PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_64p_semantic_regression
+    COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --test-semantic-response)
+  set_tests_properties(darkpool_load_64p_semantic_regression PROPERTIES TIMEOUT 60)
 
   option(DARKPOOL_ENABLE_SUSTAINED_TESTS "Enable 10-minute and 30-minute sustained load tests in CTest" OFF)
   if(DARKPOOL_ENABLE_SUSTAINED_TESTS)
