@@ -124,6 +124,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_tests
     COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server>)
   set_tests_properties(darkpool_load_tests PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_load_regression_tests
+    COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_regression_tests PROPERTIES TIMEOUT 30)
 else()
   message(STATUS "TCP/UNIX server and CLI client require Linux; engine and framing tests remain available")
 endif()

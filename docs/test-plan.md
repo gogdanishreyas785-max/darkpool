@@ -50,7 +50,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | Run | Configuration | Status | Evidence / Notes |
 |---|---|:---:|---|
 | L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
-| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success). p50=0.26 ms, p95=0.65 ms, p99=1.09 ms, Peak RSS=4.1 MB. |
+| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.27 ms, p95=0.50 ms, p99=0.66 ms. Concurrent burst: p50=0.64 ms, p95=1.51 ms, p99=2.09 ms. Verified winner: `InsiderWin`. |
 | L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
 | L4 | 64 players/1 match | **NOT RUN** | Single 64-player match capacity remains unverified. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
@@ -60,29 +60,39 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 ### Measured 16-Player Real-Server Load Test Results (L2)
 
-- **Test Command**:
+- **Test Commands**:
   ```bash
+  # Standalone 3-run load harness execution
   ./build/darkpool_load_tests ./build/darkpool_server --players 16 --runs 3 --out docs/load_test_16p_results.json
+
+  # Automated regression selftest verifying fatal failures on assertion/outcome errors
+  ./build/darkpool_load_tests ./build/darkpool_server --selftest
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_'
   ```
-  *(Automated CTest target: `ctest --test-dir build --output-on-failure -R '^darkpool_load_tests$'`)*
-- **Source Commit**: `a54c07678c2c94dead4ba67ebf33f58dcf1c4cd3`
+- **Source Commit**: `458faa3cc451389831f3c5f047bae422f3b58dfb`
 - **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
 - **Timing & ACK Boundary**:
   Timing is captured using `std::chrono::steady_clock` (monotonic clock). The measurement interval begins immediately before the client writes the request frame bytes to the socket and ends immediately when the complete correlated response frame is received and parsed. Intentional phase waits and intervals are excluded from latency measurements.
-- **Workload**:
-  Real protocol clients driving a complete 16-player match (1 moderator + 16 players = 17 connected clients). Includes match creation, 16 player joins, match start, all 3 complete rounds (event publication, 2 insider hints per round, open trading, 16 legal trades per round, market resolution, round 1 investigator clue request, open voting, 16 player votes per round, vote resolution), and final match status verification. Each run executes 154 legal protocol requests (462 requests across 3 runs).
+- **Workload & Correctness Verification**:
+  Real protocol clients driving a complete 16-player match (1 moderator + 16 players = 17 connected clients). Includes match creation, 16 player joins, match start, and all 3 rounds.
+  - **Sequential Phases (Rounds 1 & 3, match setup/resolution)**: Sequential event publication, insider hints, legal trades, market resolution, clue request, voting, and vote resolution (122 requests per run).
+  - **Concurrent Burst Phase (Round 2)**: 16 simultaneous client threads sending legal trades and votes concurrently over 16 independent TCP sockets (32 concurrent requests per run).
+  - **Fatal Correctness Assertions**: All protocol responses, types, fields, role counts (2 Insiders, 1 Investigator, 13 Employees), and outcomes are strictly asserted. Any correctness or transport failure immediately fails the run and harness.
+  - **Guaranteed Outcome Verification**: In this deterministic workload, health remains > 0 (final health = 6) and all players abstain (no eliminations), guaranteeing `phase == "Finished"` and `outcome == "InsiderWin"`. Both are explicitly asserted.
 
-| Run | Clients | Duration | Requests (OK / Fail) | p50 Latency | p95 Latency | p99 Latency | Peak Server RSS | Server CPU Time |
+| Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Verified Winner |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Run 1 | 17 (16P + 1M) | 82 ms | 154 / 0 | 0.24 ms | 0.49 ms | 1.09 ms | 4,124 kB | 20.0 ms |
-| Run 2 | 17 (16P + 1M) | 64 ms | 154 / 0 | 0.18 ms | 0.39 ms | 0.71 ms | 4,108 kB | 20.0 ms |
-| Run 3 | 17 (16P + 1M) | 118 ms | 154 / 0 | 0.42 ms | 0.79 ms | 1.09 ms | 4,116 kB | 40.0 ms |
-| **Aggregate** | **17** | **264 ms** | **462 / 0 (100%)** | **0.26 ms** | **0.65 ms** | **1.09 ms** | **4,124 kB** | **80.0 ms** |
+| Run 1 | 17 (16P + 1M) | 72 ms | 0.26 / 0.38 / 0.49 ms | 0.60 / 0.77 / 1.39 ms | 0 / 0 | 4,144 kB | 20.0 ms | `InsiderWin` |
+| Run 2 | 17 (16P + 1M) | 93 ms | 0.36 / 0.64 / 0.84 ms | 1.09 / 1.62 / 1.68 ms | 0 / 0 | 4,108 kB | 30.0 ms | `InsiderWin` |
+| Run 3 | 17 (16P + 1M) | 67 ms | 0.24 / 0.36 / 0.44 ms | 0.57 / 1.32 / 2.09 ms | 0 / 0 | 4,144 kB | 20.0 ms | `InsiderWin` |
+| **Aggregate** | **17** | **232 ms** | **0.27 / 0.50 / 0.66 ms** | **0.64 / 1.51 / 2.09 ms** | **0 / 0 (100% Pass)** | **4,144 kB max** | **70.0 ms total** | **`InsiderWin`** |
 
 *Machine-readable report stored in: [`docs/load_test_16p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_16p_results.json)*
 
 > [!IMPORTANT]
-> A single 64-player live match (L4), four concurrent 64-player matches, and the 256-player server target (L6) have **NOT RUN** and remain unverified until larger-scale load tests are executed.
+> This test verifies client concurrency responsiveness under bounded concurrent bursts; it does **NOT** establish sustained-load capacity, a single 64-player match under sustained load (L4), or four-match 256-player target capacity (L6), which remain **NOT RUN** and unverified.
 
 ## Proposed mixed64-v1 p95 workload — approval required
 

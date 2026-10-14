@@ -3,8 +3,8 @@
 #include <iostream>
 
 int main() {
-  std::cerr << "darkpool_load_tests requires Linux\n";
-  return 0;
+  std::cerr << "error: darkpool_load_tests requires Linux (epoll/sockets)\n";
+  return 1;
 }
 
 #else
@@ -48,27 +48,49 @@ using darkpool::network::json;
 #define DARKPOOL_SOURCE_COMMIT "unknown"
 #endif
 
+struct FailureCounts {
+  std::size_t transport_failures{0};
+  std::size_t correctness_failures{0};
+
+  [[nodiscard]] std::size_t total() const noexcept {
+    return transport_failures + correctness_failures;
+  }
+};
+
 struct RequestMetric {
   std::string type;
   std::uint64_t latency_us{0};
-  bool success{false};
+  bool is_concurrent{false};
+  bool transport_ok{false};
+  bool correctness_ok{false};
+};
+
+struct PhaseMetrics {
+  std::size_t total_requests{0};
+  std::size_t successful_requests{0};
+  std::size_t transport_failures{0};
+  std::size_t correctness_failures{0};
+  double p50_ms{0.0};
+  double p95_ms{0.0};
+  double p99_ms{0.0};
+  double mean_ms{0.0};
+  double min_ms{0.0};
+  double max_ms{0.0};
 };
 
 struct RunResult {
   int run_index{0};
   std::size_t player_count{0};
   std::uint64_t duration_ms{0};
-  std::size_t total_requests{0};
-  std::size_t successful_requests{0};
-  std::size_t failed_requests{0};
-  double p50_us{0.0};
-  double p95_us{0.0};
-  double p99_us{0.0};
-  double mean_us{0.0};
-  std::uint64_t min_us{0};
-  std::uint64_t max_us{0};
+  bool run_passed{false};
+  FailureCounts failures;
+  PhaseMetrics sequential;
+  PhaseMetrics concurrent;
+  PhaseMetrics total;
   double cpu_time_ms{0.0};
   std::uint64_t peak_rss_kb{0};
+  std::string final_phase;
+  std::string final_outcome;
   std::vector<RequestMetric> metrics;
 };
 
@@ -100,18 +122,24 @@ bool receive_exact(int fd, char* data, std::size_t size) {
   return true;
 }
 
-std::optional<json> timed_request(int fd, const json& payload, std::vector<RequestMetric>& out_metrics) {
+std::optional<json> timed_request(
+    int fd,
+    const json& payload,
+    std::vector<RequestMetric>& out_metrics,
+    FailureCounts& failures,
+    bool is_concurrent = false) {
   const std::string req_type = payload.value("type", "unknown");
   const auto outgoing = Frame(payload).serialize();
 
-  // Timing starts immediately before sending the serialized frame bytes
+  // Timing starts immediately before writing frame bytes to socket
   const auto start_time = std::chrono::steady_clock::now();
 
   if (!send_all(fd, outgoing.data(), outgoing.size())) {
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    out_metrics.push_back({req_type, us, false});
+    failures.transport_failures++;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false});
     return std::nullopt;
   }
 
@@ -120,7 +148,8 @@ std::optional<json> timed_request(int fd, const json& payload, std::vector<Reque
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    out_metrics.push_back({req_type, us, false});
+    failures.transport_failures++;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false});
     return std::nullopt;
   }
 
@@ -133,7 +162,8 @@ std::optional<json> timed_request(int fd, const json& payload, std::vector<Reque
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    out_metrics.push_back({req_type, us, false});
+    failures.transport_failures++;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false});
     return std::nullopt;
   }
 
@@ -143,11 +173,12 @@ std::optional<json> timed_request(int fd, const json& payload, std::vector<Reque
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    out_metrics.push_back({req_type, us, false});
+    failures.transport_failures++;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false});
     return std::nullopt;
   }
 
-  // Timing ends immediately after the complete correlated response frame is read
+  // Timing ends immediately when complete response frame is received
   const auto end_time = std::chrono::steady_clock::now();
   const auto us = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
@@ -156,13 +187,16 @@ std::optional<json> timed_request(int fd, const json& payload, std::vector<Reque
   try {
     const auto response = Frame::parse(bytes, consumed);
     if (!response || consumed != bytes.size()) {
-      out_metrics.push_back({req_type, us, false});
+      failures.transport_failures++;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false});
       return std::nullopt;
     }
-    out_metrics.push_back({req_type, us, true});
+    // Successfully received and parsed frame over transport
+    out_metrics.push_back({req_type, us, is_concurrent, true, true});
     return response->payload();
   } catch (const std::exception&) {
-    out_metrics.push_back({req_type, us, false});
+    failures.transport_failures++;
+    out_metrics.push_back({req_type, us, is_concurrent, false, false});
     return std::nullopt;
   }
 }
@@ -288,10 +322,36 @@ std::string get_environment_info() {
   return oss.str();
 }
 
+void compute_percentiles(const std::vector<std::uint64_t>& latencies_us, PhaseMetrics& out) {
+  if (latencies_us.empty()) return;
+  auto sorted = latencies_us;
+  std::sort(sorted.begin(), sorted.end());
+  out.min_ms = static_cast<double>(sorted.front()) / 1000.0;
+  out.max_ms = static_cast<double>(sorted.back()) / 1000.0;
+  const double sum = static_cast<double>(
+      std::accumulate(sorted.begin(), sorted.end(), std::uint64_t{0}));
+  out.mean_ms = (sum / static_cast<double>(sorted.size())) / 1000.0;
+
+  const auto p50_idx = static_cast<std::size_t>(static_cast<double>(sorted.size()) * 0.50);
+  const auto p95_idx = static_cast<std::size_t>(static_cast<double>(sorted.size()) * 0.95);
+  const auto p99_idx = static_cast<std::size_t>(static_cast<double>(sorted.size()) * 0.99);
+
+  out.p50_ms = static_cast<double>(sorted[std::min(p50_idx, sorted.size() - 1)]) / 1000.0;
+  out.p95_ms = static_cast<double>(sorted[std::min(p95_idx, sorted.size() - 1)]) / 1000.0;
+  out.p99_ms = static_cast<double>(sorted[std::min(p99_idx, sorted.size() - 1)]) / 1000.0;
+}
+
+// Configurable failure injection for regression testing
+struct TestFaultConfig {
+  bool inject_assertion_failure{false};
+  bool inject_outcome_mismatch{false};
+};
+
 RunResult execute_16_player_match(
     const std::string& server_path,
     int run_index,
-    std::size_t player_count = 16) {
+    std::size_t player_count = 16,
+    const TestFaultConfig& fault_cfg = {}) {
   RunResult result;
   result.run_index = run_index;
   result.player_count = player_count;
@@ -300,14 +360,14 @@ RunResult execute_16_player_match(
   const std::uint16_t port = reserve_ephemeral_port();
   if (port == 0) {
     std::cerr << "Run " << run_index << ": Failed to reserve ephemeral port\n";
-    result.failed_requests++;
+    result.failures.transport_failures++;
     return result;
   }
 
   const auto server_pid = spawn_server(server_path, port, mod_token);
   if (server_pid <= 0) {
     std::cerr << "Run " << run_index << ": Failed to spawn server\n";
-    result.failed_requests++;
+    result.failures.transport_failures++;
     return result;
   }
 
@@ -327,34 +387,41 @@ RunResult execute_16_player_match(
 
   const auto run_start = std::chrono::steady_clock::now();
 
+  // Helper macro to verify correctness assertions fatalling
+  #define VERIFY(cond, err_msg) \
+    do { \
+      if (!(cond)) { \
+        std::cerr << "Run " << run_index << " CORRECTNESS ERROR: " << (err_msg) \
+                  << " at line " << __LINE__ << '\n'; \
+        result.failures.correctness_failures++; \
+      } \
+    } while (0)
+
   // 1. Establish Moderator Connection
   mod_fd = connect_loopback(port);
   if (mod_fd < 0) {
-    std::cerr << "Run " << run_index << ": Failed to connect moderator\n";
+    std::cerr << "Run " << run_index << " TRANSPORT ERROR: Failed to connect moderator\n";
+    result.failures.transport_failures++;
     cleanup();
     (void)kill(server_pid, SIGTERM);
     (void)waitpid(server_pid, nullptr, 0);
-    result.failed_requests++;
     return result;
   }
 
   const auto mod_hello = timed_request(
       mod_fd,
       json{{"type", "connect"}, {"role", "moderator"}, {"token", mod_token}},
-      result.metrics);
-  if (!mod_hello || (*mod_hello)["type"] != "connect" || (*mod_hello)["role"] != "moderator") {
-    std::cerr << "Run " << run_index << ": Moderator handshake failed\n";
-    cleanup();
-    (void)kill(server_pid, SIGTERM);
-    (void)waitpid(server_pid, nullptr, 0);
-    return result;
-  }
+      result.metrics,
+      result.failures);
+  VERIFY(mod_hello && (*mod_hello)["type"] == "connect" && (*mod_hello)["role"] == "moderator",
+         "Moderator handshake failed");
 
   // 2. Establish 16 Player Connections
   for (std::size_t i = 0; i < player_count; ++i) {
     const int pfd = connect_loopback(port);
     if (pfd < 0) {
-      std::cerr << "Run " << run_index << ": Failed to connect player " << i << '\n';
+      std::cerr << "Run " << run_index << " TRANSPORT ERROR: Failed to connect player " << i << '\n';
+      result.failures.transport_failures++;
       cleanup();
       (void)kill(server_pid, SIGTERM);
       (void)waitpid(server_pid, nullptr, 0);
@@ -364,50 +431,48 @@ RunResult execute_16_player_match(
     const auto player_hello = timed_request(
         pfd,
         json{{"type", "connect"}, {"role", "player"}},
-        result.metrics);
-    if (!player_hello || (*player_hello)["type"] != "connect") {
-      std::cerr << "Run " << run_index << ": Player " << i << " handshake failed\n";
-      cleanup();
-      (void)kill(server_pid, SIGTERM);
-      (void)waitpid(server_pid, nullptr, 0);
-      return result;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(player_hello && (*player_hello)["type"] == "connect" && (*player_hello)["role"] == "player",
+           "Player connect handshake response mismatch");
   }
 
   // 3. Create 16-Player Match
   const auto create_resp = timed_request(
       mod_fd,
       json{{"type", "create_match"}, {"player_count", player_count}},
-      result.metrics);
-  if (!create_resp || (*create_resp)["type"] != "match_created" ||
-      (*create_resp)["player_count"] != player_count) {
-    std::cerr << "Run " << run_index << ": Failed to create match\n";
-    cleanup();
-    (void)kill(server_pid, SIGTERM);
-    (void)waitpid(server_pid, nullptr, 0);
-    return result;
-  }
-  const auto match_id = (*create_resp)["match_id"].get<std::uint64_t>();
+      result.metrics,
+      result.failures);
+  VERIFY(create_resp && (*create_resp)["type"] == "match_created" &&
+             (*create_resp)["player_count"] == player_count && create_resp->contains("match_id"),
+         "Failed to create match");
 
-  // Role expectations for N=16: Insiders=2, Investigators=1, Employees=13
+  const auto match_id = (create_resp && create_resp->contains("match_id"))
+                            ? (*create_resp)["match_id"].get<std::uint64_t>()
+                            : 1U;
+
+  // Verify Role Counts from match_created: N=16 requires 2 Insiders, 1 Investigator, 13 Employees
+  VERIFY(create_resp && (*create_resp)["insiders"] == 2U &&
+             (*create_resp)["investigators"] == 1U && (*create_resp)["employees"] == 13U,
+         "Roster role counts mismatch for 16 players in match_created");
+
+  // Role tracking
   std::vector<int> insider_fds;
   int investigator_fd = -1;
   std::uint32_t employee_target = 0;
 
-  // 4. Players Join Match
+  // 4. Players Join Match (Sequential)
   for (std::size_t i = 0; i < player_fds.size(); ++i) {
     const auto join_resp = timed_request(
         player_fds[i],
         json{{"type", "join_match"}, {"match_id", match_id}},
-        result.metrics);
-    if (!join_resp || (*join_resp)["type"] != "joined_match") {
-      std::cerr << "Run " << run_index << ": Player " << i << " failed to join match\n";
-      cleanup();
-      (void)kill(server_pid, SIGTERM);
-      (void)waitpid(server_pid, nullptr, 0);
-      return result;
-    }
-    if (join_resp->contains("private_role")) {
+        result.metrics,
+        result.failures);
+    VERIFY(join_resp && (*join_resp)["type"] == "joined_match" &&
+               (*join_resp)["player_id"] == i + 1U,
+           "Player failed to join match");
+
+    if (join_resp && join_resp->contains("private_role")) {
       const auto role = (*join_resp)["private_role"].get<std::string>();
       if (role == "Insider") {
         insider_fds.push_back(player_fds[i]);
@@ -419,83 +484,122 @@ RunResult execute_16_player_match(
     }
   }
 
-  if (insider_fds.size() != 2U || investigator_fd < 0 || employee_target == 0U) {
-    std::cerr << "Run " << run_index << ": Unexpected role distribution at N=16\n";
-    cleanup();
-    (void)kill(server_pid, SIGTERM);
-    (void)waitpid(server_pid, nullptr, 0);
-    return result;
+  // Verify Joined Role Distribution
+  VERIFY(insider_fds.size() == 2U, "Expected exactly 2 Insiders");
+  VERIFY(investigator_fd >= 0, "Expected exactly 1 Investigator");
+  VERIFY(employee_target > 0U, "Expected at least 1 Employee target");
+
+  // Injected fault test: simulate assertion failure if configured
+  if (fault_cfg.inject_assertion_failure) {
+    VERIFY(false, "Simulated injected assertion failure for regression testing");
   }
 
   // 5. Start Match
   const auto start_resp = timed_request(
       mod_fd,
       json{{"type", "start_match"}, {"match_id", match_id}},
-      result.metrics);
-  if (!start_resp || (*start_resp)["type"] != "transition_result" ||
-      (*start_resp)["phase"] != "AwaitingEvent") {
-    std::cerr << "Run " << run_index << ": Failed to start match\n";
-    cleanup();
-    (void)kill(server_pid, SIGTERM);
-    (void)waitpid(server_pid, nullptr, 0);
-    return result;
-  }
+      result.metrics,
+      result.failures);
+  VERIFY(start_resp && (*start_resp)["type"] == "transition_result" &&
+             (*start_resp)["phase"] == "AwaitingEvent",
+         "Failed to start match or phase is not AwaitingEvent");
 
   // 6. Execute All 3 Rounds
+  // Round 1: Sequential requests (Smoke test)
+  // Round 2: Concurrent requests burst (Bounded concurrency: 16 simultaneous client threads)
+  // Round 3: Sequential requests (Resolution and final state)
   for (std::uint32_t round = 1; round <= 3U; ++round) {
+    const bool is_concurrent_round = (round == 2U);
+
     // 6a. Publish Event
     const int event_impact = (round == 1U) ? 1 : (round == 2U) ? 0 : -1;
     const auto event_resp = timed_request(
         mod_fd,
         json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", event_impact}},
-        result.metrics);
-    if (!event_resp || (*event_resp)["type"] != "transition_result" ||
-        (*event_resp)["phase"] != "Discussion") {
-      std::cerr << "Run " << run_index << ": Round " << round << " publish_event failed\n";
-      break;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(event_resp && (*event_resp)["type"] == "transition_result" &&
+               (*event_resp)["phase"] == "Discussion",
+           "Publish event failed or phase not Discussion");
 
     // 6b. Discussion & Insider Hints
     for (const auto ifd : insider_fds) {
       const auto hint_resp = timed_request(
           ifd,
           json{{"type", "insider_hint"}, {"match_id", match_id}},
-          result.metrics);
-      if (!hint_resp || (*hint_resp)["type"] != "hint_private" ||
-          (*hint_resp)["event_impact"] != event_impact) {
-        std::cerr << "Run " << run_index << ": Round " << round << " hint failed\n";
-      }
+          result.metrics,
+          result.failures);
+      VERIFY(hint_resp && (*hint_resp)["type"] == "hint_private" &&
+                 (*hint_resp)["event_impact"] == event_impact,
+             "Insider hint response mismatch or incorrect impact");
     }
 
     // 6c. Open Trading
     const auto trade_phase = timed_request(
         mod_fd,
         json{{"type", "open_trading"}, {"match_id", match_id}},
-        result.metrics);
-    if (!trade_phase || (*trade_phase)["type"] != "transition_result" ||
-        (*trade_phase)["phase"] != "Trading") {
-      std::cerr << "Run " << run_index << ": Round " << round << " open_trading failed\n";
-      break;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(trade_phase && (*trade_phase)["type"] == "transition_result" &&
+               (*trade_phase)["phase"] == "Trading",
+           "Open trading failed or phase not Trading");
 
-    // 6d. Legal Player Trades
-    for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
-      std::string action = "HOLD";
-      if (round == 1U) {
-        action = (seat < 8U) ? "BUY" : "HOLD";
-      } else if (round == 2U) {
-        action = (seat < 4U) ? "SELL" : (seat < 8U) ? "BUY" : "HOLD";
-      } else {
-        action = "HOLD";
+    // 6d. Player Trades
+    if (is_concurrent_round) {
+      // CONCURRENT REQUEST PHASE: 16 simultaneous client threads sending legal trades
+      std::vector<std::thread> threads;
+      std::vector<RequestMetric> conc_metrics(player_fds.size());
+      std::vector<int> conc_success(player_fds.size(), 0);
+      std::vector<FailureCounts> thread_failures(player_fds.size());
+
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        threads.emplace_back([&, seat]() {
+          std::string action = (seat < 4U) ? "SELL" : (seat < 8U) ? "BUY" : "HOLD";
+          std::vector<RequestMetric> local_metrics;
+          const auto tr = timed_request(
+              player_fds[seat],
+              json{{"type", "trade"}, {"match_id", match_id}, {"action", action}},
+              local_metrics,
+              thread_failures[seat],
+              true);
+          if (tr && (*tr)["type"] == "trade_result" && (*tr)["ok"] == true) {
+            conc_success[seat] = 1;
+          } else {
+            std::cerr << "Seat " << seat << " trade failure: "
+                      << (tr ? tr->dump() : "nullopt (transport failure)") << '\n';
+          }
+          if (!local_metrics.empty()) {
+            conc_metrics[seat] = local_metrics[0];
+          }
+        });
       }
 
-      const auto tr = timed_request(
-          player_fds[seat],
-          json{{"type", "trade"}, {"match_id", match_id}, {"action", action}},
-          result.metrics);
-      if (!tr || (*tr)["type"] != "trade_result" || (*tr)["ok"] != true) {
-        std::cerr << "Run " << run_index << ": Round " << round << " trade by seat "
-                  << seat << " failed\n";
+      for (auto& t : threads) {
+        t.join();
+      }
+
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        result.metrics.push_back(conc_metrics[seat]);
+        result.failures.transport_failures += thread_failures[seat].transport_failures;
+        result.failures.correctness_failures += thread_failures[seat].correctness_failures;
+        VERIFY(conc_success[seat] == 1, "Concurrent trade rejected or failed");
+      }
+    } else {
+      // SEQUENTIAL TRADES
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        std::string action = "HOLD";
+        if (round == 1U) {
+          action = (seat < 8U) ? "BUY" : "HOLD";
+        } else {
+          action = "HOLD";
+        }
+        const auto tr = timed_request(
+            player_fds[seat],
+            json{{"type", "trade"}, {"match_id", match_id}, {"action", action}},
+            result.metrics,
+            result.failures);
+        VERIFY(tr && (*tr)["type"] == "trade_result" && (*tr)["ok"] == true,
+               "Sequential trade failed or was rejected");
       }
     }
 
@@ -503,44 +607,83 @@ RunResult execute_16_player_match(
     const auto market_resp = timed_request(
         mod_fd,
         json{{"type", "resolve_market"}, {"match_id", match_id}},
-        result.metrics);
-    if (!market_resp || (*market_resp)["type"] != "market_result") {
-      std::cerr << "Run " << run_index << ": Round " << round << " resolve_market failed\n";
-      break;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(market_resp && (*market_resp)["type"] == "market_result" &&
+               (*market_resp)["ok"] == true,
+           "Resolve market failed");
 
     // 6f. Clue Phase (Round 1)
     if (round == 1U && investigator_fd >= 0 && employee_target > 0U) {
       const auto clue_resp = timed_request(
           investigator_fd,
           json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", employee_target}},
-          result.metrics);
-      if (!clue_resp || (*clue_resp)["type"] != "clue_private" ||
-          (*clue_resp)["is_insider"] != false) {
-        std::cerr << "Run " << run_index << ": request_clue failed\n";
-      }
+          result.metrics,
+          result.failures);
+      VERIFY(clue_resp && (*clue_resp)["type"] == "clue_private" &&
+                 (*clue_resp)["is_insider"] == false,
+             "Investigator clue request failed or is_insider is true for employee");
     }
 
     // 6g. Open Voting
     const auto vote_phase = timed_request(
         mod_fd,
         json{{"type", "open_voting"}, {"match_id", match_id}},
-        result.metrics);
-    if (!vote_phase || (*vote_phase)["type"] != "transition_result" ||
-        (*vote_phase)["phase"] != "Voting") {
-      std::cerr << "Run " << run_index << ": Round " << round << " open_voting failed\n";
-      break;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(vote_phase && (*vote_phase)["type"] == "transition_result" &&
+               (*vote_phase)["phase"] == "Voting",
+           "Open voting failed or phase not Voting");
 
-    // 6h. Player Votes (Abstain)
-    for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
-      const auto vr = timed_request(
-          player_fds[seat],
-          json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
-          result.metrics);
-      if (!vr || (*vr)["type"] != "vote_result" || (*vr)["accepted"] != true) {
-        std::cerr << "Run " << run_index << ": Round " << round << " vote by seat "
-                  << seat << " failed\n";
+    // 6h. Player Votes
+    if (is_concurrent_round) {
+      // CONCURRENT VOTES: 16 simultaneous client threads sending legal abstain votes
+      std::vector<std::thread> threads;
+      std::vector<RequestMetric> conc_metrics(player_fds.size());
+      std::vector<int> conc_success(player_fds.size(), 0);
+      std::vector<FailureCounts> thread_failures(player_fds.size());
+
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        threads.emplace_back([&, seat]() {
+          std::vector<RequestMetric> local_metrics;
+          const auto vr = timed_request(
+              player_fds[seat],
+              json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
+              local_metrics,
+              thread_failures[seat],
+              true);
+          if (vr && (*vr)["type"] == "vote_result" && (*vr)["accepted"] == true) {
+            conc_success[seat] = 1;
+          } else {
+            std::cerr << "Seat " << seat << " vote failure: "
+                      << (vr ? vr->dump() : "nullopt (transport failure)") << '\n';
+          }
+          if (!local_metrics.empty()) {
+            conc_metrics[seat] = local_metrics[0];
+          }
+        });
+      }
+
+      for (auto& t : threads) {
+        t.join();
+      }
+
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        result.metrics.push_back(conc_metrics[seat]);
+        result.failures.transport_failures += thread_failures[seat].transport_failures;
+        result.failures.correctness_failures += thread_failures[seat].correctness_failures;
+        VERIFY(conc_success[seat] == 1, "Concurrent vote rejected or failed");
+      }
+    } else {
+      // SEQUENTIAL VOTES
+      for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
+        const auto vr = timed_request(
+            player_fds[seat],
+            json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}},
+            result.metrics,
+            result.failures);
+        VERIFY(vr && (*vr)["type"] == "vote_result" && (*vr)["accepted"] == true,
+               "Sequential vote rejected or failed");
       }
     }
 
@@ -548,22 +691,44 @@ RunResult execute_16_player_match(
     const auto resolve_resp = timed_request(
         mod_fd,
         json{{"type", "resolve_votes"}, {"match_id", match_id}},
-        result.metrics);
-    if (!resolve_resp || (*resolve_resp)["type"] != "vote_resolution") {
-      std::cerr << "Run " << run_index << ": Round " << round << " resolve_votes failed\n";
-      break;
-    }
+        result.metrics,
+        result.failures);
+    VERIFY(resolve_resp && (*resolve_resp)["type"] == "vote_resolution" &&
+               (*resolve_resp)["ok"] == true,
+           "Resolve votes failed");
   }
 
-  // 7. Verify Final Match State
+  // 7. Verify Final Match State & Guaranteed Winner
   const auto status_resp = timed_request(
       player_fds[0],
       json{{"type", "match_status"}, {"match_id", match_id}},
-      result.metrics);
-  if (!status_resp || (*status_resp)["type"] != "match_status" ||
-      (*status_resp)["phase"] != "Finished") {
-    std::cerr << "Run " << run_index << ": Final match state verification failed\n";
+      result.metrics,
+      result.failures);
+
+  VERIFY(status_resp && (*status_resp)["type"] == "match_status",
+         "Failed to retrieve final match status");
+
+  if (status_resp) {
+    result.final_phase = status_resp->value("phase", "unknown");
+    result.final_outcome = status_resp->value("outcome", "unknown");
+    const auto health = status_resp->value("health", 0);
+
+    // Assert that the match legitimately finished
+    VERIFY(result.final_phase == "Finished", "Expected match phase to be Finished");
+
+    // For our deterministic workload:
+    // Company health remains > 0 (final health = 6).
+    // All players abstained, so no players were eliminated (both Insiders survive).
+    // Round 3 ends -> Rule mandates Outcome::InsiderWin.
+    const std::string expected_winner = fault_cfg.inject_outcome_mismatch
+                                            ? "EmployeesWin"
+                                            : "InsiderWin";
+    VERIFY(result.final_outcome == expected_winner,
+           "Final outcome mismatch: expected " + expected_winner + " but got " + result.final_outcome);
+    VERIFY(health > 0, "Expected positive company health at match end");
   }
+
+  #undef VERIFY
 
   const auto run_end = std::chrono::steady_clock::now();
   result.duration_ms = static_cast<std::uint64_t>(
@@ -595,40 +760,88 @@ RunResult execute_16_player_match(
     }
   }
 
-  // 9. Aggregate Latency Metrics
-  std::vector<std::uint64_t> latencies;
-  latencies.reserve(result.metrics.size());
-  result.total_requests = result.metrics.size();
-  result.successful_requests = 0;
-  result.failed_requests = 0;
+  // 9. Aggregate Latency Metrics Separately for Sequential and Concurrent
+  std::vector<std::uint64_t> seq_latencies;
+  std::vector<std::uint64_t> conc_latencies;
+  std::vector<std::uint64_t> all_latencies;
 
   for (const auto& m : result.metrics) {
-    if (m.success) {
-      result.successful_requests++;
-      latencies.push_back(m.latency_us);
+    all_latencies.push_back(m.latency_us);
+    result.total.total_requests++;
+    if (m.is_concurrent) {
+      result.concurrent.total_requests++;
+      if (m.transport_ok && m.correctness_ok) {
+        result.concurrent.successful_requests++;
+        conc_latencies.push_back(m.latency_us);
+      } else {
+        if (!m.transport_ok) result.concurrent.transport_failures++;
+        if (!m.correctness_ok) result.concurrent.correctness_failures++;
+      }
     } else {
-      result.failed_requests++;
+      result.sequential.total_requests++;
+      if (m.transport_ok && m.correctness_ok) {
+        result.sequential.successful_requests++;
+        seq_latencies.push_back(m.latency_us);
+      } else {
+        if (!m.transport_ok) result.sequential.transport_failures++;
+        if (!m.correctness_ok) result.sequential.correctness_failures++;
+      }
     }
   }
 
-  if (!latencies.empty()) {
-    std::sort(latencies.begin(), latencies.end());
-    result.min_us = latencies.front();
-    result.max_us = latencies.back();
-    const double sum = static_cast<double>(
-        std::accumulate(latencies.begin(), latencies.end(), std::uint64_t{0}));
-    result.mean_us = sum / static_cast<double>(latencies.size());
+  result.total.successful_requests = result.sequential.successful_requests + result.concurrent.successful_requests;
+  result.total.transport_failures = result.failures.transport_failures;
+  result.total.correctness_failures = result.failures.correctness_failures;
 
-    const auto p50_idx = static_cast<std::size_t>(static_cast<double>(latencies.size()) * 0.50);
-    const auto p95_idx = static_cast<std::size_t>(static_cast<double>(latencies.size()) * 0.95);
-    const auto p99_idx = static_cast<std::size_t>(static_cast<double>(latencies.size()) * 0.99);
+  compute_percentiles(seq_latencies, result.sequential);
+  compute_percentiles(conc_latencies, result.concurrent);
+  compute_percentiles(all_latencies, result.total);
 
-    result.p50_us = static_cast<double>(latencies[std::min(p50_idx, latencies.size() - 1)]);
-    result.p95_us = static_cast<double>(latencies[std::min(p95_idx, latencies.size() - 1)]);
-    result.p99_us = static_cast<double>(latencies[std::min(p99_idx, latencies.size() - 1)]);
-  }
-
+  result.run_passed = (result.failures.total() == 0);
   return result;
+}
+
+// Regression tests that prove assertion failures and invalid final outcomes result in a non-zero exit status
+bool run_regression_selftest(const std::string& server_path) {
+  std::cout << "=================================================================\n";
+  std::cout << " Running Load Test Harness Regression Verification Tests\n";
+  std::cout << "=================================================================\n";
+
+  // Test 1: Normal 16-player run must pass with 0 failures
+  std::cout << "[Regression 1/3] Verifying valid 16-player run passes... " << std::flush;
+  const auto normal_res = execute_16_player_match(server_path, 1, 16, {});
+  if (!normal_res.run_passed || normal_res.failures.total() != 0) {
+    std::cout << "FAILED (expected pass, got " << normal_res.failures.total() << " failures)\n";
+    return false;
+  }
+  std::cout << "PASSED (0 failures, outcome=" << normal_res.final_outcome << ")\n";
+
+  // Test 2: Injected assertion failure must cause run to fail (fatal)
+  std::cout << "[Regression 2/3] Verifying assertion failure is fatal... " << std::flush;
+  TestFaultConfig fault_assert;
+  fault_assert.inject_assertion_failure = true;
+  const auto assert_res = execute_16_player_match(server_path, 2, 16, fault_assert);
+  if (assert_res.run_passed || assert_res.failures.correctness_failures == 0) {
+    std::cout << "FAILED (expected failure, but run passed!)\n";
+    return false;
+  }
+  std::cout << "PASSED (fatal failure correctly triggered: "
+            << assert_res.failures.correctness_failures << " correctness failure)\n";
+
+  // Test 3: Injected outcome mismatch must cause run to fail (fatal)
+  std::cout << "[Regression 3/3] Verifying outcome mismatch is fatal... " << std::flush;
+  TestFaultConfig fault_outcome;
+  fault_outcome.inject_outcome_mismatch = true;
+  const auto outcome_res = execute_16_player_match(server_path, 3, 16, fault_outcome);
+  if (outcome_res.run_passed || outcome_res.failures.correctness_failures == 0) {
+    std::cout << "FAILED (expected failure, but run passed!)\n";
+    return false;
+  }
+  std::cout << "PASSED (fatal failure correctly triggered: "
+            << outcome_res.failures.correctness_failures << " correctness failure)\n";
+
+  std::cout << "\nAll regression checks PASSED: correctness failures and outcome mismatches are strictly fatal.\n\n";
+  return true;
 }
 
 }  // namespace
@@ -639,6 +852,7 @@ int main(int argc, char* argv[]) {
   std::string source_commit = DARKPOOL_SOURCE_COMMIT;
   int repeat_runs = 3;
   std::size_t player_count = 16;
+  bool is_selftest = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -652,6 +866,8 @@ int main(int argc, char* argv[]) {
       player_count = static_cast<std::size_t>(std::max(3, std::atoi(argv[++i])));
     } else if (arg == "--commit" && i + 1 < argc) {
       source_commit = argv[++i];
+    } else if (arg == "--selftest") {
+      is_selftest = true;
     } else if (!arg.starts_with("--") && i == 1) {
       server_path = argv[1];
     }
@@ -686,6 +902,10 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (is_selftest) {
+    return run_regression_selftest(server_path) ? 0 : 1;
+  }
+
   const std::string env_info = get_environment_info();
 
   std::cout << "=================================================================\n";
@@ -699,89 +919,97 @@ int main(int argc, char* argv[]) {
   std::cout << " Output JSON  : " << output_json_path << '\n';
   std::cout << " Timing Basis : Monotonic clock (std::chrono::steady_clock)\n";
   std::cout << " ACK Boundary : Frame send initiation -> complete response parse\n";
+  std::cout << " Phases       : Sequential 3-round smoke + 16-client concurrent burst (Round 2)\n";
+  std::cout << " Disclaimer   : Establishes client concurrency; does NOT claim sustained capacity\n";
   std::cout << "=================================================================\n\n";
 
   std::vector<RunResult> results;
   results.reserve(static_cast<std::size_t>(repeat_runs));
 
-  bool all_runs_ok = true;
+  bool all_runs_passed = true;
 
   for (int r = 1; r <= repeat_runs; ++r) {
-    std::cout << "[Run " << r << "/" << repeat_runs << "] Starting 16-player match... " << std::flush;
+    std::cout << "[Run " << r << "/" << repeat_runs << "] Executing 16-player match... " << std::flush;
     const auto res = execute_16_player_match(server_path, r, player_count);
     results.push_back(res);
 
-    if (res.failed_requests > 0 || res.successful_requests == 0) {
-      all_runs_ok = false;
-      std::cout << "FAILED (" << res.failed_requests << " failures)\n";
+    if (!res.run_passed) {
+      all_runs_passed = false;
+      std::cout << "FAILED (Transport: " << res.failures.transport_failures
+                << ", Correctness: " << res.failures.correctness_failures << ")\n";
     } else {
-      std::cout << "COMPLETED in " << res.duration_ms << " ms\n";
-      std::cout << "         Requests: " << res.successful_requests << " ok, 0 failed\n";
-      std::cout << "         Latency : p50=" << std::fixed << std::setprecision(2)
-                << (res.p50_us / 1000.0) << " ms, p95="
-                << (res.p95_us / 1000.0) << " ms, p99="
-                << (res.p99_us / 1000.0) << " ms (mean="
-                << (res.mean_us / 1000.0) << " ms)\n";
-      std::cout << "         Resource: Peak RSS=" << res.peak_rss_kb << " kB, CPU="
+      std::cout << "PASSED in " << res.duration_ms << " ms (Winner: " << res.final_outcome << ")\n";
+      std::cout << "         Sequential : " << res.sequential.successful_requests << " reqs, "
+                << "p50=" << std::fixed << std::setprecision(2) << res.sequential.p50_ms << " ms, "
+                << "p95=" << res.sequential.p95_ms << " ms, "
+                << "p99=" << res.sequential.p99_ms << " ms\n";
+      std::cout << "         Concurrent : " << res.concurrent.successful_requests << " reqs, "
+                << "p50=" << std::fixed << std::setprecision(2) << res.concurrent.p50_ms << " ms, "
+                << "p95=" << res.concurrent.p95_ms << " ms, "
+                << "p99=" << res.concurrent.p99_ms << " ms\n";
+      std::cout << "         Resource   : Peak RSS=" << res.peak_rss_kb << " kB, CPU="
                 << std::fixed << std::setprecision(1) << res.cpu_time_ms << " ms\n\n";
     }
   }
 
-  // Generate aggregate summary
-  std::vector<std::uint64_t> all_latencies;
-  std::size_t total_requests_all = 0;
-  std::size_t successful_requests_all = 0;
-  std::size_t failed_requests_all = 0;
-  std::uint64_t total_duration_all = 0;
+  // Generate aggregate metrics
+  std::vector<std::uint64_t> all_seq_latencies;
+  std::vector<std::uint64_t> all_conc_latencies;
+  std::vector<std::uint64_t> all_total_latencies;
+  std::size_t total_trans_fails = 0;
+  std::size_t total_corr_fails = 0;
+  std::uint64_t total_wall_time = 0;
 
-  for (const auto& res : results) {
-    total_requests_all += res.total_requests;
-    successful_requests_all += res.successful_requests;
-    failed_requests_all += res.failed_requests;
-    total_duration_all += res.duration_ms;
-    for (const auto& m : res.metrics) {
-      if (m.success) all_latencies.push_back(m.latency_us);
+  for (const auto& r : results) {
+    total_trans_fails += r.failures.transport_failures;
+    total_corr_fails += r.failures.correctness_failures;
+    total_wall_time += r.duration_ms;
+    for (const auto& m : r.metrics) {
+      all_total_latencies.push_back(m.latency_us);
+      if (m.is_concurrent) {
+        if (m.transport_ok && m.correctness_ok) all_conc_latencies.push_back(m.latency_us);
+      } else {
+        if (m.transport_ok && m.correctness_ok) all_seq_latencies.push_back(m.latency_us);
+      }
     }
   }
 
-  double aggregate_p50_us = 0.0;
-  double aggregate_p95_us = 0.0;
-  double aggregate_p99_us = 0.0;
-  double aggregate_mean_us = 0.0;
+  PhaseMetrics agg_seq{};
+  PhaseMetrics agg_conc{};
+  PhaseMetrics agg_total{};
+  compute_percentiles(all_seq_latencies, agg_seq);
+  compute_percentiles(all_conc_latencies, agg_conc);
+  compute_percentiles(all_total_latencies, agg_total);
 
-  if (!all_latencies.empty()) {
-    std::sort(all_latencies.begin(), all_latencies.end());
-    const double sum = static_cast<double>(
-        std::accumulate(all_latencies.begin(), all_latencies.end(), std::uint64_t{0}));
-    aggregate_mean_us = sum / static_cast<double>(all_latencies.size());
-    const auto p50_idx = static_cast<std::size_t>(static_cast<double>(all_latencies.size()) * 0.50);
-    const auto p95_idx = static_cast<std::size_t>(static_cast<double>(all_latencies.size()) * 0.95);
-    const auto p99_idx = static_cast<std::size_t>(static_cast<double>(all_latencies.size()) * 0.99);
-    aggregate_p50_us = static_cast<double>(all_latencies[std::min(p50_idx, all_latencies.size() - 1)]);
-    aggregate_p95_us = static_cast<double>(all_latencies[std::min(p95_idx, all_latencies.size() - 1)]);
-    aggregate_p99_us = static_cast<double>(all_latencies[std::min(p99_idx, all_latencies.size() - 1)]);
-  }
+  agg_seq.total_requests = all_seq_latencies.size();
+  agg_seq.successful_requests = all_seq_latencies.size();
+  agg_conc.total_requests = all_conc_latencies.size();
+  agg_conc.successful_requests = all_conc_latencies.size();
+  agg_total.total_requests = all_total_latencies.size();
+  agg_total.successful_requests = agg_seq.successful_requests + agg_conc.successful_requests;
+  agg_total.transport_failures = total_trans_fails;
+  agg_total.correctness_failures = total_corr_fails;
 
   // Print Markdown Results Table
   std::cout << "=================================================================\n";
   std::cout << " SUMMARY RESULTS (Three Repeatable 16-Player Runs)\n";
   std::cout << "=================================================================\n";
-  std::cout << "| Run | Clients | Duration | Requests (OK/Fail) | p50 (ms) | p95 (ms) | p99 (ms) | Peak RSS | CPU |\n";
-  std::cout << "|---|---|---|---|---|---|---|---|---|\n";
+  std::cout << "| Run | Clients | Duration | Sequential (p50/p95/p99) | Concurrent (p50/p95/p99) | Failures (Trans/Corr) | Peak RSS | CPU |\n";
+  std::cout << "|---|---|---|---|---|---|---|---|\n";
   for (const auto& r : results) {
     std::cout << "| Run " << r.run_index << " | " << (r.player_count + 1) << " | "
-              << r.duration_ms << " ms | " << r.successful_requests << "/" << r.failed_requests << " | "
-              << std::fixed << std::setprecision(2) << (r.p50_us / 1000.0) << " ms | "
-              << (r.p95_us / 1000.0) << " ms | "
-              << (r.p99_us / 1000.0) << " ms | "
+              << r.duration_ms << " ms | "
+              << std::fixed << std::setprecision(2) << r.sequential.p50_ms << " / " << r.sequential.p95_ms << " / " << r.sequential.p99_ms << " ms | "
+              << r.concurrent.p50_ms << " / " << r.concurrent.p95_ms << " / " << r.concurrent.p99_ms << " ms | "
+              << r.failures.transport_failures << " / " << r.failures.correctness_failures << " | "
               << r.peak_rss_kb << " kB | "
               << std::fixed << std::setprecision(1) << r.cpu_time_ms << " ms |\n";
   }
   std::cout << "| Aggregate | " << (player_count + 1) << " | "
-            << total_duration_all << " ms | " << successful_requests_all << "/" << failed_requests_all << " | "
-            << std::fixed << std::setprecision(2) << (aggregate_p50_us / 1000.0) << " ms | "
-            << (aggregate_p95_us / 1000.0) << " ms | "
-            << (aggregate_p99_us / 1000.0) << " ms | - | - |\n\n";
+            << total_wall_time << " ms | "
+            << std::fixed << std::setprecision(2) << agg_seq.p50_ms << " / " << agg_seq.p95_ms << " / " << agg_seq.p99_ms << " ms | "
+            << agg_conc.p50_ms << " / " << agg_conc.p95_ms << " / " << agg_conc.p99_ms << " ms | "
+            << total_trans_fails << " / " << total_corr_fails << " | - | - |\n\n";
 
   // Write Machine-Readable JSON Report
   json report;
@@ -791,18 +1019,39 @@ int main(int argc, char* argv[]) {
   report["player_count"] = player_count;
   report["client_count"] = player_count + 1;
   report["repeat_runs"] = repeat_runs;
+  report["all_runs_passed"] = all_runs_passed;
   report["timestamp"] = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::seconds>(
           std::chrono::system_clock::now().time_since_epoch()).count());
-  report["summary"] = {
-    {"total_duration_ms", total_duration_all},
-    {"total_requests", total_requests_all},
-    {"successful_requests", successful_requests_all},
-    {"failed_requests", failed_requests_all},
-    {"p50_ms", aggregate_p50_us / 1000.0},
-    {"p95_ms", aggregate_p95_us / 1000.0},
-    {"p99_ms", aggregate_p99_us / 1000.0},
-    {"mean_ms", aggregate_mean_us / 1000.0}
+
+  report["sequential_summary"] = {
+    {"total_requests", agg_seq.total_requests},
+    {"successful_requests", agg_seq.successful_requests},
+    {"p50_ms", agg_seq.p50_ms},
+    {"p95_ms", agg_seq.p95_ms},
+    {"p99_ms", agg_seq.p99_ms},
+    {"mean_ms", agg_seq.mean_ms}
+  };
+
+  report["concurrent_summary"] = {
+    {"total_requests", agg_conc.total_requests},
+    {"successful_requests", agg_conc.successful_requests},
+    {"p50_ms", agg_conc.p50_ms},
+    {"p95_ms", agg_conc.p95_ms},
+    {"p99_ms", agg_conc.p99_ms},
+    {"mean_ms", agg_conc.mean_ms}
+  };
+
+  report["total_summary"] = {
+    {"total_duration_ms", total_wall_time},
+    {"total_requests", agg_total.total_requests},
+    {"successful_requests", agg_total.successful_requests},
+    {"transport_failures", total_trans_fails},
+    {"correctness_failures", total_corr_fails},
+    {"p50_ms", agg_total.p50_ms},
+    {"p95_ms", agg_total.p95_ms},
+    {"p99_ms", agg_total.p99_ms},
+    {"mean_ms", agg_total.mean_ms}
   };
 
   json runs_json = json::array();
@@ -810,15 +1059,27 @@ int main(int argc, char* argv[]) {
     runs_json.push_back({
       {"run_index", r.run_index},
       {"duration_ms", r.duration_ms},
-      {"total_requests", r.total_requests},
-      {"successful_requests", r.successful_requests},
-      {"failed_requests", r.failed_requests},
-      {"p50_ms", r.p50_us / 1000.0},
-      {"p95_ms", r.p95_us / 1000.0},
-      {"p99_ms", r.p99_us / 1000.0},
-      {"mean_ms", r.mean_us / 1000.0},
-      {"min_ms", static_cast<double>(r.min_us) / 1000.0},
-      {"max_ms", static_cast<double>(r.max_us) / 1000.0},
+      {"run_passed", r.run_passed},
+      {"transport_failures", r.failures.transport_failures},
+      {"correctness_failures", r.failures.correctness_failures},
+      {"final_phase", r.final_phase},
+      {"final_outcome", r.final_outcome},
+      {"sequential", {
+        {"total_requests", r.sequential.total_requests},
+        {"successful_requests", r.sequential.successful_requests},
+        {"p50_ms", r.sequential.p50_ms},
+        {"p95_ms", r.sequential.p95_ms},
+        {"p99_ms", r.sequential.p99_ms},
+        {"mean_ms", r.sequential.mean_ms}
+      }},
+      {"concurrent", {
+        {"total_requests", r.concurrent.total_requests},
+        {"successful_requests", r.concurrent.successful_requests},
+        {"p50_ms", r.concurrent.p50_ms},
+        {"p95_ms", r.concurrent.p95_ms},
+        {"p99_ms", r.concurrent.p99_ms},
+        {"mean_ms", r.concurrent.mean_ms}
+      }},
       {"peak_rss_kb", r.peak_rss_kb},
       {"cpu_time_ms", r.cpu_time_ms}
     });
@@ -833,7 +1094,7 @@ int main(int argc, char* argv[]) {
     std::cerr << "Warning: Could not open output file: " << output_json_path << '\n';
   }
 
-  return all_runs_ok ? 0 : 1;
+  return all_runs_passed ? 0 : 1;
 }
 
 #endif  // !defined(__linux__)
