@@ -2,15 +2,15 @@
 
 ## System design
 
-One authoritative server process owns official game state. The current prototype implementation connects client processes through nonblocking localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). The original architecture specification in Draft 3 required UNIX domain stream sockets; a dedicated UNIX domain transport adapter, remote TCP/TLS 1.3, and remote certificate lifecycle remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
+One authoritative server process owns official game state. The implementation connects local client processes through nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). Remote TCP/TLS 1.3 and remote certificate lifecycle remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
 
-Flow: client processes → localhost TCP transport (implemented prototype) / UNIX transport (original specification) → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
+Flow: client processes → UNIX domain / localhost TCP stream transport → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
 
 One event loop owns mutations initially; no thread per client. Optional workers only for measured CPU-heavy tasks, returning results to the owner loop. Workers never mutate matches. Use monotonic deadlines via timerfd or a deadline heap.
 
 ## Components
 
-- **Transport adapter:** Prototype implemented using nonblocking localhost TCP sockets (`127.0.0.1`) with epoll; UNIX-domain stream sockets (original requirement) and remote TCP/TLS 1.3 adapter remain deferred. No game rules in transport.
+- **Transport adapter:** Implemented using nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP sockets (`127.0.0.1:4782`) with epoll; remote TCP/TLS 1.3 adapter remains deferred. No game rules in transport.
 - **Connection manager:** connection IDs, framing, lifecycle, bounded input/output queues, rates, backpressure, disconnects.
 - **Protocol:** versioned envelope, schema/length validation, request correlation, error codes.
 - **Session manager:** server-assigned identity, authentication, permissions, reconnect/cleanup.

@@ -7,11 +7,14 @@
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
+#include <fcntl.h>
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <sys/wait.h>
 #include <thread>
 #include <utility>
@@ -1029,11 +1032,354 @@ void test_malformed_tcp_isolation(const char* server_path) {
   stop_server();
 }
 
+int connect_unix(const std::string& path) {
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  if (path.size() >= sizeof(address.sun_path)) {
+    (void)close(fd);
+    return -1;
+  }
+  std::strncpy(address.sun_path, path.c_str(), sizeof(address.sun_path) - 1);
+  if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) return fd;
+  (void)close(fd);
+  return -1;
+}
+
+int connect_unix_with_retry(const std::string& path, int max_attempts = 80) {
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    const int fd = connect_unix(path);
+    if (fd >= 0) return fd;
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  return -1;
+}
+
+pid_t start_unix_server(const char* server_path, const std::string& socket_path, const char* token_env) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    if (token_env) {
+      setenv("DARKPOOL_MODERATOR_TOKEN", token_env, 1);
+    } else {
+      unsetenv("DARKPOOL_MODERATOR_TOKEN");
+    }
+    execl(server_path, server_path, "--socket", socket_path.c_str(), "--no-tcp", static_cast<char*>(nullptr));
+    _exit(127);
+  }
+  return child;
+}
+
+void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
+  const auto pid_str = std::to_string(static_cast<long>(getpid()));
+
+  // 1. Refusal to unlink non-socket files
+  {
+    const std::string nonsock_path = "/tmp/darkpool_test_nonsock_" + pid_str + ".txt";
+    (void)::unlink(nonsock_path.c_str());
+    const int fd = open(nonsock_path.c_str(), O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    CHECK(fd >= 0);
+    if (fd >= 0) {
+      const char msg[] = "sensitive regular file content";
+      CHECK(write(fd, msg, sizeof(msg) - 1) == static_cast<ssize_t>(sizeof(msg) - 1));
+      (void)close(fd);
+
+      const auto child = start_unix_server(server_path, nonsock_path, nullptr);
+      CHECK(child >= 0);
+      if (child >= 0) {
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+      }
+
+      struct stat st {};
+      CHECK(::lstat(nonsock_path.c_str(), &st) == 0);
+      CHECK(S_ISREG(st.st_mode));
+      (void)::unlink(nonsock_path.c_str());
+    }
+  }
+
+  // 2. Stale socket file recovery and cleanup on shutdown
+  {
+    const std::string stale_path = "/tmp/darkpool_test_stale_" + pid_str + ".sock";
+    (void)::unlink(stale_path.c_str());
+
+    const int dummy_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(dummy_sock >= 0);
+    if (dummy_sock >= 0) {
+      sockaddr_un d_addr{};
+      d_addr.sun_family = AF_UNIX;
+      std::strncpy(d_addr.sun_path, stale_path.c_str(), sizeof(d_addr.sun_path) - 1);
+      CHECK(bind(dummy_sock, reinterpret_cast<sockaddr*>(&d_addr), sizeof(d_addr)) == 0);
+      (void)close(dummy_sock);
+
+      struct stat st {};
+      CHECK(::lstat(stale_path.c_str(), &st) == 0);
+      CHECK(S_ISSOCK(st.st_mode));
+
+      const auto child = start_unix_server(server_path, stale_path, "mod-token");
+      CHECK(child >= 0);
+      if (child >= 0) {
+        const int client = connect_unix_with_retry(stale_path);
+        CHECK(client >= 0);
+        if (client >= 0) {
+          CHECK(exchange(client, json{{"type", "connect"}, {"role", "player"}}, false));
+          CHECK(exchange(client, json{{"echo", "stale-socket-recovery-success"}}, false));
+          (void)close(client);
+        }
+
+        CHECK(kill(child, SIGTERM) == 0);
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child);
+
+        CHECK(::lstat(stale_path.c_str(), &st) != 0 && errno == ENOENT);
+      }
+    }
+  }
+
+  // 3. Non-ECONNREFUSED probe failure refusal (EACCES: does not unlink)
+  {
+    const std::string perm_path = "/tmp/darkpool_test_perm_" + pid_str + ".sock";
+    (void)::unlink(perm_path.c_str());
+
+    const int dummy_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(dummy_sock >= 0);
+    if (dummy_sock >= 0) {
+      sockaddr_un d_addr{};
+      d_addr.sun_family = AF_UNIX;
+      std::strncpy(d_addr.sun_path, perm_path.c_str(), sizeof(d_addr.sun_path) - 1);
+      CHECK(bind(dummy_sock, reinterpret_cast<sockaddr*>(&d_addr), sizeof(d_addr)) == 0);
+      (void)close(dummy_sock);
+
+      // Set permissions to 0000 so connect() yields EACCES
+      CHECK(chmod(perm_path.c_str(), 0000) == 0);
+
+      const auto child = start_unix_server(server_path, perm_path, "mod-token");
+      CHECK(child >= 0);
+      if (child >= 0) {
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+      }
+
+      // Verify the socket file was preserved and NOT unlinked
+      struct stat st {};
+      CHECK(::lstat(perm_path.c_str(), &st) == 0);
+      CHECK(S_ISSOCK(st.st_mode));
+
+      (void)chmod(perm_path.c_str(), 0700);
+      (void)::unlink(perm_path.c_str());
+    }
+  }
+
+  // 4. Active server conflict refusal
+  {
+    const std::string active_path = "/tmp/darkpool_test_active_" + pid_str + ".sock";
+    (void)::unlink(active_path.c_str());
+
+    const auto child1 = start_unix_server(server_path, active_path, "token1");
+    CHECK(child1 >= 0);
+    if (child1 >= 0) {
+      const int client = connect_unix_with_retry(active_path);
+      CHECK(client >= 0);
+
+      const auto child2 = start_unix_server(server_path, active_path, "token2");
+      CHECK(child2 >= 0);
+      if (child2 >= 0) {
+        int status = 0;
+        CHECK(waitpid(child2, &status, 0) == child2);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+      }
+
+      if (client >= 0) {
+        CHECK(exchange(client, json{{"type", "connect"}, {"role", "player"}}, false));
+        (void)close(client);
+      }
+
+      CHECK(kill(child1, SIGTERM) == 0);
+      int status = 0;
+      CHECK(waitpid(child1, &status, 0) == child1);
+
+      struct stat st {};
+      CHECK(::lstat(active_path.c_str(), &st) != 0 && errno == ENOENT);
+    }
+  }
+
+  // 4. Normal gameplay communication over UNIX domain socket
+  {
+    const std::string game_path = "/tmp/darkpool_test_game_" + pid_str + ".sock";
+    (void)::unlink(game_path.c_str());
+
+    const auto child = start_unix_server(server_path, game_path, "mod-token-game");
+    CHECK(child >= 0);
+    if (child >= 0) {
+      const int mod_fd = connect_unix_with_retry(game_path);
+      CHECK(mod_fd >= 0);
+      if (mod_fd >= 0) {
+        struct stat st {};
+        CHECK(::lstat(game_path.c_str(), &st) == 0);
+        CHECK(S_ISSOCK(st.st_mode));
+        CHECK((st.st_mode & 0777U) == 0700U);
+
+        const auto mod_resp = request_json(
+            mod_fd,
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-game"}});
+        CHECK(mod_resp && (*mod_resp)["type"] == "connect" && (*mod_resp)["role"] == "moderator");
+
+        std::vector<int> players;
+        for (int i = 0; i < 5; ++i) {
+          const int pfd = connect_unix(game_path);
+          CHECK(pfd >= 0);
+          if (pfd >= 0) {
+            players.push_back(pfd);
+            CHECK(exchange(pfd, json{{"type", "connect"}, {"role", "player"}}, false));
+          }
+        }
+        CHECK(players.size() == 5U);
+
+        const auto create_resp = request_json(
+            mod_fd, json{{"type", "create_match"}, {"player_count", 5U}});
+        CHECK(create_resp && (*create_resp)["type"] == "match_created" && (*create_resp)["match_id"] == 1U);
+
+        int insider_fd = -1;
+        int investigator_fd = -1;
+        uint32_t employee_target = 0;
+        for (std::size_t i = 0; i < players.size(); ++i) {
+          const auto join_resp = request_json(
+              players[i], json{{"type", "join_match"}, {"match_id", 1U}});
+          CHECK(join_resp && (*join_resp)["type"] == "joined_match" && (*join_resp)["player_id"] == i + 1U);
+          if (join_resp && join_resp->contains("private_role")) {
+            const auto role = (*join_resp)["private_role"].get<std::string>();
+            if (role == "Insider") insider_fd = players[i];
+            if (role == "Investigator") investigator_fd = players[i];
+            if (role == "Employee" && employee_target == 0U) {
+              employee_target = static_cast<uint32_t>(i + 1U);
+            }
+          }
+        }
+        CHECK(insider_fd >= 0);
+        CHECK(investigator_fd >= 0);
+        CHECK(employee_target > 0U);
+
+        const auto start_resp = request_json(
+            mod_fd, json{{"type", "start_match"}, {"match_id", 1U}});
+        CHECK(start_resp && (*start_resp)["type"] == "transition_result" && (*start_resp)["phase"] == "AwaitingEvent");
+
+        const auto event_resp = request_json(
+            mod_fd, json{{"type", "publish_event"}, {"match_id", 1U}, {"impact", 1}});
+        CHECK(event_resp && (*event_resp)["type"] == "transition_result" && (*event_resp)["phase"] == "Discussion");
+
+        if (insider_fd >= 0) {
+          const auto hint_resp = request_json(
+              insider_fd, json{{"type", "insider_hint"}, {"match_id", 1U}});
+          CHECK(hint_resp && (*hint_resp)["type"] == "hint_private" && (*hint_resp)["event_impact"] == 1);
+        }
+
+        const auto trade_phase = request_json(
+            mod_fd, json{{"type", "open_trading"}, {"match_id", 1U}});
+        CHECK(trade_phase && (*trade_phase)["type"] == "transition_result" && (*trade_phase)["phase"] == "Trading");
+
+        for (const auto pfd : players) {
+          const auto tr = request_json(
+              pfd, json{{"type", "trade"}, {"match_id", 1U}, {"action", "BUY"}});
+          CHECK(tr && (*tr)["type"] == "trade_result" && (*tr)["ok"] == true);
+        }
+
+        const auto market_resp = request_json(
+            mod_fd, json{{"type", "resolve_market"}, {"match_id", 1U}});
+        CHECK(market_resp && (*market_resp)["type"] == "market_result");
+
+        if (investigator_fd >= 0 && employee_target > 0U) {
+          const auto clue_resp = request_json(
+              investigator_fd, json{{"type", "request_clue"}, {"match_id", 1U}, {"target_id", employee_target}});
+          CHECK(clue_resp && (*clue_resp)["type"] == "clue_private");
+        }
+
+        const auto vote_phase = request_json(
+            mod_fd, json{{"type", "open_voting"}, {"match_id", 1U}});
+        CHECK(vote_phase && (*vote_phase)["type"] == "transition_result" && (*vote_phase)["phase"] == "Voting");
+
+        for (const auto pfd : players) {
+          const auto vr = request_json(
+              pfd, json{{"type", "vote"}, {"match_id", 1U}, {"target_id", nullptr}});
+          CHECK(vr && (*vr)["type"] == "vote_result" && (*vr)["ok"] == true);
+        }
+
+        const auto resolve_resp = request_json(
+            mod_fd, json{{"type", "resolve_votes"}, {"match_id", 1U}});
+        CHECK(resolve_resp && (*resolve_resp)["type"] == "vote_resolution");
+
+        const auto status_resp = request_json(
+            mod_fd, json{{"type", "match_status"}, {"match_id", 1U}});
+        CHECK(status_resp && (*status_resp)["type"] == "match_status");
+
+        for (const auto pfd : players) {
+          (void)close(pfd);
+        }
+        (void)close(mod_fd);
+      }
+
+      CHECK(kill(child, SIGTERM) == 0);
+      int status = 0;
+      CHECK(waitpid(child, &status, 0) == child);
+
+      struct stat st {};
+      CHECK(::lstat(game_path.c_str(), &st) != 0 && errno == ENOENT);
+    }
+  }
+
+  // 5. Malformed frame isolation over UNIX domain socket
+  {
+    const std::string malformed_path = "/tmp/darkpool_test_malformed_" + pid_str + ".sock";
+    (void)::unlink(malformed_path.c_str());
+
+    const auto child = start_unix_server(server_path, malformed_path, "mod-token");
+    CHECK(child >= 0);
+    if (child >= 0) {
+      const int client_a = connect_unix_with_retry(malformed_path);
+      const int client_b = connect_unix(malformed_path);
+      const int offender = connect_unix(malformed_path);
+      CHECK(client_a >= 0 && client_b >= 0 && offender >= 0);
+
+      if (client_a >= 0 && client_b >= 0 && offender >= 0) {
+        CHECK(exchange(client_a, json{{"type", "connect"}, {"role", "player"}}, false));
+        CHECK(exchange(client_b, json{{"type", "connect"}, {"role", "player"}}, false));
+        CHECK(exchange(offender, json{{"type", "connect"}, {"role", "player"}}, false));
+
+        const std::uint32_t oversized = 5000U;
+        char header[4];
+        header[0] = static_cast<char>((oversized >> 24U) & 0xFFU);
+        header[1] = static_cast<char>((oversized >> 16U) & 0xFFU);
+        header[2] = static_cast<char>((oversized >> 8U) & 0xFFU);
+        header[3] = static_cast<char>(oversized & 0xFFU);
+        CHECK(send_all(offender, header, sizeof(header), false));
+
+        CHECK(closed_within_timeout(offender, 2000));
+        (void)close(offender);
+
+        CHECK(exchange(client_a, json{{"echo", "client-a-survives-unix-malformed"}}, false));
+        CHECK(exchange(client_b, json{{"echo", "client-b-survives-unix-malformed"}}, false));
+
+        (void)close(client_a);
+        (void)close(client_b);
+      }
+
+      CHECK(kill(child, SIGTERM) == 0);
+      int status = 0;
+      CHECK(waitpid(child, &status, 0) == child);
+
+      struct stat st {};
+      CHECK(::lstat(malformed_path.c_str(), &st) != 0 && errno == ENOENT);
+    }
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|unix|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
@@ -1046,12 +1392,15 @@ int main(int argc, char** argv) {
     test_malformed_tcp_isolation(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "timeout") {
     test_idle_unassigned_timeout(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "unix") {
+    test_unix_socket_lifecycle_and_gameplay(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
     test_server_capacity_and_echo(argv[1]);
     test_idle_unassigned_timeout(argv[1]);
     test_moderator_authentication(argv[1]);
     test_complete_three_round_match(argv[1], 5U);
     test_complete_three_round_match(argv[1], 8U);
+    test_unix_socket_lifecycle_and_gameplay(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }
