@@ -11,6 +11,7 @@
 #include <string>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace {
@@ -62,25 +63,30 @@ bool parse_port(const char* text, std::uint16_t& port) {
   return true;
 }
 
-}  // namespace
-
-int main(int argc, char** argv) {
-  if (argc != 4) {
-    std::cerr << "usage: darkpool_client <host> <port> <player|moderator>\n";
-    return 2;
+int connect_unix(const std::string& path) {
+  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) {
+    std::cerr << "unix socket: " << std::strerror(errno) << '\n';
+    return -1;
   }
-
-  std::uint16_t port = 0;
-  if (!parse_port(argv[2], port)) {
-    std::cerr << "error: invalid port: " << argv[2] << '\n';
-    return 2;
+  sockaddr_un address{};
+  address.sun_family = AF_UNIX;
+  if (path.size() >= sizeof(address.sun_path)) {
+    std::cerr << "error: unix socket path exceeds maximum length ("
+              << sizeof(address.sun_path) - 1 << " bytes)\n";
+    (void)close(fd);
+    return -1;
   }
-
-  if (std::string(argv[3]) != "player" && std::string(argv[3]) != "moderator") {
-    std::cerr << "error: role must be 'player' or 'moderator', got: " << argv[3] << '\n';
-    return 2;
+  std::strncpy(address.sun_path, path.c_str(), sizeof(address.sun_path) - 1);
+  if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
+    std::cerr << "connect (" << path << "): " << std::strerror(errno) << '\n';
+    (void)close(fd);
+    return -1;
   }
+  return fd;
+}
 
+int connect_tcp(const std::string& host, std::uint16_t port) {
   addrinfo hints{};
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
@@ -88,8 +94,11 @@ int main(int argc, char** argv) {
 
   addrinfo* addresses = nullptr;
   const auto service = std::to_string(port);
-  const int lookup = getaddrinfo(argv[1], service.c_str(), &hints, &addresses);
-  if (lookup != 0) { std::cerr << "getaddrinfo: " << gai_strerror(lookup) << '\n'; return 1; }
+  const int lookup = getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses);
+  if (lookup != 0) {
+    std::cerr << "getaddrinfo: " << gai_strerror(lookup) << '\n';
+    return -1;
+  }
   int fd = -1;
   for (auto* address = addresses; address != nullptr; address = address->ai_next) {
     fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
@@ -98,9 +107,60 @@ int main(int argc, char** argv) {
     fd = -1;
   }
   freeaddrinfo(addresses);
-  if (fd < 0) { std::cerr << "connect: " << std::strerror(errno) << '\n'; return 1; }
+  if (fd < 0) {
+    std::cerr << "connect (" << host << ":" << port << "): " << std::strerror(errno) << '\n';
+    return -1;
+  }
+  return fd;
+}
 
-  const darkpool::cli::ClientRole client_role = (std::string(argv[3]) == "moderator")
+}  // namespace
+
+int main(int argc, char** argv) {
+  std::string role_str;
+  int fd = -1;
+
+  if (argc == 3) {
+    // darkpool_client <socket_path> <player|moderator>
+    role_str = argv[2];
+    fd = connect_unix(argv[1]);
+  } else if (argc == 4) {
+    if (std::string(argv[1]) == "--socket" || std::string(argv[1]) == "-s") {
+      role_str = argv[3];
+      fd = connect_unix(argv[2]);
+    } else {
+      // darkpool_client <host> <port> <player|moderator>
+      std::uint16_t port = 0;
+      if (!parse_port(argv[2], port)) {
+        std::cerr << "error: invalid port: " << argv[2] << '\n';
+        return 2;
+      }
+      role_str = argv[3];
+      fd = connect_tcp(argv[1], port);
+    }
+  } else if (argc == 2 && (std::string(argv[1]) == "player" || std::string(argv[1]) == "moderator")) {
+    role_str = argv[1];
+    const char* env_path = std::getenv("DARKPOOL_SOCKET_PATH");
+    const std::string path = (env_path && env_path[0] != '\0') ? env_path : "/tmp/darkpool.sock";
+    fd = connect_unix(path);
+  } else {
+    std::cerr << "usage: darkpool_client <socket_path> <player|moderator>\n"
+              << "   or: darkpool_client <host> <port> <player|moderator>\n"
+              << "   or: darkpool_client [--socket <path>] <player|moderator>\n";
+    return 2;
+  }
+
+  if (role_str != "player" && role_str != "moderator") {
+    std::cerr << "error: role must be 'player' or 'moderator', got: " << role_str << '\n';
+    if (fd >= 0) (void)close(fd);
+    return 2;
+  }
+
+  if (fd < 0) {
+    return 1;
+  }
+
+  const darkpool::cli::ClientRole client_role = (role_str == "moderator")
       ? darkpool::cli::ClientRole::Moderator
       : darkpool::cli::ClientRole::Player;
   darkpool::cli::ClientState state(client_role);
@@ -114,7 +174,7 @@ int main(int argc, char** argv) {
     return true;
   };
 
-  json connect_payload{{"type", "connect"}, {"role", argv[3]}};
+  json connect_payload{{"type", "connect"}, {"role", role_str}};
   if (client_role == darkpool::cli::ClientRole::Moderator) {
     const char* token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
     if (!token || token[0] == '\0') {

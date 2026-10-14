@@ -104,6 +104,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_malformed_tcp_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> malformed)
   set_tests_properties(darkpool_malformed_tcp_tests PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_unix_socket_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> unix)
+  set_tests_properties(darkpool_unix_socket_tests PROPERTIES TIMEOUT 20)
 else()
-  message(STATUS "TCP server and CLI client require Linux; engine and framing tests remain available")
+  message(STATUS "TCP/UNIX server and CLI client require Linux; engine and framing tests remain available")
 endif()

@@ -1,12 +1,12 @@
-# DARKPOOL — deterministic C++20 engine and TCP gameplay prototype
+# DARKPOOL — deterministic C++20 engine and TCP / UNIX-domain socket prototype
 
 The C++20 engine and coordinator support matches configured for 3–64 active players. Five remains the default and the original baseline is one Insider, one Investigator, and three Employees. The moderator is a separate non-player.
 
-The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server prototype uses nonblocking stream sockets with epoll and binds to `127.0.0.1` by default.
+The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server prototype uses nonblocking stream sockets with epoll, supporting both local UNIX-domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP (`127.0.0.1:4782`).
 
 ## Scope and implementation status
 
-- **Transport and CLI:** The prototype implementation is a nonblocking localhost TCP server (`127.0.0.1:4782`) with epoll (`src/server_main.cpp`) and an interactive terminal CLI (`src/client_main.cpp`). The original architecture specification in Draft 3 required UNIX-domain stream sockets; a dedicated UNIX-domain transport adapter, remote TCP/TLS 1.3, and production certificate lifecycle remain deferred future work.
+- **Transport and CLI:** The server implementation supports nonblocking UNIX-domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll (`src/server_main.cpp`), with an interactive terminal CLI (`src/client_main.cpp`). UNIX sockets feature safe lifecycle management (stale socket file detection/recovery, non-socket file preservation, restrictive 0700 permissions, and signal-driven cleanup). Remote TCP/TLS 1.3 and production certificate lifecycle remain deferred future work.
 - **Valid match sizes:** Valid match sizes are 3–64. Role counts are deterministic: `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, and the remaining Employees. The server shuffles and assigns roles; clients cannot supply roles. Five remains the default.
 - **Event injection and engine separation:** Business-event impacts are injected by the match's creating moderator. The game engine itself has no random source, clock, sockets, epoll, client, server, or persistence; match/session coordination is a separate server module.
 - **Share conservation:** Shares are conserved between players and each match's finite reserve using the approved 20N total / 10N player-held / 10N reserve formula.
@@ -14,7 +14,7 @@ The coordinator supports server-assigned membership, independent matches with di
 - **Capacity limits explicitly unverified:** The coordinator allows four matches. The server is configured for at most 256 player connections plus one moderator connection (257 total); that moderator can create and control all four matches. These limits are design ceilings and configured resource caps only; they do not establish that 64-player matches or four simultaneous matches meet latency, throughput, or reliability targets. Four concurrent 64-player matches, the 256-player server target, latency (p95 ≤ 100 ms), and 30-minute steady-state reliability remain explicitly unverified; no load test has been conducted.
 - **Credits:** Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
 - **Canonical view privacy:** Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
-- **Test coverage:** Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Full TCP gameplay tests cover five-player regression and N=8. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
+- **Test coverage:** Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Integration tests cover five-player and N=8 matches over TCP, as well as complete UNIX-domain socket lifecycle, authentication, five-player gameplay, and malformed-frame isolation. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
 
 ## Build and test on Ubuntu
 
@@ -32,21 +32,38 @@ Configure with warnings-as-errors using `-DDARKPOOL_WARNINGS_AS_ERRORS=ON`.
 
 Moderator connections require an authentication secret supplied via the `DARKPOOL_MODERATOR_TOKEN` environment variable on both the server and the moderator client. If the server does not have `DARKPOOL_MODERATOR_TOKEN` set, it fails closed and rejects all moderator connection attempts. Players connect without a token.
 
-> **Security Scope Note**: The server binds to `127.0.0.1` (loopback only). This mechanism does not implement TLS or production-ready transport authentication; the authentication token travels over the local loopback TCP connection.
+> **Security Scope Note**: The server binds to local UNIX domain sockets and `127.0.0.1` (loopback only). This mechanism does not implement TLS or production-ready transport authentication; authentication tokens travel over the local loopback or local socket connection.
 
 On Linux, run the server and clients in separate terminals:
+
+### Option A: Local UNIX-domain stream socket (Recommended)
+
+```sh
+# Terminal 0: Start the server (binds /tmp/darkpool.sock and port 4782 by default)
+export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+./build/darkpool_server
+
+# Terminal 1: Start the Moderator client
+export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+./build/darkpool_client /tmp/darkpool.sock moderator
+
+# Start 3-64 Player clients (no token required); use the same number as the created match
+./build/darkpool_client /tmp/darkpool.sock player
+```
+
+### Option B: Localhost TCP stream socket
 
 ```sh
 # Terminal 0: Start the TCP coordinator server (default port: 4782)
 export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
-./build/darkpool_server [port]
+./build/darkpool_server 4782
 
 # Terminal 1: Start the Moderator client
 export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
-./build/darkpool_client 127.0.0.1 [port] moderator
+./build/darkpool_client 127.0.0.1 4782 moderator
 
 # Start 3-64 Player clients (no token required); use the same number as the created match
-./build/darkpool_client 127.0.0.1 [port] player
+./build/darkpool_client 127.0.0.1 4782 player
 ```
 
 The default port is `4782`. The client provides an interactive terminal CLI with command prompts, input validation, role guidance, and confidential information display. Raw JSON input (`{...}`) remains supported for scripted test harnesses.
