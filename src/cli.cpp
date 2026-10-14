@@ -56,14 +56,6 @@ std::optional<std::int32_t> parse_int32(std::string_view sv) {
   return value;
 }
 
-std::optional<std::string> canonical_role_name(std::string_view role) {
-  const auto upper = to_upper(role);
-  if (upper == "INSIDER") return "Insider";
-  if (upper == "INVESTIGATOR") return "Investigator";
-  if (upper == "EMPLOYEE") return "Employee";
-  return std::nullopt;
-}
-
 }  // namespace
 
 ClientState::ClientState(ClientRole role) : role_(role) {}
@@ -89,9 +81,9 @@ std::string ClientState::help_text(ClientRole role) {
   if (role == ClientRole::Moderator) {
     oss << "============================================================\n"
         << "DARKPOOL MODERATOR COMMANDS:\n"
-        << "  create [r1 r2 r3 r4 r5]   Create a match (default: 1 Insider, 1 Investigator, 3 Employees)\n"
+        << "  create [player_count]     Create a 3-64 player match (default: 5; roles assigned by server)\n"
         << "  match <id>                Select active match ID (default: 1)\n"
-        << "  start                     Start match once all 5 players have joined\n"
+        << "  start                     Start match once all configured players have joined\n"
         << "  event <impact>            Publish business event impact (-2 to 2)\n"
         << "  trading                   Open trading phase for player orders\n"
         << "  market                    Resolve market orders and display price/health changes\n"
@@ -109,8 +101,8 @@ std::string ClientState::help_text(ClientRole role) {
         << "  status                    View public company health, stock price, and round phase\n"
         << "  hint                      [Insider only] Secretly inspect current round event impact\n"
         << "  trade [BUY|SELL|HOLD]     Submit order during Trading phase (or: buy / sell / hold)\n"
-        << "  clue [target_id]          [Investigator only] Secretly investigate suspect (1-5)\n"
-        << "  vote [target_id|abstain]  Cast vote to eliminate suspect (1-5) or abstain (0)\n"
+        << "  clue [target_id]          [Investigator only] Secretly investigate suspect (1-64)\n"
+        << "  vote [target_id|abstain]  Cast vote to eliminate suspect (1-64) or abstain (0)\n"
         << "  help                      Show this help screen\n"
         << "  quit / exit               Exit CLI\n"
         << "  {...}                     Pass raw JSON directly to the server\n"
@@ -162,23 +154,16 @@ CommandResult ClientState::handle_moderator_command(std::string_view command,
   const auto active_match = match_id_.value_or(1U);
 
   if (command == "CREATE") {
-    network::json roles = network::json::array();
-    if (args.empty()) {
-      roles = {"Insider", "Investigator", "Employee", "Employee", "Employee"};
-    } else if (args.size() == 5U) {
-      for (const auto& arg : args) {
-        auto canonical = canonical_role_name(arg);
-        if (!canonical) {
-          return CommandResult{.local_message = "[ERROR] Invalid role name: " + arg +
-                                                ". Must be Insider, Investigator, or Employee."};
-        }
-        roles.push_back(*canonical);
-      }
-    } else {
-      return CommandResult{.local_message = "[ERROR] 'create' requires either 0 arguments (standard 5-player roster) or exactly 5 roles."};
+    if (args.size() > 1U) return CommandResult{.local_message = "[ERROR] Use 'create [player_count]' (3-64)."};
+    if (!args.empty()) {
+      const auto count = parse_uint64(args[0]);
+      if (!count || *count < 3U || *count > 64U)
+        return CommandResult{.local_message = "[ERROR] Player count must be an integer from 3 through 64."};
+      return CommandResult{.send_frame = true,
+                           .payload = {{"type", "create_match"}, {"player_count", *count}}};
     }
     return CommandResult{.send_frame = true,
-                         .payload = {{"type", "create_match"}, {"roles", roles}}};
+                         .payload = {{"type", "create_match"}}};
   }
 
   if (command == "MATCH") {
@@ -326,11 +311,11 @@ CommandResult ClientState::handle_player_command(std::string_view command,
   if (command == "CLUE" || command == "INVESTIGATE") {
     if (args.empty()) {
       pending_prompt_ = PendingPrompt::ClueTarget;
-      return CommandResult{.prompt_for_input = "Enter suspect player ID to investigate (1-5): "};
+      return CommandResult{.prompt_for_input = "Enter suspect player ID to investigate (1-64): "};
     }
     const auto target = parse_uint64(args[0]);
-    if (!target || *target < 1U || *target > 5U) {
-      return CommandResult{.local_message = "[ERROR] Clue target must be a valid player ID (1-5)."};
+    if (!target || *target < 1U || *target > 64U) {
+      return CommandResult{.local_message = "[ERROR] Clue target must be a valid player ID (1-64)."};
     }
     return CommandResult{.send_frame = true,
                          .payload = {{"type", "request_clue"},
@@ -341,7 +326,7 @@ CommandResult ClientState::handle_player_command(std::string_view command,
   if (command == "VOTE") {
     if (args.empty()) {
       pending_prompt_ = PendingPrompt::VoteTarget;
-      return CommandResult{.prompt_for_input = "Enter player ID to eliminate (1-5, or 0/abstain to abstain): "};
+      return CommandResult{.prompt_for_input = "Enter player ID to eliminate (1-64, or 0/abstain to abstain): "};
     }
     const auto upper_arg = to_upper(args[0]);
     if (upper_arg == "0" || upper_arg == "ABSTAIN" || upper_arg == "NONE" || upper_arg == "NULL") {
@@ -351,8 +336,8 @@ CommandResult ClientState::handle_player_command(std::string_view command,
                                        {"target_id", nullptr}}};
     }
     const auto target = parse_uint64(args[0]);
-    if (!target || *target < 1U || *target > 5U) {
-      return CommandResult{.local_message = "[ERROR] Vote target must be 1-5 or 0/abstain."};
+    if (!target || *target < 1U || *target > 64U) {
+      return CommandResult{.local_message = "[ERROR] Vote target must be 1-64 or 0/abstain."};
     }
     return CommandResult{.send_frame = true,
                          .payload = {{"type", "vote"},
@@ -382,8 +367,8 @@ CommandResult ClientState::process_prompt_response(std::string_view response) {
     }
     case PendingPrompt::ClueTarget: {
       const auto target = parse_uint64(trimmed);
-      if (!target || *target < 1U || *target > 5U) {
-        return CommandResult{.local_message = "[ERROR] Clue cancelled: target must be 1-5."};
+      if (!target || *target < 1U || *target > 64U) {
+        return CommandResult{.local_message = "[ERROR] Clue cancelled: target must be 1-64."};
       }
       return CommandResult{.send_frame = true,
                            .payload = {{"type", "request_clue"},
@@ -399,8 +384,8 @@ CommandResult ClientState::process_prompt_response(std::string_view response) {
                                          {"target_id", nullptr}}};
       }
       const auto target = parse_uint64(trimmed);
-      if (!target || *target < 1U || *target > 5U) {
-        return CommandResult{.local_message = "[ERROR] Vote cancelled: target must be 1-5 or abstain."};
+      if (!target || *target < 1U || *target > 64U) {
+        return CommandResult{.local_message = "[ERROR] Vote cancelled: target must be 1-64 or abstain."};
       }
       return CommandResult{.send_frame = true,
                            .payload = {{"type", "vote"},
@@ -445,8 +430,11 @@ std::string ClientState::format_response(const network::json& response) {
       match_id_ = id;
       oss << "============================================================\n"
           << "[MATCH CREATED] Match #" << id << " created successfully.\n"
-          << "  Roster: 1 Insider, 1 Investigator, 3 Employees\n"
-          << "  Waiting for 5 players to connect and run: join " << id << "\n"
+          << "  Roster: " << response.value("insiders", 1U) << " Insiders, "
+          << response.value("investigators", 1U) << " Investigators, "
+          << response.value("employees", 3U) << " Employees\n"
+          << "  Waiting for " << response.value("player_count", 5U)
+          << " players to connect and run: join " << id << "\n"
           << "============================================================";
       return oss.str();
     }
@@ -472,12 +460,12 @@ std::string ClientState::format_response(const network::json& response) {
       oss << "CONFIDENTIAL INVESTIGATOR INTEL:\n"
           << "  You are the INVESTIGATOR.\n"
           << "  Use 'clue <player_id>' during Clue phase to investigate suspects.\n"
-          << "  Victory: Help employees uncover and vote out the Insider.\n";
+          << "  Victory: Help employees uncover and vote out the Insider team.\n";
     } else {
       oss << "CONFIDENTIAL EMPLOYEE INTEL:\n"
           << "  You are an EMPLOYEE.\n"
           << "  Submit orders ('buy'/'sell'/'hold') during Trading, and vote out suspects.\n"
-          << "  Victory: Maintain company health and eliminate the Insider.\n";
+          << "  Victory: Maintain company health and eliminate the Insider team.\n";
     }
     oss << "============================================================";
     return oss.str();
@@ -579,7 +567,8 @@ std::string ClientState::format_response(const network::json& response) {
         << "------------------------------------------------------------\n"
         << "  Phase          : " << response.value("phase", "Unknown") << "\n"
         << "  Round          : " << response.value("round", 0U) << " / 3\n"
-        << "  Active Players : " << response.value("joined_players", 0U) << " / 5\n"
+        << "  Active Players : " << response.value("joined_players", 0U) << " / "
+        << response.value("player_count", 5U) << "\n"
         << "  Company Health : " << response.value("health", 0) << " / 10\n"
         << "  Stock Price    : " << response.value("price", 0) << "\n"
         << "  Outcome        : " << outcome << "\n";

@@ -1,17 +1,19 @@
-# DARKPOOL — deterministic S1 engine and S2 TCP command prototype
+# DARKPOOL — deterministic C++20 engine and TCP gameplay prototype
 
-S1 implements an in-process C++20 engine for the approved five-player baseline. It provides explicit state transitions, deterministic event input, market resolution, private clue results, voting and victory evaluation, plus a CMake unit-test target.
+The C++20 engine and coordinator support matches configured for 3–64 active players. Five remains the default and the original baseline is one Insider, one Investigator, and three Employees. The moderator is a separate non-player.
 
-S2 adds a minimal TCP/JSON session coordinator for the existing S1 engine. It supports server-assigned player membership, isolated five-player matches, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server uses nonblocking sockets with epoll and accepts up to five connections declaring `player` plus one declaring `moderator`. The server binds to `127.0.0.1` by default.
+The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server uses nonblocking sockets with epoll and binds to `127.0.0.1` by default.
 
 ## Scope and implementation status
 
-- The engine requires exactly five distinct player IDs with one Insider, one Investigator and three Employees. The role assignment is injected by the caller; S1 does not shuffle or choose roles because no role-assignment policy was approved.
+- Valid match sizes are 3–64. Role counts are deterministic: `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, and the remaining Employees. The server shuffles and assigns roles; clients cannot supply roles. Five remains the default.
 - Business-event impacts are injected by the match's creating moderator. The game engine itself has no random source, clock, sockets, epoll, client, server, or persistence; match/session coordination is a separate server module.
-- Shares are conserved between players and the finite match reserve. Five-player matches are implemented. `supply_plan(64)` verifies the documented 64-seat arithmetic only; larger-match role/gameplay rules are not implemented.
+- Shares are conserved between players and each match's finite reserve using the approved 20N total / 10N player-held / 10N reserve formula.
+- A match ends with an Insider-team win if health reaches zero, or if at least one Insider survives through round three. Eliminating an Insider only gives Employees the win when no Insiders remain. Each Investigator has an independent once-per-match clue.
+- The coordinator allows four matches. The server is configured for at most 256 player connections plus one moderator connection (257 total); that moderator can create and control all four matches. These are resource caps and design support, not verified load capacity. Four concurrent 64-player matches, the 256-player server target, latency, and reliability remain unverified.
 - Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
 - Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
-- The unchanged S1 engine and portable framing target build with MSVC 19.44.35228.0; the two available Windows CTest tests passed. On Ubuntu 24.04, GitHub Actions run `38188504530` built all targets with warnings-as-errors and passed the S1, framing, and live TCP integration tests. These checks do not establish load, latency, security, or scalability results.
+- Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Full TCP gameplay tests cover five-player regression and N=8. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
 
 ## Build and test on Ubuntu
 
@@ -23,7 +25,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Enable warnings-as-errors with `-DDARKPOOL_WARNINGS_AS_ERRORS=ON` when configuring.
+Configure with warnings-as-errors using `-DDARKPOOL_WARNINGS_AS_ERRORS=ON`.
 
 ## Playable CLI Gameplay
 
@@ -42,7 +44,7 @@ export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ./build/darkpool_client 127.0.0.1 [port] moderator
 
-# Terminals 2-6: Start five Player clients (no token required)
+# Start 3-64 Player clients (no token required); use the same number as the created match
 ./build/darkpool_client 127.0.0.1 [port] player
 ```
 
@@ -50,9 +52,9 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 
 ### Moderator CLI Commands
 
-- `create [r1 r2 r3 r4 r5]`: Create a match with a 5-player roster (defaults to standard roster: 1 Insider, 1 Investigator, 3 Employees). Sets the active match ID.
+- `create [player_count]`: Create a match for 3–64 players. Omitted count defaults to five. Roles are assigned by the server using the approved scaling formula.
 - `match <id>`: Switch active match ID context (default: 1).
-- `start`: Start the match once all five players have joined.
+- `start`: Start the match once all configured players have joined.
 - `event <impact>`: Publish round business event impact (-2 to 2). If omitted, prompts for the impact. Transitions phase to Discussion.
 - `trading`: Open the Trading phase for player orders.
 - `market`: Resolve market orders and display executed orders, price changes, and reserve health. Transitions phase to Clue.
@@ -68,8 +70,8 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 - `status`: Display public match board, company health, stock price, and round phase.
 - `hint`: (*Insider only*) Secretly inspect upcoming event impact during Discussion.
 - `trade [action]`: Submit order (`BUY`, `SELL`, or `HOLD`) during Trading. Also supports direct shortcuts `buy`, `sell`, and `hold`. If omitted, prompts for the action.
-- `clue [target_id]`: (*Investigator only*) Secretly investigate suspect player ID (1-5) during Clue phase. If omitted, prompts for the suspect ID.
-- `vote [target_id|abstain]`: Cast elimination vote (player ID 1-5) or abstain (`0` or `abstain`) during Voting. If omitted, prompts for the target.
+- `clue [target_id]`: (*Investigator only*) Secretly investigate an active player ID (1-64) during Clue phase. Each Investigator has one independent clue per match. If omitted, prompts for the target.
+- `vote [target_id|abstain]`: Cast elimination vote (player ID 1-64) or abstain (`0` or `abstain`) during Voting. If omitted, prompts for the target.
 - `help`: Display available player commands and role notes.
 - `quit` / `exit`: Disconnect from the match server.
 
@@ -82,16 +84,16 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 
 1. **Launch Server**: Run `DARKPOOL_MODERATOR_TOKEN="secret" ./build/darkpool_server 4782` in Terminal 0.
 2. **Launch Moderator**: Run `DARKPOOL_MODERATOR_TOKEN="secret" ./build/darkpool_client 127.0.0.1 4782 moderator` in Terminal 1.
-3. **Launch Players**: In Terminals 2 to 6, launch `./build/darkpool_client 127.0.0.1 4782 player`.
-4. **Create Match**: In Moderator terminal, type `create`.
-5. **Join Players**: In each of the 5 Player terminals, type `join 1`. Each player receives their private role and confidential objectives.
+3. **Launch Players**: Launch one player client for each configured seat (3–64).
+4. **Create Match**: In Moderator terminal, type `create` for five players or `create 8` for eight.
+5. **Join Players**: In each player terminal, type `join 1`. Each player receives their private role and confidential objectives.
 6. **Start Match**: In Moderator terminal, type `start`. (Phase: `AwaitingEvent`).
 7. **Publish Event**: In Moderator terminal, type `event 0` (or impact between -2 and 2). (Phase: `Discussion`).
-8. **Insider Hint**: The Insider (Player 1) types `hint` to view the event impact secretly. Players discuss in the room/chat.
+8. **Insider Hint**: An Insider types `hint` to view the event impact secretly.
 9. **Open Trading**: Moderator types `trading`.
 10. **Submit Trades**: Each player submits their order: `buy`, `sell`, or `hold`.
 11. **Resolve Market**: Moderator types `market`. The closing health, price, and market outcome are displayed. (Phase: `Clue`).
-12. **Investigate Clue**: The Investigator (Player 2) types `clue <target_id>` (e.g. `clue 1` or `clue 3`) to secretly check if the target is the Insider.
+12. **Investigate Clue**: Each Investigator may type `clue <target_id>` to secretly check whether the target is an Insider.
 13. **Open Voting**: Moderator types `voting`.
 14. **Cast Votes**: Each player casts an elimination vote, e.g. `vote 1` or `vote abstain`.
 15. **Resolve Votes**: Moderator types `resolve`. Eliminations and victory outcomes are announced.
@@ -99,4 +101,4 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 
 ## Engine API outline
 
-Construct `Match` with five explicit `{PlayerId, Role}` entries, call `start()`, inject each event with `publish_event(impact)`, and advance phases through `open_trading()`, trade submissions, `resolve_market()`, optional `use_clue()`, `open_voting()`, vote submissions and `resolve_votes()`. Methods return explicit error codes for rejected commands. `Match::from_state()` accepts only a validated, share-conserving state and is intended for deterministic test fixtures.
+Construct `Match` with 3–64 `{PlayerId, Role}` entries whose role counts match `role_counts(N)`, call `start()`, inject each event with `publish_event(impact)`, and advance phases through `open_trading()`, trade submissions, `resolve_market()`, optional `use_clue()` calls by each Investigator, `open_voting()`, vote submissions and `resolve_votes()`. Methods return explicit error codes for rejected commands. `Match::from_state()` accepts only a validated, share-conserving state and is intended for deterministic test fixtures.

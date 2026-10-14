@@ -1,6 +1,6 @@
 # DARKPOOL test and evidence plan
 
-Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with evidence. Test approved rules, not unapproved defaults.
+This plan includes the approved variable-size follow-up. Every execution result is labeled PASS, FAIL, NOT RUN, or BLOCKED with evidence. Load and capacity claims require measured runs, not compilation or constructor tests.
 
 ## Functional, unit and integration
 
@@ -16,6 +16,10 @@ Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with
 | T-U03B | Invalid trades. | Insufficient-cash BUY, zero-share SELL, duplicate action, inactive/eliminated trader, and wrong-phase trade each reject with no balance/supply/market mutation; assert the proposed action-slot rule (invalid submission consumes slot) consistently. Same-round SELL proceeds cannot fund BUY allocation. |
 | T-U03C | Deterministic replay. | Two runs with identical initial state, fixed event sequence, complete ordered request stream (including invalid requests), votes, and seat order produce byte-identical canonical state/event outputs. Repeat with different socket-arrival order for a fixed accepted action set to verify batch settlement is seat-order-based, not arrival-order-based. |
 | T-U04 | Voting/victory. | Abstentions, missing votes, ties, strict threshold, eliminated voters/targets, zero health, Insider elimination, final survival, and precedence. |
+| T-V01 | Variable engine rosters. | Role counts and initial resources at N=3,4,5,8,9,16,24,32,64; reject N<3/N>64, duplicate IDs, invalid role values and incorrect counts. These are engine initialization tests, not network-capacity results. |
+| T-V02 | Multi-role gameplay. | At N=9, eliminating one of two Insiders leaves the match live; eliminating the last Insider with positive health ends in EmployeesWin. At N=24, two Investigators each receive their own private clue, with independent once-per-match and same-target retry rules. Check thresholds at N=3,5,8,9. |
+| T-V03 | Coordinator isolation and capacity. | Simultaneous N=3 and N=8 matches; independent match capacity, full roster required to start, excess join rejection, and cross-match membership rejection. |
+| T-V04 | Variable TCP gameplay. | A complete N=8 match through the real server and protocol, including roles, clue privacy, all three rounds, votes and final outcome. The separate five-player E2E test remains a regression. |
 | T-U05 | Scoring/final summary. | After approval, verify team-only scoring and that a player's summary reveals only that player's balances and permitted result. |
 | T-I01 | UNIX lifecycle and fragmented/coalesced frames. | Multiple clients; disconnect safe. |
 | T-I02 | Concurrent matches. | Independent state/timers; canaries never leak. |
@@ -32,6 +36,8 @@ Planned tests only. Every result is labeled PASS, FAIL, NOT RUN, or BLOCKED with
 - Timer/event-loop: monotonic deadlines and event-loop delay under load.
 
 ## Load matrix
+
+Engine test sizes and protocol E2E sizes are reported separately: engine roster tests cover 3,4,5,8,9,16,24,32,64; full real-TCP gameplay tests cover 5 and 8. No size is considered load-tested by these functional suites. Four simultaneous 64-player matches and the 256-player server target remain unverified until a measured load run completes.
 
 Use automated clients speaking the real protocol; opening sockets alone does not establish capacity.
 

@@ -1,14 +1,15 @@
 # Requirements traceability
 
-Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Required” is directly stated by the PDF; proposals are separate and require approval. Nothing here is implemented or passed.
+Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Required” is directly stated by the PDF; the approved project decision is explicitly labeled separately. Implementation and test status must be reported from evidence for the relevant revision.
 
 | ID | Kind | Requirement / source | Implication | Planned verification |
 |---|---|---|---|---|
 | R-G01 | Required | One Insider, Investigator, Employees; one company share/instrument and one decision/round. §§1–2. | Role/state model; detailed mechanics open. | Unit and visibility tests. |
 | R-G02 | Required | Three rounds: event, public/authorized private discussion, BUY/HOLD/SELL, resolution, evidence/vote, final evaluation. §2.2. | Authoritative phase machine. | Full-match transcript. |
 | R-G03 | Required | Confidential Insider event hint; one limited Investigator clue/match. §2.1. | Match/audience-scoped private events. | Visibility/use tests. |
-| R-G04 | Required | Baseline five active: one Insider, Investigator, three Employees, plus moderator whose status needs clarification. §§2–3. | Preserve baseline; don't hard-code architecture to five. | Five-player and moderator tests. |
+| R-G04 | Required baseline; moderator boundary approved in S1 | Five active baseline: one Insider, one Investigator, three Employees. The moderator is a separate non-player. §§2–3. | Preserve five-player default while supporting approved variable sizes. | Five-player, moderator, and variable-size tests. |
 | R-G05 | Required | Exclude real money, feeds, short selling, derivatives, auctions, GUI/mobile, matchmaking, persistent accounts, consensus, failover, unsupported anti-cheat. §2.3. | Keep initial release in scope. | Scope review. |
+| R-G08 | Approved project decision (not a PDF requirement) | Match size 3–64 active players; moderator excluded; default five; role counts `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, remainder Employees. | Server derives counts, shuffles its role list, and enforces capacity per match. Role-list entropy is an implementation detail, not proof of cryptographic secrecy. | Engine sizes 3,4,5,8,9,16,24,32,64; coordinator and real TCP tests. |
 | R-N01 | Required | C++20/Ubuntu; separate clients; authoritative server owns/validates state. Cover, §§1,4. | Client requests only. | Ubuntu build and forged-state tests. |
 | R-N02 | Required | Initial UNIX sockets; nonblocking epoll; no thread/client. §§4.1–4.2. | Event loop and transport adapter. | Multi-socket integration/thread review. |
 | R-N03 | Required | Independent matches isolate players, roles, messages, clues, trades, votes, timers, logs. §§1,4.3. | Match-owned state and server membership. | Canary isolation tests. |
@@ -25,11 +26,10 @@ Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Require
 | R-C05 | Required reporting | Environment, clients/matches, latency, resources, correctness/reliability; statuses PASS/FAIL/NOT RUN/BLOCKED. §§3,9. | Timestamped reports/logs. | Test-plan evidence checklist. |
 | R-D01 | Required future scope | Future TCP/TLS 1.3 and explicit identity; keep transport separate. §§4,6. | Later adapter only. | Certificate/plaintext tests if approved. |
 
-## Proposed decisions, not PDF requirements
+## Project decisions not specified by the PDF (status is in DECISIONS.md)
 
 | ID | Proposal | Verification |
 |---|---|---|
-| P-01 | One Insider/Investigator for larger matches, rest Employees. | Roster/visibility and later balance tests. |
 | P-02 | 4-byte big-endian prefix, fixed header, UTF-8 JSON. | Golden/invalid-frame tests. |
 | P-03 | Separate moderator; peer credentials + server sessions. | Permission/auth tests. |
 | P-04 | 4 KiB frame, 512-byte chat, 20 req/s burst 40, 64 KiB queue. | Boundary/flood/slow-reader tests. |
@@ -43,4 +43,4 @@ Source: DARKPOOL_Scalable_Design_and_Build_Plan_Draft_3.pdf, Draft 3. “Require
 | P-11 | mixed64-v1 workload and ACK definition. | Repeatable load metrics. |
 | P-13 | Reserve exhaustion is a synthetic conserved-state boundary test; ordinary three-round play cannot exhaust 10N reserve with at most one trade/player/round. | Prove share conservation and reject BUY when reserve is zero/insufficient. |
 
-P-07 through P-13 require approval; none are source requirements.
+These choices are not PDF requirements. S1 follow-up approvals cover the economy, formulas, victory/voting, clue and synthetic reserve test; the later follow-up approves variable-size roles. Scoring remains open. Load objectives remain unverified until measured.

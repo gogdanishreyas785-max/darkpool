@@ -14,6 +14,8 @@ Proposed server types: WELCOME, ACK, MATCH_CREATED, JOINED, PHASE, EVENT, ROLE_P
 
 Connection flow: accept and assign connection ID; authenticate peer; create/resume server session; assign player identity server-side; join by validated operation; route using server-side session-to-match mapping; validate frame/schema/session/membership/phase/role/rate; apply transition, audit and enqueue authorized output; cleanup on disconnect under approved grace policy.
 
+The current coordinator `create_match` command accepts optional integer `player_count` in [3,64]; omission preserves the five-player default. The server derives the role counts using DEC-02, shuffles that role list, and assigns roles to server-owned seats. Client-supplied `roles` are rejected. `join_match` only fills an unoccupied seat in that match, and `start_match` requires all configured seats. The moderator is not a player seat. Four match records and 256 player plus one moderator connection (257 total) are configured limits, not measured capacity.
+
 Proposed local authentication requiring approval: Linux peer credentials, restrictive socket ownership/mode, server session IDs; same UID does not distinguish humans. No persistent accounts. Reconnect secret policy remains open.
 
 Process complete requests in receive order per connection; events carry per-match sequence, no total order across connections. Proposed duplicate policy requiring approval: request IDs per session, cache 256 outcomes/60s, exact retry replays, conflicting reuse rejected. ERROR has bounded stable code/request ID/safe detail and no secrets.

@@ -1,6 +1,6 @@
 # DARKPOOL S0 decision register
 
-Status note: the user's S1 follow-up approves only the five-player gameplay choices and S1 scope it explicitly names. This table records the original S0 approval requests; unresolved protocol, operations, scoring and larger-match items remain open.
+Status note: the S1 follow-up approved the five-player baseline mechanics. A later explicit user decision approves variable-size matches and the role-scaling policy recorded in DEC-02/DEC-20. Other unresolved protocol, operations, scoring and audit items remain open.
 
 ## 1. Direct requirements from Draft 3
 
@@ -18,12 +18,12 @@ Status note: the user's S1 follow-up approves only the five-player gameplay choi
 | REQ-10 | Future TCP/TLS 1.3 is a later milestone. |
 | REQ-11 | Exclude real money, feeds, complex trading, GUI/mobile, matchmaking, persistent accounts, consensus and failover from initial scope. |
 
-## 2. Proposed decisions requiring approval
+## 2. Decisions initially proposed in S0 (current approval status shown)
 
 | ID | Recommendation | Rationale / impact | Approval |
 |---|---|---|---|
 | DEC-01 | Moderator is separate non-player; create/start/close/status; no secret visibility in player output. | Consistent with five active players plus moderator; audit access impacts secrecy. | Yes |
-| DEC-02 | At all sizes, one Insider and one Investigator; remainder Employees. | Preserves baseline simplicity; balance at 64 may weaken. Scaling proposal, not requirement. | Yes |
+| DEC-02 | For N=3..64, Insiders=`ceil(N/8)`, Investigators=`ceil(N/16)`, Employees=`N-Insiders-Investigators`; integer ceiling formulas, no floating point. N=5 retains 1/1/3. | Deterministic scaling selected by explicit user follow-up; moderator is outside N. | Approved by variable-size follow-up |
 | DEC-03 | 100 fictional credits and 10 shares/player; for N filled active seats at match start, total supply 20N and reserve 10N. Health 5/10, price 10; bounds health 0–10, price 1–100. | Finite supply works at 5 seats (total100/reserve50) and 64 (total1280/reserve640). | Yes |
 | DEC-04 | Trades one share at opening price; buys use finite opening reserve, sells add after allocation; rotate seat priority on shortage. | Conserves supply and makes shortage deterministic. | Yes |
 | DEC-05 | Event impact e∈{-2,-1,0,+1,+2}; H'=clamp(H+e+sign(B-S),0,10); P'=clamp(P+2e+sign(B-S),1,100). Event and demand affect both values with separate formulas. Tests inject fixed events. | Separate deterministic formulas and reproducibility. | Yes |
@@ -41,6 +41,7 @@ Status note: the user's S1 follow-up approves only the five-player gameplay choi
 | DEC-17 | Team win only; cash/shares do not create individual points or tie-break; private summary shows only own balances. | PDF gives no scoring rule; avoids an unrequested leaderboard. | Yes |
 | DEC-18 | Reserve-exhaustion test uses a synthetic, supply-conserving state; ordinary play from 10N reserve cannot exhaust inventory in three rounds at one action/player/round. | Preserves proposed economy while testing finite-reserve rejection. | Yes |
 | DEC-19 | Credits are per-player counters, not globally conserved; SELL credits the player without a reserve-cash test, subject to an implementation-safe balance cap. | PDF does not define the source of SELL proceeds; avoids an unstated finite treasury while making balance overflow behavior explicit. | Yes |
+| DEC-20 | Match size is explicit, 3–64 active players; omitted size defaults to five. Server derives role counts and shuffles its server-owned role list. Four matches may be configured per process; planned hard caps are 256 player connections and one moderator connection. | Preserves legacy five-player workflows while defining finite product/resource bounds. The moderator can own all four matches. These caps are design limits, not measured capacity. | Approved by variable-size follow-up |
 
 ### S1 formula and reserve consistency review
 
@@ -52,7 +53,7 @@ Full definitions are in game-rules.md, test-plan.md and protocol.md. The S1 foll
 
 ### Remaining approvals for later milestones
 
-Larger-match role balance; protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment. The S1 engine does not decide these.
+Protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment remain separate decisions where not already approved.
 
 ## 3. Deferred
 
@@ -60,11 +61,15 @@ TCP/TLS 1.3/certificate lifecycle; real money, feeds, short selling, derivatives
 
 ## Approval gate
 
-S0 only records proposals. No proposed gameplay or protocol behavior is approved until you confirm it. Capacity and performance remain unmeasured targets.
+The original S0 proposals are not approvals by themselves. The explicit later user follow-ups approve DEC-02 and DEC-20 for variable-size matches. Other proposals remain governed by their individual status. Capacity and performance remain unmeasured targets.
 
 
 ## S1 follow-up status
 
 Approved for S1 by the user's explicit follow-up: separate moderator boundary and stated powers; exactly five active roles; proposed economy, share reserve, event/health/price formulas, update order, clue, voting and victory precedence; supply-boundary fixture; and non-conserved player-credit model. The per-player cap is provisionally 1,000,000 credits (uint32_t) for S1, with overflow-causing trades rejected; this is an implementation detail directed by the S1 request. The engine receives an explicit role assignment and event impacts as inputs; S1 does not invent role shuffling or event randomness.
 
-Still open and outside S1: larger-match role policy; protocol encoding/ACKs and duplicate policy; local authentication and production limits; chat/audit retention and secret audit access; reconnect/exit handling; and load-test profile/acceptance evidence. The 64-player/four-match, latency and reliability targets remain unverified. No S2 work is authorized.
+Still open after S1: protocol encoding/ACKs and duplicate policy; local authentication and production limits; chat/audit retention and secret audit access; reconnect/exit handling; and load-test profile/acceptance evidence. The 64-player/four-match, latency and reliability targets remain unverified. The later variable-size follow-up explicitly supersedes S1's deferred role policy and authorizes the formula in DEC-02.
+
+## Variable-size follow-up status
+
+Approved: 3–64 active players per match; moderator excluded; five remains the default; role counts follow DEC-02 using safe integer arithmetic. Multiple Insiders form a team: health zero gives an immediate Insider-team win; eliminating one Insider does not end the match while another remains; eliminating the last Insider with positive health gives Employees the win; surviving round three with any Insider active gives the Insider team the win. Every Investigator gets an independent once-per-match private binary role clue with same-target retry idempotency. These are approved game rules. Four concurrent 64-player matches and a 256-player server remain unverified until end-to-end load and isolation testing.

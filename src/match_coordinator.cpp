@@ -1,14 +1,43 @@
 #include "darkpool/match_coordinator.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdint>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <utility>
+
+#if defined(__linux__)
+#include <sys/random.h>
+#endif
 
 namespace darkpool::server {
 namespace {
 
 constexpr std::size_t kMaxMatches = 4;
+
+std::optional<std::uint64_t> role_shuffle_seed() noexcept {
+#if defined(__linux__)
+  std::uint64_t seed = 0;
+  auto* bytes = reinterpret_cast<unsigned char*>(&seed);
+  std::size_t offset = 0;
+  while (offset < sizeof(seed)) {
+    const auto received = getrandom(bytes + offset, sizeof(seed) - offset, 0);
+    if (received < 0 && errno == EINTR) continue;
+    if (received <= 0) return std::nullopt;
+    offset += static_cast<std::size_t>(received);
+  }
+  return seed;
+#else
+  try {
+    std::random_device entropy;
+    return (static_cast<std::uint64_t>(entropy()) << 32U) ^ entropy();
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+#endif
+}
 
 network::json error(std::string message) {
   return network::json{{"type", "error"}, {"error", std::move(message)}};
@@ -17,13 +46,6 @@ network::json error(std::string message) {
 network::json operation_error(const OperationResult& result) {
   return network::json{{"type", "operation_result"}, {"ok", false},
                        {"code", Match::to_string(result.error)}, {"detail", result.detail}};
-}
-
-std::optional<Role> parse_role(const std::string& value) {
-  if (value == "Insider") return Role::Insider;
-  if (value == "Investigator") return Role::Investigator;
-  if (value == "Employee") return Role::Employee;
-  return std::nullopt;
 }
 
 bool has_client_identity(const network::json& command) {
@@ -89,13 +111,34 @@ std::optional<std::int32_t> read_impact(const network::json& command) {
   }
 }
 
+std::optional<std::size_t> read_player_count(const network::json& command) {
+  if (!command.contains("player_count")) return kPlayerCount;
+  const auto& value = command["player_count"];
+  try {
+    if (value.is_number_unsigned()) {
+      const auto count = value.get<std::uint64_t>();
+      if (count < kMinPlayerCount || count > kMaxPlayerCount) return std::nullopt;
+      return static_cast<std::size_t>(count);
+    }
+    if (!value.is_number_integer()) return std::nullopt;
+    const auto count = value.get<std::int64_t>();
+    if (count < static_cast<std::int64_t>(kMinPlayerCount) ||
+        count > static_cast<std::int64_t>(kMaxPlayerCount)) return std::nullopt;
+    return static_cast<std::size_t>(count);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
 network::json public_status(std::uint64_t match_id, const MatchState& state,
                             std::size_t joined_players,
+                            std::size_t player_count,
                             const std::optional<MarketResult>& last_market,
                             const std::optional<VoteResult>& last_vote) {
   network::json response{{"type", "match_status"}, {"match_id", match_id},
                          {"phase", Match::to_string(state.phase)}, {"round", state.round},
                          {"joined_players", joined_players},
+                         {"player_count", player_count},
                          {"health", state.company.health}, {"price", state.company.price},
                          {"outcome", Match::to_string(state.outcome)}};
   if (last_market) {
@@ -175,24 +218,35 @@ std::optional<network::json> MatchCoordinator::handle(
   if (type == "create_match") {
     if (connection->second.role != SessionRole::Moderator) return error("moderator permission required");
     if (matches_.size() >= kMaxMatches) return error("match limit reached");
-    if (!command.contains("roles") || !command["roles"].is_array() ||
-        command["roles"].size() != kPlayerCount) return error("exactly five roles are required");
+    if (command.contains("roles")) return error("client-supplied roles are not accepted");
+    const auto player_count = read_player_count(command);
+    if (!player_count) return error("player_count must be an integer from 3 through 64");
+    const auto counts = role_counts(*player_count);
+    if (!counts) return error("player_count must be an integer from 3 through 64");
     std::vector<PlayerSetup> roster;
-    roster.reserve(kPlayerCount);
-    for (std::size_t i = 0; i < kPlayerCount; ++i) {
-      if (!command["roles"][i].is_string()) return error("role names must be strings");
-      const auto role = parse_role(command["roles"][i].get<std::string>());
-      if (!role) return error("unknown role");
-      roster.push_back(PlayerSetup{static_cast<PlayerId>(i + 1U), *role});
+    roster.reserve(*player_count);
+    std::vector<Role> assigned_roles;
+    assigned_roles.reserve(*player_count);
+    assigned_roles.insert(assigned_roles.end(), counts->insiders, Role::Insider);
+    assigned_roles.insert(assigned_roles.end(), counts->investigators, Role::Investigator);
+    assigned_roles.insert(assigned_roles.end(), counts->employees, Role::Employee);
+    const auto seed = role_shuffle_seed();
+    if (!seed) return error("secure role assignment entropy is unavailable");
+    std::mt19937_64 generator(*seed);
+    std::shuffle(assigned_roles.begin(), assigned_roles.end(), generator);
+    for (std::size_t i = 0; i < *player_count; ++i) {
+      roster.push_back(PlayerSetup{static_cast<PlayerId>(i + 1U), assigned_roles[i]});
     }
     try {
       auto match = std::make_unique<Match>(roster);
       const auto match_id = next_match_id_++;
       MatchRecord record{std::move(match), session,
-          std::vector<std::optional<std::uint64_t>>(kPlayerCount), std::nullopt, std::nullopt};
+          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt};
       matches_.emplace(match_id, std::move(record));
       connection->second.moderator_matches.push_back(match_id);
-      return network::json{{"type", "match_created"}, {"match_id", match_id}};
+      return network::json{{"type", "match_created"}, {"match_id", match_id},
+          {"player_count", *player_count}, {"insiders", counts->insiders},
+          {"investigators", counts->investigators}, {"employees", counts->employees}};
     } catch (const std::exception& exception) {
       return error(exception.what());
     }
@@ -242,6 +296,7 @@ std::optional<network::json> MatchCoordinator::handle(
     const auto joined = static_cast<std::size_t>(std::count_if(match->second.player_sessions.begin(),
         match->second.player_sessions.end(), [](const auto& item) { return item.has_value(); }));
     return public_status(match_id, match->second.match->state(), joined,
+                         match->second.player_sessions.size(),
                          match->second.last_market, match->second.last_vote);
   }
 
@@ -249,7 +304,9 @@ std::optional<network::json> MatchCoordinator::handle(
   if (type == "start_match") {
     const auto joined = std::count_if(match->second.player_sessions.begin(),
         match->second.player_sessions.end(), [](const auto& item) { return item.has_value(); });
-    if (static_cast<std::size_t>(joined) != kPlayerCount) return error("five players must join before start");
+    if (static_cast<std::size_t>(joined) != match->second.player_sessions.size()) {
+      return error("all configured players must join before start");
+    }
     const auto result = match->second.match->start();
     if (!result) return operation_error(result);
     return network::json{{"type", "transition_result"}, {"ok", true},

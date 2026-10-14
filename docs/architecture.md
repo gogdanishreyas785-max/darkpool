@@ -23,9 +23,11 @@ Each Match owns membership, roles, phases, deadlines, company state, trades, clu
 
 ## Isolation and targets
 
+The approved per-match player range is 3–64, with five as the default; the moderator is outside that count. The coordinator permits at most four matches. The TCP process has explicit design caps of 256 player connections, one moderator connection, and 257 total connections. One moderator can own the four matches. These limits describe configured resource ceilings only; they do not establish that 64-player matches or four simultaneous matches meet performance or reliability targets.
+
 Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
 
-Design target: 64 players per match and four independent concurrent matches in one server process (up to 256 players plus moderators/test clients). p95 acknowledgement ≤100 ms and 30-minute steady reliability are proposed acceptance thresholds, not achieved results.
+The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 players plus moderators). This is design support only. p95 acknowledgement ≤100 ms and 30-minute steady reliability are proposed acceptance thresholds, not achieved results; the 64-player/four-match capacity remains unverified until measured.
 
 ## Proposed repository layout
 

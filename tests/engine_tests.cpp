@@ -28,6 +28,19 @@ std::vector<PlayerSetup> roster() {
           {40, Role::Employee}, {50, Role::Employee}};
 }
 
+std::vector<PlayerSetup> scaled_roster(std::size_t count) {
+  const auto counts = role_counts(count);
+  if (!counts) return {};
+  std::vector<PlayerSetup> players;
+  players.reserve(count);
+  for (std::size_t seat = 0; seat < count; ++seat) {
+    const auto role = seat < counts->insiders ? Role::Insider
+        : seat < counts->insiders + counts->investigators ? Role::Investigator : Role::Employee;
+    players.push_back({static_cast<PlayerId>(seat + 1U), role});
+  }
+  return players;
+}
+
 PlayerState initial_player(PlayerId id, Role role) {
   PlayerState player{};
   player.id = id;
@@ -158,6 +171,9 @@ void test_state_fixture_invariants() {
   inactive_first_round_clue_target.clue_used = true;
   inactive_first_round_clue_target.clue_target = 50;
   inactive_first_round_clue_target.clue_result = false;
+  inactive_first_round_clue_target.players[1].clue_used = true;
+  inactive_first_round_clue_target.players[1].clue_target = 50;
+  inactive_first_round_clue_target.players[1].clue_result = false;
   inactive_first_round_clue_target.players[4].active = false;
   CHECK(rejected(std::move(inactive_first_round_clue_target)));
 
@@ -287,13 +303,96 @@ void test_initialization_and_supply() {
   const auto sixty_four = supply_plan(64);
   CHECK(five && five->total == 100U && five->player_held == 50U && five->reserve == 50U);
   CHECK(sixty_four && sixty_four->total == 1280U && sixty_four->player_held == 640U && sixty_four->reserve == 640U);
-  CHECK(!supply_plan(4));
+  CHECK(!supply_plan(2));
   CHECK(!supply_plan(65));
 
   bool rejected = false;
   try { Match invalid({{1, Role::Insider}, {2, Role::Investigator}, {3, Role::Employee}, {4, Role::Employee}, {5, Role::Insider}}); }
   catch (const std::invalid_argument&) { rejected = true; }
   CHECK(rejected);
+
+  auto duplicate_ids = roster();
+  duplicate_ids[4].id = duplicate_ids[3].id;
+  rejected = false;
+  try { Match invalid(duplicate_ids); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+
+  auto zero_id = roster();
+  zero_id[0].id = 0;
+  rejected = false;
+  try { Match invalid(zero_id); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+
+  auto invalid_role = roster();
+  invalid_role[4].role = static_cast<Role>(99);
+  rejected = false;
+  try { Match invalid(invalid_role); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+}
+
+void test_variable_rosters_and_supply() {
+  struct Expected { std::size_t n; std::size_t insiders; std::size_t investigators; std::size_t employees; };
+  constexpr Expected expected[]{{3,1,1,1},{4,1,1,2},{5,1,1,3},{8,1,1,6},
+      {9,2,1,6},{16,2,1,13},{24,3,2,19},{32,4,2,26},{64,8,4,52}};
+  for (const auto& item : expected) {
+    const auto counts = role_counts(item.n);
+    const auto supply = supply_plan(item.n);
+    CHECK(counts && counts->insiders == item.insiders &&
+          counts->investigators == item.investigators && counts->employees == item.employees);
+    CHECK(counts && counts->employees >= 1U);
+    CHECK(supply && supply->total == 20U * item.n && supply->player_held == 10U * item.n &&
+          supply->reserve == 10U * item.n);
+    Match match(scaled_roster(item.n));
+    CHECK(match.state().players.size() == item.n);
+    CHECK(match.state().total_supply == 20U * item.n && match.state().reserve == 10U * item.n);
+    std::uint64_t held = 0;
+    for (const auto& player : match.state().players) {
+      CHECK(player.credits == kStartingCredits && player.shares == kStartingShares);
+      held += player.shares;
+    }
+    CHECK(held + match.state().reserve == match.state().total_supply);
+  }
+  CHECK(!role_counts(2));
+  CHECK(!role_counts(65));
+  for (const auto bad_size : {std::size_t{2}, std::size_t{65}}) {
+    bool rejected = false;
+    try { Match invalid(scaled_roster(bad_size)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  }
+  auto missing_investigator = scaled_roster(9);
+  missing_investigator[2].role = Role::Employee;
+  bool invalid_distribution = false;
+  try { Match invalid(missing_investigator); }
+  catch (const std::invalid_argument&) { invalid_distribution = true; }
+  CHECK(invalid_distribution);
+}
+
+void test_variable_market_conservation_and_determinism() {
+  for (const auto count : {std::size_t{3}, std::size_t{16}, std::size_t{64}}) {
+    Match first(scaled_roster(count));
+    Match second(scaled_roster(count));
+    start_to_trading(first, -1);
+    start_to_trading(second, -1);
+    for (std::size_t seat = 0; seat < count; ++seat) {
+      const auto action = seat % 3U == 0U ? TradeAction::Buy
+          : seat % 3U == 1U ? TradeAction::Sell : TradeAction::Hold;
+      const auto player = first.state().players[seat].id;
+      CHECK(first.submit_trade(player, action));
+      CHECK(second.submit_trade(player, action));
+    }
+    const auto first_market = first.resolve_market();
+    const auto second_market = second.resolve_market();
+    CHECK(first_market && second_market);
+    CHECK(first.canonical_state() == second.canonical_state());
+    CHECK(first.canonical_events() == second.canonical_events());
+    std::uint64_t held = 0;
+    for (const auto& player : first.state().players) held += player.shares;
+    CHECK(held + first.state().reserve == first.state().total_supply);
+  }
 }
 
 void test_normal_five_player_worked_example() {
@@ -518,6 +617,132 @@ void test_clue_scope_and_idempotency() {
   CHECK(match.open_voting());
 }
 
+void test_multiple_investigators_have_independent_clues() {
+  Match match(scaled_roster(24));
+  CHECK(match.start());
+  round_to_voting(match, 0);
+  OperationResult first_result;
+  const auto first = match.use_clue(4, 1, first_result);
+  CHECK(first && *first && first_result);
+  const auto retry = match.use_clue(4, 1, first_result);
+  CHECK(retry && *retry && first_result);
+  const auto state_before_retarget = match.canonical_state();
+  const auto events_before_retarget = match.canonical_events();
+  CHECK(!match.use_clue(4, 2, first_result) && first_result.error == ErrorCode::ClueAlreadyUsed);
+  CHECK(match.canonical_state() == state_before_retarget);
+  CHECK(match.canonical_events() == events_before_retarget);
+  OperationResult second_result;
+  const auto second = match.use_clue(5, 2, second_result);
+  CHECK(second && *second && second_result);
+  CHECK(match.state().players[3].clue_used && match.state().players[4].clue_used);
+  CHECK(match.canonical_state().find("clue=4:1:1") != std::string::npos);
+  CHECK(match.canonical_state().find("clue=5:2:1") != std::string::npos);
+}
+
+void test_same_target_clue_retry_after_target_elimination() {
+  Match match(roster());
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market());
+  OperationResult result;
+  const auto clue = match.use_clue(20, 50, result);
+  CHECK(clue && !*clue && result);
+  CHECK(match.open_voting());
+  CHECK(match.submit_vote(10, 50));
+  CHECK(match.submit_vote(20, 50));
+  CHECK(match.submit_vote(30, 50));
+  CHECK(match.resolve_votes()->eliminated == 50U);
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market());
+  const auto retry = match.use_clue(20, 50, result);
+  CHECK(retry && !*retry && result);
+}
+
+void test_multi_insider_victory_is_team_based() {
+  Match match(scaled_roster(9));
+  CHECK(match.start());
+  round_to_voting(match, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(match.submit_vote(voter, 1));
+  const auto first = match.resolve_votes();
+  CHECK(first && first->eliminated == 1U && first->outcome == Outcome::None);
+  CHECK(match.state().phase == Phase::AwaitingEvent);
+
+  round_to_voting(match, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(match.submit_vote(voter, 2));
+  const auto last = match.resolve_votes();
+  CHECK(last && last->eliminated == 2U && last->outcome == Outcome::EmployeesWin);
+  CHECK(match.state().phase == Phase::Finished);
+}
+
+void test_variable_voting_thresholds_and_team_survival() {
+  Match minimum(scaled_roster(3));
+  CHECK(minimum.start());
+  round_to_voting(minimum, 0);
+  CHECK(minimum.submit_vote(1, 3));
+  CHECK(minimum.submit_vote(2, 3)); // 2 of 3 is a strict majority.
+  const auto min_vote = minimum.resolve_votes();
+  CHECK(min_vote && min_vote->eliminated == 3U && min_vote->eligible_voters == 3U);
+
+  Match eight_tie(scaled_roster(8));
+  CHECK(eight_tie.start());
+  round_to_voting(eight_tie, 0);
+  for (PlayerId voter = 1; voter <= 4; ++voter) CHECK(eight_tie.submit_vote(voter, 8));
+  const auto tie = eight_tie.resolve_votes(); // 4 of 8 is not strictly more than half.
+  CHECK(tie && !tie->eliminated && tie->eligible_voters == 8U);
+
+  Match two_insiders_remain(scaled_roster(9));
+  CHECK(two_insiders_remain.start());
+  round_to_voting(two_insiders_remain, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(two_insiders_remain.submit_vote(voter, 1));
+  CHECK(two_insiders_remain.resolve_votes()->outcome == Outcome::None);
+  round_to_voting(two_insiders_remain, 0);
+  finish_round_without_elimination(two_insiders_remain);
+  round_to_voting(two_insiders_remain, 0);
+  finish_round_without_elimination(two_insiders_remain);
+  CHECK(two_insiders_remain.state().outcome == Outcome::InsiderWin);
+
+  auto health_state = Match(scaled_roster(9)).state();
+  health_state.phase = Phase::Trading;
+  health_state.round = 1;
+  health_state.company.health = 1;
+  health_state.event_impact = -2;
+  Match collapse = Match::from_state(std::move(health_state));
+  const auto market = collapse.resolve_market();
+  CHECK(market && market->closing_health == 0 && market->outcome == Outcome::InsiderWin);
+}
+
+void test_eliminated_special_roles_cannot_act() {
+  for (const PlayerId eliminated_id : {PlayerId{1}, PlayerId{3}}) {
+    auto state = Match(scaled_roster(9)).state();
+    state.phase = Phase::AwaitingEvent;
+    state.round = 2;
+    state.eligible_voters_at_open = 9;
+    auto eliminated = std::find_if(state.players.begin(), state.players.end(),
+        [eliminated_id](const PlayerState& player) { return player.id == eliminated_id; });
+    eliminated->active = false;
+    std::uint32_t votes = 0;
+    for (auto& voter : state.players) {
+      if (voter.active && votes < 5U) {
+        voter.vote_submitted = true;
+        voter.vote_target = eliminated_id;
+        ++votes;
+      }
+    }
+    Match match = Match::from_state(std::move(state));
+    CHECK(match.publish_event(0));
+    OperationResult result;
+    CHECK(!match.insider_hint(eliminated_id, result) && result.error == ErrorCode::InactivePlayer);
+    CHECK(match.open_trading());
+    CHECK(match.submit_trade(eliminated_id, TradeAction::Hold).error == ErrorCode::InactivePlayer);
+    CHECK(match.resolve_market());
+    CHECK(!match.use_clue(eliminated_id, 2, result) && result.error == ErrorCode::InactivePlayer);
+    CHECK(match.open_voting());
+    CHECK(match.submit_vote(eliminated_id, std::nullopt).error == ErrorCode::InactivePlayer);
+  }
+}
+
 void test_vote_edges_and_victories() {
   Match tied(roster());
   CHECK(tied.start());
@@ -618,12 +843,19 @@ void test_deterministic_replay() {
 int main() {
   test_state_fixture_invariants();
   test_initialization_and_supply();
+  test_variable_rosters_and_supply();
+  test_variable_market_conservation_and_determinism();
   test_normal_five_player_worked_example();
   test_reserve_shortage_and_conservation();
   test_invalid_trades_and_credit_cap();
   test_trade_order_preconditions_in_fixture_validation();
   test_formula_bounds();
   test_clue_scope_and_idempotency();
+  test_multiple_investigators_have_independent_clues();
+  test_same_target_clue_retry_after_target_elimination();
+  test_multi_insider_victory_is_team_based();
+  test_variable_voting_thresholds_and_team_survival();
+  test_eliminated_special_roles_cannot_act();
   test_vote_edges_and_victories();
   test_invalid_votes_and_eliminated_voter();
   test_eliminated_players_cannot_act_or_be_targets();

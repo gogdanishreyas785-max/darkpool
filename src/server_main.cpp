@@ -24,9 +24,11 @@ using darkpool::network::json;
 using darkpool::network::OutputQueue;
 
 constexpr std::uint16_t kDefaultPort = 4782;
-constexpr std::size_t kMaxConnections = 6;
-constexpr std::size_t kMaxPlayers = 5;
+constexpr std::size_t kMaxMatches = 4;
+constexpr std::size_t kMaxPlayersPerMatch = darkpool::kMaxPlayerCount;
+constexpr std::size_t kMaxPlayerConnections = kMaxMatches * kMaxPlayersPerMatch;
 constexpr std::size_t kMaxModerators = 1;
+constexpr std::size_t kMaxConnections = kMaxPlayerConnections + kMaxModerators;
 constexpr auto kHandshakeTimeout = std::chrono::seconds(5);
 constexpr int kEpollTimeoutMs = 100;
 
@@ -103,7 +105,7 @@ bool process_frame(int epoll_fd, int fd, Connection &connection,
     }
     const auto role = payload.value("role", std::string{});
     if (role == "player") {
-      if (players >= kMaxPlayers)
+      if (players >= kMaxPlayerConnections)
         return false;
       connection.kind = ClientKind::Player;
       ++players;

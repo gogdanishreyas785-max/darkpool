@@ -27,15 +27,19 @@ void test_moderator_commands() {
   auto r = mod.process_input("create");
   CHECK(r.send_frame);
   CHECK(r.payload["type"] == "create_match");
-  CHECK(r.payload["roles"].size() == 5U);
-  CHECK(r.payload["roles"][0] == "Insider");
-  CHECK(r.payload["roles"][1] == "Investigator");
-  CHECK(r.payload["roles"][2] == "Employee");
+  CHECK(!r.payload.contains("player_count")); // omitted count preserves the five-player default
+  CHECK(!r.payload.contains("roles")); // server owns the role assignment
+  r = mod.process_input("create 9");
+  CHECK(r.send_frame && r.payload["player_count"] == 9U);
+  r = mod.process_input("create 65");
+  CHECK(!r.send_frame && r.local_message.find("3 through 64") != std::string::npos);
 
   // Format match created
-  const auto created_resp = json{{"type", "match_created"}, {"match_id", 42}};
+  const auto created_resp = json{{"type", "match_created"}, {"match_id", 42},
+      {"player_count", 9}, {"insiders", 2}, {"investigators", 1}, {"employees", 6}};
   const auto formatted_created = mod.format_response(created_resp);
   CHECK(formatted_created.find("Match #42") != std::string::npos);
+  CHECK(formatted_created.find("Waiting for 9 players") != std::string::npos);
   CHECK(mod.match_id() == 42U);
   CHECK(mod.prompt() == "[Moderator Match #42] > ");
 

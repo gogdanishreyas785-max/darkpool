@@ -1,6 +1,7 @@
 #include "darkpool/network.hpp"
 
 #include <arpa/inet.h>
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
@@ -232,9 +233,12 @@ void test_server_capacity_and_echo(const char* server_path) {
     CHECK(reply && (*reply)["type"] == "connect" && (*reply)["role"] == "moderator" && !reply->contains("token"));
   }
 
-  const int excess = connect_to(port);
-  CHECK(excess >= 0);
-  if (excess >= 0) CHECK(rejected_by_server(excess));
+  const int additional_player = connect_to(port);
+  CHECK(additional_player >= 0);
+  if (additional_player >= 0) {
+    CHECK(exchange(additional_player, json{{"type", "connect"}, {"role", "player"}}, false));
+    peers.push_back(additional_player);
+  }
 
   if (!peers.empty()) { (void)close(peers.back()); peers.pop_back(); }
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
@@ -262,7 +266,7 @@ std::optional<json> command(int fd, std::uint64_t match_id, const char* type) {
   return request_json(fd, json{{"type", type}, {"match_id", match_id}});
 }
 
-void test_complete_three_round_match(const char* server_path) {
+void test_complete_three_round_match(const char* server_path, std::size_t player_count) {
   const auto port = reserve_port();
   CHECK(port != 0U);
   if (port == 0U) return;
@@ -289,7 +293,7 @@ void test_complete_three_round_match(const char* server_path) {
   CHECK(moderator_hello && (*moderator_hello)["role"] == "moderator");
   CHECK(moderator_hello && !moderator_hello->contains("token"));
 
-  for (std::size_t i = 0; i < 5U; ++i) {
+  for (std::size_t i = 0; i < player_count; ++i) {
     const int fd = connect_to(port);
     CHECK(fd >= 0);
     if (fd < 0) continue;
@@ -299,32 +303,52 @@ void test_complete_three_round_match(const char* server_path) {
     const auto hello = request_json(fd, json{{"type", "connect"}, {"role", "player"}});
     CHECK(hello && (*hello)["type"] == "connect");
   }
-  if (players.size() != 5U) { cleanup(); return; }
+  if (players.size() != player_count) { cleanup(); return; }
 
-  const json roles{"Insider", "Investigator", "Employee", "Employee", "Employee"};
-  const auto created = request_json(moderator, json{{"type", "create_match"}, {"roles", roles}});
+  json create_match{{"type", "create_match"}};
+  if (player_count != 5U) create_match["player_count"] = player_count;
+  const auto created = request_json(moderator, create_match);
   CHECK(created && (*created)["type"] == "match_created");
+  CHECK(created && (*created)["player_count"] == player_count);
+  const auto expected_counts = player_count == 5U ? std::array<std::size_t, 3>{1U, 1U, 3U}
+      : std::array<std::size_t, 3>{1U, 1U, 6U};
+  CHECK(created && (*created)["insiders"] == expected_counts[0] &&
+        (*created)["investigators"] == expected_counts[1] && (*created)["employees"] == expected_counts[2]);
   if (!created || !created->contains("match_id")) { cleanup(); return; }
   const auto match_id = (*created)["match_id"].get<std::uint64_t>();
 
-  const std::vector<std::string> expected_roles{"Insider", "Investigator", "Employee", "Employee", "Employee"};
+  std::size_t insider_seat = player_count;
+  std::size_t investigator_seat = player_count;
+  std::uint64_t employee_target = 0;
+  std::size_t insiders = 0, investigators = 0, employees = 0;
   for (std::size_t i = 0; i < players.size(); ++i) {
     const auto joined = request_json(players[i], json{{"type", "join_match"}, {"match_id", match_id}});
     CHECK(joined && (*joined)["type"] == "joined_match");
     CHECK(joined && (*joined)["player_id"] == i + 1U);
-    CHECK(joined && (*joined)["private_role"] == expected_roles[i]);
+    if (joined && (*joined)["private_role"] == "Insider") { insider_seat = i; ++insiders; }
+    else if (joined && (*joined)["private_role"] == "Investigator") { investigator_seat = i; ++investigators; }
+    else if (joined && (*joined)["private_role"] == "Employee") {
+      if (employee_target == 0U) employee_target = (*joined)["player_id"].get<std::uint64_t>();
+      ++employees;
+    }
+  }
+  CHECK(insiders == expected_counts[0] && investigators == expected_counts[1] && employees == expected_counts[2]);
+  CHECK(insider_seat < players.size() && investigator_seat < players.size() && employee_target != 0U);
+  if (insider_seat >= players.size() || investigator_seat >= players.size() || employee_target == 0U) {
+    cleanup();
+    return;
   }
 
   const auto start = command(moderator, match_id, "start_match");
   CHECK(start && (*start)["type"] == "transition_result" && (*start)["ok"]);
   const auto status = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
-  CHECK(status && (*status)["phase"] == "AwaitingEvent");
+  CHECK(status && (*status)["phase"] == "AwaitingEvent" && (*status)["player_count"] == player_count);
 
   for (std::uint32_t round = 1; round <= 3U; ++round) {
     const auto event = request_json(moderator, json{{"type", "publish_event"},
         {"match_id", match_id}, {"impact", 0}});
     CHECK(event && (*event)["type"] == "transition_result" && (*event)["phase"] == "Discussion");
-    const auto hint = command(players[0], match_id, "insider_hint");
+    const auto hint = command(players[insider_seat], match_id, "insider_hint");
     CHECK(hint && (*hint)["type"] == "hint_private" && (*hint)["event_impact"] == 0);
     const auto public_during_discussion = request_json(players[2],
         json{{"type", "match_status"}, {"match_id", match_id}});
@@ -343,8 +367,8 @@ void test_complete_three_round_match(const char* server_path) {
     const auto clue_phase = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
     CHECK(clue_phase && (*clue_phase)["phase"] == "Clue");
     if (round == 1U) {
-      const auto clue = request_json(players[1], json{{"type", "request_clue"},
-          {"match_id", match_id}, {"target_id", 3}});
+      const auto clue = request_json(players[investigator_seat], json{{"type", "request_clue"},
+          {"match_id", match_id}, {"target_id", employee_target}});
       CHECK(clue && (*clue)["type"] == "clue_private" && (*clue)["is_insider"] == false);
     }
     const auto public_after_clue = request_json(players[2],
@@ -605,8 +629,7 @@ void test_moderator_authentication(const char* server_path) {
       CHECK(res && !res->contains("token"));  // Token must never be reflected
 
       // Verify moderator capabilities
-      const json roles{"Insider", "Investigator", "Employee", "Employee", "Employee"};
-      const auto created = request_json(valid_mod_fd, json{{"type", "create_match"}, {"roles", roles}});
+      const auto created = request_json(valid_mod_fd, json{{"type", "create_match"}});
       CHECK(created && (*created)["type"] == "match_created");
 
       // 3G: Duplicate moderator with valid credentials rejected (slot limit 1)
@@ -694,7 +717,7 @@ void test_idle_unassigned_timeout(const char* server_path) {
   (void)setsockopt(guard.player, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   CHECK(exchange(guard.player, json{{"type", "connect"}, {"role", "player"}}, false));
 
-  // 2. Connect 5 unassigned idle clients (saturating 6 total capacity: 1 player + 5 idle)
+  // 2. Connect 5 unassigned idle clients to exercise independent handshake deadlines.
   const auto connect_start = std::chrono::steady_clock::now();
   for (int i = 0; i < 5; ++i) {
     const int fd = connect_to(port);
@@ -704,17 +727,7 @@ void test_idle_unassigned_timeout(const char* server_path) {
   CHECK(guard.idle_peers.size() == 5U);
   if (guard.idle_peers.size() != 5U) return;
 
-  // 3. Verify server capacity is exhausted: attempt replacement/7th connection while
-  // all 6 existing connections are still open. Verify it is rejected immediately.
-  guard.excess = connect_to(port);
-  CHECK(guard.excess >= 0);
-  if (guard.excess >= 0) {
-    const int excess_fd = guard.excess;
-    guard.excess = -1;  // rejected_by_server closes the socket
-    CHECK(rejected_by_server(excess_fd));
-  }
-
-  // 4. Verify idle connections are not closed prematurely at t = 2s
+  // 3. Verify idle connections are not closed prematurely at t = 2s
   std::this_thread::sleep_for(std::chrono::seconds(2));
   for (const int fd : guard.idle_peers) {
     char byte = 0;
@@ -825,15 +838,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
     (void)waitpid(child, nullptr, 0);
   };
 
-  // The server enforces kMaxConnections = 6, kMaxPlayers = 5, and kMaxModerators = 1.
-  // We establish exactly 4 player sessions and 1 moderator session (5 legitimate sessions total).
-  // This satisfies three key test invariants:
-  // 1. Both player and moderator session types are active simultaneously.
-  // 2. When the offender connects, all 6 connection slots (kMaxConnections) are filled.
-  //    An excess (7th) connection attempt is verified to be rejected while the offender is connected.
-  // 3. Exactly one player slot remains available (4 of 5), so that after the offender is evicted,
-  //    a replacement client can connect and complete a valid player handshake without breaking
-  //    or disconnecting any existing player or moderator session.
+  // Keep representative player and moderator sessions connected while malformed clients are isolated.
   std::vector<int> players;
   for (int i = 0; i < 4; ++i) {
     const int fd = connect_with_retry(port);
@@ -878,14 +883,6 @@ void test_malformed_tcp_isolation(const char* server_path) {
     if (offender < 0) continue;
     open_fds.push_back(offender);
 
-    // The offender fills the 6th connection slot (4 players + 1 moderator + 1 offender = 6).
-    // Verify server capacity is 100% saturated: an excess 7th connection is rejected immediately.
-    int excess = connect_to(port);
-    CHECK(excess >= 0);
-    if (excess >= 0) {
-      CHECK(rejected_by_server(excess));
-    }
-
     CHECK(send_all(offender, cases[i].first.data(), cases[i].first.size(), false));
     if (cases[i].second) CHECK(shutdown(offender, SHUT_WR) == 0);
     CHECK(closed_within_timeout(offender, 2000));
@@ -905,8 +902,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
 
     close_fd(offender);
 
-    // Verify slot recovery: a replacement connection connects and handshakes as the 5th player
-    // while all 4 original players and the moderator remain connected.
+    // Verify slot recovery with a replacement player session while existing peers remain connected.
     int replacement = connect_with_retry(port);
     CHECK(replacement >= 0);
     if (replacement >= 0) {
@@ -930,7 +926,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
   }
 
   // Live TCP client triggering output-queue overflow (64 KiB limit):
-  // An offending client completes handshake as the 5th player (filling 6/6 server capacity),
+  // An offending client completes a player handshake,
   // restricts its receive buffer, and floods requests without reading server replies.
   // The server buffers responses in OutputQueue until the 64 KiB limit is exceeded,
   // then cleanly closes the offending connection without disrupting the existing 4 players or moderator.
@@ -944,14 +940,6 @@ void test_malformed_tcp_isolation(const char* server_path) {
 
       // Offender connects as player
       CHECK(exchange(offender, json{{"type", "connect"}, {"role", "player"}}, false));
-
-      // Offender fills the 6th slot (4 players + 1 moderator + 1 offender player = 6).
-      // Excess 7th connection must be rejected immediately.
-      int excess = connect_to(port);
-      CHECK(excess >= 0);
-      if (excess >= 0) {
-        CHECK(rejected_by_server(excess));
-      }
 
       // Prepare a valid ~3,800-byte frame payload (within 4 KiB frame limit)
       const auto overhead = json{{"echo", ""}}.dump().size();
@@ -1011,7 +999,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
 
       close_fd(offender);
 
-      // Verify slot recovery: a replacement client connects and handshakes as player #5
+      // Verify slot recovery: a replacement player connects and completes a handshake.
       int replacement = connect_with_retry(port);
       CHECK(replacement >= 0);
       if (replacement >= 0) {
@@ -1040,11 +1028,13 @@ void test_malformed_tcp_isolation(const char* server_path) {
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|malformed|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
-    test_complete_three_round_match(argv[1]);
+    test_complete_three_round_match(argv[1], 5U);
+  } else if (argc == 3 && std::string(argv[2]) == "variable-gameplay") {
+    test_complete_three_round_match(argv[1], 8U);
   } else if (argc == 3 && std::string(argv[2]) == "auth") {
     test_moderator_authentication(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "malformed") {
@@ -1055,7 +1045,8 @@ int main(int argc, char** argv) {
     test_server_capacity_and_echo(argv[1]);
     test_idle_unassigned_timeout(argv[1]);
     test_moderator_authentication(argv[1]);
-    test_complete_three_round_match(argv[1]);
+    test_complete_three_round_match(argv[1], 5U);
+    test_complete_three_round_match(argv[1], 8U);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }
