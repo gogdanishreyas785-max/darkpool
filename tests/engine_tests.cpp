@@ -1,365 +1,872 @@
-YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×n8å:-jZ.¶›­–)Ş³R6–æ6ÇVFR&F&·ööÂövÖUöVæv–æRæ‡  ¢6–æ6ÇVFRÆÆv÷&—F†Óà¢6–æ6ÇVFRÆ77FFÆ–#à¢6–æ6ÇVFRÆ–÷7G&VÓà¢6–æ6ÇVFRÇ7FFW†6WCà¢6–æ6ÇVFRÇ7G&–æsà¢6–æ6ÇVFRÇWF–Æ—G“à¢6–æ6ÇVFRÇfV7F÷#à §W6–æræÖW76RF&·ööÃ° ¦æÖW76R° ¦–çBf–ÇW&W2Ò° §fö–B6†V6²†&ööÂ6öæF—F–öâÂ6öç7B6†"¢W‡&W76–öâÂ–çBÆ–æR’°¢–b‚6öæF—F–öâ’°¢²¶f–ÇW&W3°¢7FC£¦6W'"ÃÂ$d”ÂÆ–æR"ÃÂÆ–æRÃÂ#¢"ÃÂW‡&W76–öâÃÂuÆâs°¢Ğ§Ğ ¢6FVf–æR4„T4²‡‚’6†V6²‡7FF–5ö67CÆ&ööÃâ‡‚’Â7‚ÂõôÄ”äUõò §7FC£§fV7F÷#ÅÆ–W%6WGWâ&÷7FW"‚’°¢&WGW&â·³Â&öÆS£¤–ç6–FW'ÒÂ³#Â&öÆS£¤–çfW7F–vF÷'ÒÂ³3Â&öÆS£¤V×Æ÷–VWÒÀ¢³CÂ&öÆS£¤V×Æ÷–VWÒÂ³SÂ&öÆS£¤V×Æ÷–VW×Ó°§Ğ §7FC£§fV7F÷#ÅÆ–W%6WGWâ66ÆVE÷&÷7FW"‡7FC£§6—¦U÷B6÷VçB’°¢6öç7BWFò6÷VçG2Ò&öÆUö6÷VçG2†6÷VçB“°¢–b‚6÷VçG2’&WGW&â·Ó°¢7FC£§fV7F÷#ÅÆ–W%6WGWâÆ–W'3°¢Æ–W'2ç&W6W'fR†6÷VçB“°¢f÷"‡7FC£§6—¦U÷B6VBÒ²6VBÂ6÷VçC²²·6VB’°¢6öç7BWFò&öÆRÒ6VBÂ6÷VçG2Óæ–ç6–FW'2ò&öÆS£¤–ç6–FW ¢¢6VBÂ6÷VçG2Óæ–ç6–FW'2²6÷VçG2Óæ–çfW7F–vF÷'2ò&öÆS£¤–çfW7F–vF÷"¢&öÆS£¤V×Æ÷–VS°¢Æ–W'2çW6…ö&6²‡·7FF–5ö67CÅÆ–W$–Câ‡6VB²R’Â&öÆWÒ“°¢Ğ¢&WGW&âÆ–W'3°§Ğ ¥Æ–W%7FFR–æ—F–Å÷Æ–W"…Æ–W$–B–BÂ&öÆR&öÆR’°¢Æ–W%7FFRÆ–W'·Ó°¢Æ–W"æ–BÒ–C°¢Æ–W"ç&öÆRÒ&öÆS°¢&WGW&âÆ–W#°§Ğ ¤ÖF6…7FFR&6U÷7FFR‚’°¢ÖF6…7FFR7FFS°¢7FFRçÆ–W'2Ò¶–æ—F–Å÷Æ–W"ƒÂ&öÆS£¤–ç6–FW"’Â–æ—F–Å÷Æ–W"ƒ#Â&öÆS£¤–çfW7F–vF÷"’À¢–æ—F–Å÷Æ–W"ƒ3Â&öÆS£¤V×Æ÷–VR’Â–æ—F–Å÷Æ–W"ƒCÂ&öÆS£¤V×Æ÷–VR’À¢–æ—F–Å÷Æ–W"ƒSÂ&öÆS£¤V×Æ÷–VR—Ó°¢7FFRç&W6W'fRÒS°¢7FFRçF÷FÅ÷7WÇ’Ò°¢7FFRæ6ö×ç’Ò³RÂÓ°¢7FFRç†6RÒ†6S£¥G&F–æs°¢7FFRç&÷VæBÒ°¢&WGW&â7FFS°§Ğ ¤ÖF6‚Ö&¶WEöf—‡GW&R‡7FC£¦–çC3%÷B†VÇF‚Â7FC£¦–çC3%÷B&–6RÂ7FC£¦–çC3%÷BWfVçBÀ¢7FC£§fV7F÷#Ç7FC£§—#Ç7FC£§6—¦U÷BÂG&FT7F–öããâ7F–öç2À¢6†&W2&W6W'fRÒS’°¢WFò7FFRÒ&6U÷7FFR‚“°¢7FFRæ6ö×ç’Ò¶†VÇF‚Â&–6WÓ°¢7FFRæWfVçEö–×7BÒWfVçC°¢7FFRç&W6W'fRÒ&W6W'fS°¢7FC£§V–çCcE÷B†VÆBÒ°¢f÷"†6öç7BWFòb·6VBÂ7F–öåÒ¢7F–öç2’°¢7FFRçÆ–W'2æB‡6VB’æ7F–öå÷7V&Ö—GFVBÒG'VS°¢7FFRçÆ–W'2æB‡6VB’æ÷&FW"Ò7F–öã°¢–b†7F–öâÓÒG&FT7F–öã£¥6VÆÂ’²·7FFRçÆ–W'2æB‡6VB’ç6†&W3°¢Ğ¢f÷"†6öç7BWFòbÆ–W"¢7FFRçÆ–W'2’†VÆB³ÒÆ–W"ç6†&W3°¢–b††VÆB²7FFRç&W6W'fRÒ7FFRçF÷FÅ÷7WÇ’’°¢6öç7BWFòFVÇFÒ7FF–5ö67CÇ7FC£¦–çCcE÷Câ‡7FFRçF÷FÅ÷7WÇ’’Ò7FF–5ö67CÇ7FC£¦–çCcE÷Câ††VÆB²7FFRç&W6W'fR“°¢–b†FVÇFãÒ’7FFRç&W6W'fR³Ò7FF–5ö67CÅ6†&W3â†FVÇF“°¢VÇ6R7FFRç&W6W'fRÓÒ7FF–5ö67CÅ6†&W3â‚ÖFVÇF“°¢Ğ¢&WGW&âÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡7FFR’“°§Ğ §fö–B7F'E÷Fõ÷G&F–ær„ÖF6‚bÖF6‚Â7FC£¦–çC3%÷BWfVçB’°¢4„T4²†ÖF6‚ç7F'B‚’“°¢4„T4²†ÖF6‚çV&Æ—6…öWfVçB†WfVçB’“°¢4„T4²†ÖF6‚æ÷Vå÷G&F–ær‚’“°§Ğ §fö–B&÷VæE÷Fõ÷f÷F–ær„ÖF6‚bÖF6‚Â7FC£¦–çC3%÷BWfVçB’°¢4„T4²†ÖF6‚çV&Æ—6…öWfVçB†WfVçB’“°¢4„T4²†ÖF6‚æ÷Vå÷G&F–ær‚’“°¢6öç7BWFòÖ&¶WBÒÖF6‚ç&W6öÇfUöÖ&¶WB‚“°¢4„T4²†Ö&¶WBæ†5÷fÇVR‚’“°¢–b†ÖF6‚ç7FFR‚’ç†6RÓÒ†6S£¤6ÇVR’4„T4²†ÖF6‚æ÷Vå÷f÷F–ær‚’“°§Ğ §fö–Bf–æ—6…÷&÷VæE÷v—F†÷WEöVÆ–Ö–æF–öâ„ÖF6‚bÖF6‚’°¢f÷"†6öç7BWFòb¢ÖF6‚ç7FFR‚’çÆ–W'2’°¢–b‡æ7F—fR’4„T4²†ÖF6‚ç7V&Ö—E÷f÷FR‡æ–BÂ7FC£¦çVÆÆ÷B’“°¢Ğ¢4„T4²†ÖF6‚ç&W6öÇfU÷f÷FW2‚’æ†5÷fÇVR‚’“°§Ğ §fö–BFW7E÷7FFUöf—‡GW&Uö–çf&–çG2‚’°¢6öç7BWFò&V¦V7FVBÒµÒ„ÖF6…7FFR7FFR’°¢G'’²‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡7FFR’“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&WGW&âG'VS²Ğ¢&WGW&âfÇ6S°¢Ó° ¢WFòf–æ—6†VE÷v—F†÷WEö÷WF6öÖRÒ&6U÷7FFR‚“°¢f–æ—6†VE÷v—F†÷WEö÷WF6öÖRç†6RÒ†6S£¤f–æ—6†VC°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†f–æ—6†VE÷v—F†÷WEö÷WF6öÖR’’“° ¢WFòÆ—fU÷v—F…ö÷WF6öÖRÒ&6U÷7FFR‚“°¢Æ—fU÷v—F…ö÷WF6öÖRæ÷WF6öÖRÒ÷WF6öÖS£¤–ç6–FW%v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†Æ—fU÷v—F…ö÷WF6öÖR’’“° ¢WFò¦W&õö†VÇF…öÆ—fRÒ&6U÷7FFR‚“°¢¦W&õö†VÇF…öÆ—fRæ6ö×ç’æ†VÇF‚Ò°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡¦W&õö†VÇF…öÆ—fR’’“° ¢WFò¦W&õö†VÇF…÷w&öæu÷v–ææW"Ò&6U÷7FFR‚“°¢¦W&õö†VÇF…÷w&öæu÷v–ææW"ç†6RÒ†6S£¤f–æ—6†VC°¢¦W&õö†VÇF…÷w&öæu÷v–ææW"æ6ö×ç’æ†VÇF‚Ò°¢¦W&õö†VÇF…÷w&öæu÷v–ææW"çÆ–W'5³Òæ7F—fRÒfÇ6S°¢¦W&õö†VÇF…÷w&öæu÷v–ææW"æ÷WF6öÖRÒ÷WF6öÖS£¤V×Æ÷–VW5v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡¦W&õö†VÇF…÷w&öæu÷v–ææW"’’“° ¢WFò&VÖGW&Uö–ç6–FW%÷v–âÒ&6U÷7FFR‚“°¢&VÖGW&Uö–ç6–FW%÷v–âç†6RÒ†6S£¤f–æ—6†VC°¢&VÖGW&Uö–ç6–FW%÷v–âæ÷WF6öÖRÒ÷WF6öÖS£¤–ç6–FW%v–ã°¢&VÖGW&Uö–ç6–FW%÷v–âç&÷VæBÒ#°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡&VÖGW&Uö–ç6–FW%÷v–â’’“° ¢WFòV×Æ÷–VW5÷v–å÷v—F…ö–ç6–FW%öÆ—fRÒ&6U÷7FFR‚“°¢V×Æ÷–VW5÷v–å÷v—F…ö–ç6–FW%öÆ—fRç†6RÒ†6S£¤f–æ—6†VC°¢V×Æ÷–VW5÷v–å÷v—F…ö–ç6–FW%öÆ—fRæ÷WF6öÖRÒ÷WF6öÖS£¤V×Æ÷–VW5v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†V×Æ÷–VW5÷v–å÷v—F…ö–ç6–FW%öÆ—fR’’“° ¢WFòG&FUö–åöÆö&'’Ò&6U÷7FFR‚“°¢G&FUö–åöÆö&'’ç†6RÒ†6S£¤Æö&'“°¢G&FUö–åöÆö&'’ç&÷VæBÒ°¢G&FUö–åöÆö&'’çÆ–W'5³Òæ7F–öå÷7V&Ö—GFVBÒG'VS°¢G&FUö–åöÆö&'’çÆ–W'5³Òæ÷&FW"ÒG&FT7F–öã£¤†öÆC°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡G&FUö–åöÆö&'’’’“° ¢WFòG&FUö&Vf÷&U÷G&F–ærÒ&6U÷7FFR‚“°¢G&FUö&Vf÷&U÷G&F–ærç†6RÒ†6S£¤F—67W76–öã°¢G&FUö&Vf÷&U÷G&F–ærçÆ–W'5³Òæ7F–öå÷7V&Ö—GFVBÒG'VS°¢G&FUö&Vf÷&U÷G&F–ærçÆ–W'5³Òæ÷&FW"ÒG&FT7F–öã£¤†öÆC°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡G&FUö&Vf÷&U÷G&F–ær’’“° ¢WFòf÷FUö&Vf÷&U÷f÷F–ærÒ&6U÷7FFR‚“°¢f÷FUö&Vf÷&U÷f÷F–ærç†6RÒ†6S£¤F—67W76–öã°¢f÷FUö&Vf÷&U÷f÷F–ærçÆ–W'5³Òçf÷FU÷7V&Ö—GFVBÒG'VS°¢f÷FUö&Vf÷&U÷f÷F–ærçÆ–W'5³Òçf÷FU÷F&vWBÒ#°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡f÷FUö&Vf÷&U÷f÷F–ær’’“° ¢WFò6ÇVUö&Vf÷&Uö6ÇVU÷†6RÒ&6U÷7FFR‚“°¢6ÇVUö&Vf÷&Uö6ÇVU÷†6Ræ6ÇVU÷W6VBÒG'VS°¢6ÇVUö&Vf÷&Uö6ÇVU÷†6Ræ6ÇVU÷F&vWBÒ3°¢6ÇVUö&Vf÷&Uö6ÇVU÷†6Ræ6ÇVU÷&W7VÇBÒfÇ6S°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†6ÇVUö&Vf÷&Uö6ÇVU÷†6R’’“° ¢WFò–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBÒ&6U÷7FFR‚“°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBç†6RÒ†6S£¤6ÇVS°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBæ6ÇVU÷W6VBÒG'VS°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBæ6ÇVU÷F&vWBÒS°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBæ6ÇVU÷&W7VÇBÒfÇ6S°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBçÆ–W'5³Òæ6ÇVU÷W6VBÒG'VS°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBçÆ–W'5³Òæ6ÇVU÷F&vWBÒS°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBçÆ–W'5³Òæ6ÇVU÷&W7VÇBÒfÇ6S°¢–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWBçÆ–W'5³EÒæ7F—fRÒfÇ6S°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–æ7F—fUöf—'7E÷&÷VæEö6ÇVU÷F&vWB’’“° ¢WFòf'&–6FVEöf–æ—6†VEö7F—f—G’Ò&6U÷7FFR‚“°¢f'&–6FVEöf–æ—6†VEö7F—f—G’ç†6RÒ†6S£¤f–æ—6†VC°¢f'&–6FVEöf–æ—6†VEö7F—f—G’çÆ–W'5³Òæ7F—fRÒfÇ6S°¢f'&–6FVEöf–æ—6†VEö7F—f—G’çÆ–W'5³%Òæ7F—fRÒfÇ6S°¢f'&–6FVEöf–æ—6†VEö7F—f—G’æ÷WF6öÖRÒ÷WF6öÖS£¤V×Æ÷–VW5v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†f'&–6FVEöf–æ—6†VEö7F—f—G’’’“° ¢WFò–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’Ò&6U÷7FFR‚“°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’ç†6RÒ†6S£¤v—F–ætWfVçC°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’ç&÷VæBÒ#°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’æVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒS°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’çÆ–W'5³EÒæ7F—fRÒfÇ6S°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’çÆ–W'5³Òçf÷FU÷7V&Ö—GFVBÒG'VS°¢–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’çÆ–W'5³Òçf÷FU÷F&vWBÒS°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–æ7F—fU÷f÷FU÷F&vWE÷v—F†÷WEöÖ¦÷&—G’’’“° ¢WFòfÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"Ò&6U÷7FFR‚“°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"ç†6RÒ†6S£¤v—F–ætWfVçC°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"ç&÷VæBÒ#°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"æVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒS°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"çÆ–W'5³EÒæ7F—fRÒfÇ6S°¢f÷"‡7FC£§6—¦U÷B’Ò²’Â3²²¶’’°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"çÆ–W'5¶•Òçf÷FU÷7V&Ö—GFVBÒG'VS°¢fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"çÆ–W'5¶•Òçf÷FU÷F&vWBÒS°¢Ğ¢‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡fÆ–E÷&W6öÇfVE÷f÷FU÷FõöVÆ–Ö–æFVE÷Æ–W"’“° ¢WFòf÷FUö6÷VçEöÖ—6ÖF6‚Ò&6U÷7FFR‚“°¢f÷FUö6÷VçEöÖ—6ÖF6‚ç†6RÒ†6S£¥f÷F–æs°¢f÷FUö6÷VçEöÖ—6ÖF6‚æVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒC°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR‡f÷FUö6÷VçEöÖ—6ÖF6‚’’“° ¢WFò–æ7F—fU÷f÷FW"Ò&6U÷7FFR‚“°¢–æ7F—fU÷f÷FW"ç†6RÒ†6S£¥f÷F–æs°¢–æ7F—fU÷f÷FW"çÆ–W'5³EÒæ7F—fRÒfÇ6S°¢–æ7F—fU÷f÷FW"æVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒC°¢–æ7F—fU÷f÷FW"çÆ–W'5³EÒçf÷FU÷7V&Ö—GFVBÒG'VS°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–æ7F—fU÷f÷FW"’’“° ¢WFò6ÇVU÷v—F†÷WE÷&W7VÇBÒ&6U÷7FFR‚“°¢6ÇVU÷v—F†÷WE÷&W7VÇBæ6ÇVU÷W6VBÒG'VS°¢6ÇVU÷v—F†÷WE÷&W7VÇBæ6ÇVU÷F&vWBÒ3°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†6ÇVU÷v—F†÷WE÷&W7VÇB’’“° ¢WFò–æ6÷'&V7Eö6ÇVU÷&W7VÇBÒ&6U÷7FFR‚“°¢–æ6÷'&V7Eö6ÇVU÷&W7VÇBæ6ÇVU÷W6VBÒG'VS°¢–æ6÷'&V7Eö6ÇVU÷&W7VÇBæ6ÇVU÷F&vWBÒ3°¢–æ6÷'&V7Eö6ÇVU÷&W7VÇBæ6ÇVU÷&W7VÇBÒG'VS²òòF&vWB3—2âV×Æ÷–VP¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–æ6÷'&V7Eö6ÇVU÷&W7VÇB’’“° ¢òòöæ6R×fÆ–B6ÇVRF&vWB6âÆFW"&RVÆ–Ö–æFVC²&W6W'fRF†BfÆ–B†—7F÷&–6Â7FFRà¢WFòW6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBÒ&6U÷7FFR‚“°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBç†6RÒ†6S£¥f÷F–æs°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBç&÷VæBÒ#°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBçÆ–W'5³EÒæ7F—fRÒfÇ6S°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBæVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒC°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBæ6ÇVU÷W6VBÒG'VS°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBæ6ÇVU÷F&vWBÒS°¢W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVBæ6ÇVU÷&W7VÇBÒfÇ6S°¢‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡W6VEö6ÇVU÷F&vWEöÆFW%öVÆ–Ö–æFVB’“° ¢WFòfÆ–Eö†VÇF…÷v–âÒ&6U÷7FFR‚“°¢fÆ–Eö†VÇF…÷v–âç†6RÒ†6S£¤f–æ—6†VC°¢fÆ–Eö†VÇF…÷v–âæ6ö×ç’æ†VÇF‚Ò°¢fÆ–Eö†VÇF…÷v–âæ÷WF6öÖRÒ÷WF6öÖS£¤–ç6–FW%v–ã°¢‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡fÆ–Eö†VÇF…÷v–â’“° ¢WFò–çfÆ–Eöf–æÅ÷v–å÷v—F†÷WE÷f÷FRÒ&6U÷7FFR‚“°¢–çfÆ–Eöf–æÅ÷v–å÷v—F†÷WE÷f÷FRç†6RÒ†6S£¤f–æ—6†VC°¢–çfÆ–Eöf–æÅ÷v–å÷v—F†÷WE÷f÷FRç&÷VæBÒµ&÷VæD6÷VçC°¢–çfÆ–Eöf–æÅ÷v–å÷v—F†÷WE÷f÷FRæ÷WF6öÖRÒ÷WF6öÖS£¤–ç6–FW%v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–çfÆ–Eöf–æÅ÷v–å÷v—F†÷WE÷f÷FR’’“° ¢WFòfÆ–Eöf–æÅ÷7W'f—fÂÒ&6U÷7FFR‚“°¢fÆ–Eöf–æÅ÷7W'f—fÂç†6RÒ†6S£¤f–æ—6†VC°¢fÆ–Eöf–æÅ÷7W'f—fÂç&÷VæBÒµ&÷VæD6÷VçC°¢fÆ–Eöf–æÅ÷7W'f—fÂæVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒS°¢fÆ–Eöf–æÅ÷7W'f—fÂæ÷WF6öÖRÒ÷WF6öÖS£¤–ç6–FW%v–ã°¢f÷"†WFòbÆ–W"¢fÆ–Eöf–æÅ÷7W'f—fÂçÆ–W'2’Æ–W"çf÷FU÷7V&Ö—GFVBÒG'VS°¢‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡fÆ–Eöf–æÅ÷7W'f—fÂ’“° ¢WFò–çfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öå÷v—F†÷WE÷f÷FRÒ&6U÷7FFR‚“°¢–çfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öå÷v—F†÷WE÷f÷FRç†6RÒ†6S£¤f–æ—6†VC°¢–çfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öå÷v—F†÷WE÷f÷FRçÆ–W'5³Òæ7F—fRÒfÇ6S°¢–çfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öå÷v—F†÷WE÷f÷FRæ÷WF6öÖRÒ÷WF6öÖS£¤V×Æ÷–VW5v–ã°¢4„T4²‡&V¦V7FVB‡7FC£¦Ö÷fR†–çfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öå÷v—F†÷WE÷f÷FR’’“° ¢WFòfÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâÒ&6U÷7FFR‚“°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâç†6RÒ†6S£¤f–æ—6†VC°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâçÆ–W'5³Òæ7F—fRÒfÇ6S°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâæVÆ–v–&ÆU÷f÷FW'5öEö÷VâÒS°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâæ÷WF6öÖRÒ÷WF6öÖS£¤V×Æ÷–VW5v–ã°¢f÷"‡7FC£§6—¦U÷B’Ò²’ÃÒ3²²¶’’°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâçÆ–W'5¶•Òçf÷FU÷7V&Ö—GFVBÒG'VS°¢fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâçÆ–W'5¶•Òçf÷FU÷F&vWBÒ°¢Ğ¢‡fö–B”ÖF6ƒ£¦g&öÕ÷7FFR‡7FC£¦Ö÷fR‡fÆ–Eö–ç6–FW%öVÆ–Ö–æF–öâ’“°§Ğ §fö–BFW7Eö–æ—F–Æ—¦F–öåöæE÷7WÇ’‚’°¢ÖF6‚ÖF6‚‡&÷7FW"‚’“°¢4„T4²†ÖF6‚ç7FFR‚’çÆ–W'2ç6—¦R‚’ÓÒUR“°¢4„T4²†ÖF6‚ç7FFR‚’ç&W6W'fRÓÒSR“°¢4„T4²†ÖF6‚ç7FFR‚’çF÷FÅ÷7WÇ’ÓÒR“°¢4„T4²†ÖF6‚ç7FFR‚’æ6ö×ç’æ†VÇF‚ÓÒR“°¢4„T4²†ÖF6‚ç7FFR‚’æ6ö×ç’ç&–6RÓÒ“°¢4„T4²†ÖF6‚ç7FFR‚’ç†6RÓÒ†6S£¤Æö&'’“°¢7FC£§V–çC3%÷B–ç6–FW'2ÒÂ–çfW7F–vF÷'2ÒÂV×Æ÷–VW2Ò°¢f÷"†6öç7BWFòbÆ–W"¢ÖF6‚ç7FFR‚’çÆ–W'2’°¢4„T4²‡Æ–W"æ7&VF—G2ÓÒRbbÆ–W"ç6†&W2ÓÒRbbÆ–W"æ7F—fR“°¢–b‡Æ–W"ç&öÆRÓÒ&öÆS£¤–ç6–FW"’²¶–ç6–FW'3°¢VÇ6R–b‡Æ–W"ç&öÆRÓÒ&öÆS£¤–çfW7F–vF÷"’²¶–çfW7F–vF÷'3°¢VÇ6R²¶V×Æ÷–VW3°¢Ğ¢4„T4²†–ç6–FW'2ÓÒRbb–çfW7F–vF÷'2ÓÒRbbV×Æ÷–VW2ÓÒ5R“°¢4„T4²†ÖF6‚çV&Æ—6…öWfVçBƒ’æW'&÷"ÓÒW'&÷$6öFS£¥w&öæu†6R“°¢4„T4²†ÖF6‚ç7F'B‚’“°¢4„T4²†ÖF6‚çV&Æ—6…öWfVçBƒ2’æW'&÷"ÓÒW'&÷$6öFS£¤–çfÆ–DWfVçD–×7B“°¢4„T4²†ÖF6‚çV&Æ—6…öWfVçB‚Ó"’“°¢4„T4²†ÖF6‚ç7FFR‚’ç†6RÓÒ†6S£¤F—67W76–öâ“°¢6öç7BWFòw&öæuöÖ&¶WE÷†6RÒÖF6‚ç&W6öÇfUöÖ&¶WB‚“°¢4„T4²‡w&öæuöÖ&¶WE÷†6Rç7FGW2æW'&÷"ÓÒW'&÷$6öFS£¥w&öæu†6Rbbw&öæuöÖ&¶WE÷†6Ræ†5÷fÇVR‚’“°¢6öç7BWFòf—fRÒ7WÇ•÷ÆâƒR“°¢6öç7BWFò6—‡G•öf÷W"Ò7WÇ•÷ÆâƒcB“°¢4„T4²†f—fRbbf—fRÓçF÷FÂÓÒRbbf—fRÓçÆ–W%ö†VÆBÓÒSRbbf—fRÓç&W6W'fRÓÒSR“°¢4„T4²‡6—‡G•öf÷W"bb6—‡G•öf÷W"ÓçF÷FÂÓÒ#ƒRbb6—‡G•öf÷W"ÓçÆ–W%ö†VÆBÓÒcCRbb6—‡G•öf÷W"Óç&W6W'fRÓÒcCR“°¢4„T4²‚7WÇ•÷Æâƒ"’“°¢4„T4²‚7WÇ•÷ÆâƒcR’“° ¢&ööÂ&V¦V7FVBÒfÇ6S°¢G'’²ÖF6‚–çfÆ–B‡·³Â&öÆS£¤–ç6–FW'ÒÂ³"Â&öÆS£¤–çfW7F–vF÷'ÒÂ³2Â&öÆS£¤V×Æ÷–VWÒÂ³BÂ&öÆS£¤V×Æ÷–VWÒÂ³RÂ&öÆS£¤–ç6–FW'×Ò“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&V¦V7FVBÒG'VS²Ğ¢4„T4²‡&V¦V7FVB“° ¢WFòGWÆ–6FUö–G2Ò&÷7FW"‚“°¢GWÆ–6FUö–G5³EÒæ–BÒGWÆ–6FUö–G5³5Òæ–C°¢&V¦V7FVBÒfÇ6S°¢G'’²ÖF6‚–çfÆ–B†GWÆ–6FUö–G2“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&V¦V7FVBÒG'VS²Ğ¢4„T4²‡&V¦V7FVB“° ¢WFò¦W&õö–BÒ&÷7FW"‚“°¢¦W&õö–E³Òæ–BÒ°¢&V¦V7FVBÒfÇ6S°¢G'’²ÖF6‚–çfÆ–B‡¦W&õö–B“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&V¦V7FVBÒG'VS²Ğ¢4„T4²‡&V¦V7FVB“° ¢WFò–çfÆ–E÷&öÆRÒ&÷7FW"‚“°¢–çfÆ–E÷&öÆU³EÒç&öÆRÒ7FF–5ö67CÅ&öÆSâƒ“’“°¢&V¦V7FVBÒfÇ6S°¢G'’²ÖF6‚–çfÆ–B†–çfÆ–E÷&öÆR“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&V¦V7FVBÒG'VS²Ğ¢4„T4²‡&V¦V7FVB“°§Ğ §fö–BFW7E÷f&–&ÆU÷&÷7FW'5öæE÷7WÇ’‚’°¢7G'V7BW‡V7FVB²7FC£§6—¦U÷Bã²7FC£§6—¦U÷B–ç6–FW'3²7FC£§6—¦U÷B–çfW7F–vF÷'3²7FC£§6—¦U÷BV×Æ÷–VW3²Ó°¢6öç7FW‡"W‡V7FVBW‡V7FVEµ×·³2ÃÃÃÒÇ³BÃÃÃ'ÒÇ³RÃÃÃ7ÒÇ³‚ÃÃÃgÒÀ¢³’Ã"ÃÃgÒÇ³bÃ"ÃÃ7ÒÇ³#BÃ2Ã"Ã—ÒÇ³3"ÃBÃ"Ã#gÒÇ³cBÃ‚ÃBÃS'×Ó°¢f÷"†6öç7BWFòb—FVÒ¢W‡V7FVB’°¢6öç7BWFò6÷VçG2Ò&öÆUö6÷VçG2†—FVÒæâ“°¢6öç7BWFò7WÇ’Ò7WÇ•÷Æâ†—FVÒæâ“°¢4„T4²†6÷VçG2bb6÷VçG2Óæ–ç6–FW'2ÓÒ—FVÒæ–ç6–FW'2b`¢6÷VçG2Óæ–çfW7F–vF÷'2ÓÒ—FVÒæ–çfW7F–vF÷'2bb6÷VçG2ÓæV×Æ÷–VW2ÓÒ—FVÒæV×Æ÷–VW2“°¢4„T4²†6÷VçG2bb6÷VçG2ÓæV×Æ÷–VW2ãÒR“°¢4„T4²‡7WÇ’bb7WÇ’ÓçF÷FÂÓÒ#R¢—FVÒæâbb7WÇ’ÓçÆ–W%ö†VÆBÓÒR¢—FVÒæâb`¢7WÇ’Óç&W6W'fRÓÒR¢—FVÒæâ“°¢ÖF6‚ÖF6‚‡66ÆVE÷&÷7FW"†—FVÒæâ’“°¢4„T4²†ÖF6‚ç7FFR‚’çÆ–W'2ç6—¦R‚’ÓÒ—FVÒæâ“°¢4„T4²†ÖF6‚ç7FFR‚’çF÷FÅ÷7WÇ’ÓÒ#R¢—FVÒæâbbÖF6‚ç7FFR‚’ç&W6W'fRÓÒR¢—FVÒæâ“°¢7FC£§V–çCcE÷B†VÆBÒ°¢f÷"†6öç7BWFòbÆ–W"¢ÖF6‚ç7FFR‚’çÆ–W'2’°¢4„T4²‡Æ–W"æ7&VF—G2ÓÒµ7F'F–æt7&VF—G2bbÆ–W"ç6†&W2ÓÒµ7F'F–æu6†&W2“°¢†VÆB³ÒÆ–W"ç6†&W3°¢Ğ¢4„T4²††VÆB²ÖF6‚ç7FFR‚’ç&W6W'fRÓÒÖF6‚ç7FFR‚’çF÷FÅ÷7WÇ’“°¢Ğ¢4„T4²‚&öÆUö6÷VçG2ƒ"’“°¢4„T4²‚&öÆUö6÷VçG2ƒcR’“°¢f÷"†6öç7BWFò&E÷6—¦R¢·7FC£§6—¦U÷G³'ÒÂ7FC£§6—¦U÷G³cW×Ò’°¢&ööÂ&V¦V7FVBÒfÇ6S°¢G'’²ÖF6‚–çfÆ–B‡66ÆVE÷&÷7FW"†&E÷6—¦R’“²Ğ¢6F6‚†6öç7B7FC£¦–çfÆ–Eö&wVÖVçBb’²&V¦V7FVBÒG'VS²Ğ¢4„T4²‡&V¦V7FVB“°¢Ğ¢WFòÖ¸ã›h‘éì¶»§q«^t™JJNÂ‚ˆ]]È˜[YÜÙ[Ø]ØØ\Ø›İ[™\HH˜\ÙWÜİ]J
-NÂˆ˜[YÜÙ[Ø]ØØ\Ø›İ[™\Kœ^Y\œÖÌK˜Xİ[Û—ÜİX›Z]YHYNÂˆ˜[YÜÙ[Ø]ØØ\Ø›İ[™\Kœ^Y\œÖÌK›Ü™\ˆH˜YPXİ[Û”Ù[Âˆ˜[YÜÙ[Ø]ØØ\Ø›İ[™\Kœ^Y\œÖÌK˜Ü™Y]ÈHĞÜ™Y]˜[[˜ÙPØ\HLÂˆ
-›ÚY
-SX]Ú™œ›ÛWÜİ]Jİ›[İ™J˜[YÜÙ[Ø]ØØ\Ø›İ[™\JJNÂŸB‚›ÚY\İÙ›Ü›][WØ›İ[™Ê
-HÂˆ]]ÈİÙ\ˆHX\šÙ]Ùš^\™JKKL‹ŞÌ˜YPXİ[Û”Ù[_JNÂˆ]]ÈİÈHİÙ\‹œ™\ÛÛ™WÛX\šÙ]
+#include "darkpool/game_engine.hpp"
 
-NÂˆÒPÒÊİÈ	‰ˆİËO˜ÛÜÚ[™×ÚX[OH	‰ˆİËO˜ÛÜÚ[™×ÜšXÙHOHJNÂˆÒPÒÊİÈ	‰ˆİËO›İ]ÛÛYHOHİ]ÛÛYN’[œÚY\•Ú[ŠNÂˆÒPÒÊİÙ\‹œİ]J
-Kœ\ÙHOH\ÙN‘š[š\ÚY
-NÂ‚ˆ]]È\\ˆHX\šÙ]Ùš^\™JLL‹ŞÌ˜YPXİ[Û^__JNÂˆ]]ÈYÚH\\‹œ™\ÛÛ™WÛX\šÙ]
+#include <algorithm>
+#include <cstdlib>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
-NÂˆÒPÒÊYÚ	‰ˆYÚO˜ÛÜÚ[™×ÚX[OHL	‰ˆYÚO˜ÛÜÚ[™×ÜšXÙHOHL
-NÂ‚ˆ]]ÈYHHX\šÙ]Ùš^\™JKLŞÌ˜YPXİ[Û^_KÌK˜YPXİ[Û”Ù[_JNÂˆ]]È\]X[HYKœ™\ÛÛ™WÛX\šÙ]
+using namespace darkpool;
 
-NÂˆÒPÒÊ\]X[	‰ˆ\]X[O˜ÛÜÚ[™×ÚX[OHH	‰ˆ\]X[O˜ÛÜÚ[™×ÜšXÙHOHL
-NÂ‚ˆ]]È™XİÜˆHX\šÙ]Ùš^\™JKLKŞÌ˜YPXİ[Û^_KÌK˜YPXİ[Û^__JNÂˆ]]È^XİH™XİÜ‹œ™\ÛÛ™WÛX\šÙ]
+namespace {
 
-NÂˆÒPÒÊ^Xİ	‰ˆ^XİO˜ÛÜÚ[™×ÚX[OHÈ	‰ˆ^XİO˜ÛÜÚ[™×ÜšXÙHOHLÊNÂ‚ˆËÈ™\›ÈX[\È[™XYH\›Z[˜[[™Ø[››İ™H[ˆÜ[š[™ÈX\šÙ]İ]K‚ˆ›Üˆ
-İš[Ì—İX[HÓZ[’X[
-ÈNÈX[HÓX^X[È
-ÊÚX[
-HÂˆ›Üˆ
-İš[Ì—İšXÙHHÓZ[”šXÙNÈšXÙHHÓX^šXÙNÈ
-ÊÜšXÙJHÂˆ›Üˆ
-İš[Ì—İ]™[HLÈ]™[HÈ
-ÊÙ]™[
-HÂˆ›Üˆ
-İš[Ì—İ™]ˆËLK_JHÂˆİ™XİÜİœZ\İœÚ^™Wİ˜YPXİ[ÛˆÜ™\œÎÂˆYˆ
-™]
-HÜ™\œË™[\XÙWØ˜XÚÊK˜YPXİ[Û”Ù[
-NÂˆYˆ
-™]ˆ
-HÜ™\œË™[\XÙWØ˜XÚÊK˜YPXİ[Û^JNÂˆ]]ÈHHX\šÙ]Ùš^\™JX[šXÙK]™[İ›[İ™JÜ™\œÊJNÂˆÛÛœİ]]ÈÛİHKœ™\ÛÛ™WÛX\šÙ]
+int failures = 0;
 
-NÂˆÛÛœİ]]È^XİYÚX[Hİ˜Û[\
-X[
-È]™[
-È™]ÓZ[’X[ÓX^X[
-NÂˆÛÛœİ]]È^XİYÜšXÙHHİ˜Û[\
-šXÙH
-Èˆ
-ˆ]™[
-È™]ÓZ[”šXÙKÓX^šXÙJNÂˆÒPÒÊÛİ	‰ˆÛİO˜ÛÜÚ[™×ÚX[OH^XİYÚX[	‰ˆÛİO˜ÛÜÚ[™×ÜšXÙHOH^XİYÜšXÙJNÂˆİZ[Ì—İ[HÂˆ›Üˆ
-ÛÛœİ]]Éˆ^Y\ˆˆKœİ]J
-Kœ^Y\œÊH[
-ÏH^Y\‹œÚ\™\ÎÂˆÒPÒÊ[
-ÈKœİ]J
-Kœ™\Ù\™HOHKœİ]J
-Kİ[Üİ\JNÂˆBˆBˆBˆBŸB‚›ÚY\İÙ[[Z[˜]YÜ^Y\œ×ØØ[››İØXİÛÜ—Ø™Wİ\™Ù]Ê
-HÂˆX]ÚX]Ú
-›Üİ\Š
-JNÂˆÒPÒÊX]Úœİ\
+void check(bool condition, const char* expression, int line) {
+  if (!condition) {
+    ++failures;
+    std::cerr << "FAIL line " << line << ": " << expression << '\n';
+  }
+}
 
-JNÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆ›Üˆ
-ÛÛœİ^Y\’YYˆÌLKŒKÌKKL_JHÂˆÒPÒÊX]ÚœİX›Z]İ˜YJY˜YPXİ[Û’Û
-JNÂˆBˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+#define CHECK(x) check(static_cast<bool>(x), #x, __LINE__)
 
-Kš\×İ˜[YJ
-JNÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJŒL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJÌL
-JNÂˆÛÛœİ]]È[[Z[˜]YHX]Úœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊ[[Z[˜]Y	‰ˆ[[Z[˜]YO™[[Z[˜]YOHLJNÂˆÒPÒÊX]Úœİ]J
-Kœ^Y\œÖÍKœÚ\™\ÈOHLJNÈËÈÛ[™ÜÈ™[XZ[ˆY\ˆ[[Z[˜][Û‚‚ˆËÈH\İ\™\ÛÛ™Y›İHX^Hİ[Ú[]]È[[Z[˜]Y\™Ù][™BˆËÈ[[Z[˜]Y^Y\ˆX^H]™HİX›Z]YH›İKØXİ[Ûˆ™Y›Ü™H[[Z[˜][Û‹‚ˆ
-›ÚY
-SX]Ú™œ›ÛWÜİ]JX]Úœİ]J
-JNÂˆÒPÒÊX]Úœİ]J
-Kœ^Y\œÖÍK˜Xİ[Û—ÜİX›Z]Y
-NÂˆÒPÒÊX]Úœİ]J
-Kœ^Y\œÖÍK›Ü™\ˆOH˜YPXİ[Û’Û
-NÂ‚ˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊ[X]Úœİ]J
-Kœ^Y\œÖÍK˜Xİ[Û—ÜİX›Z]Y	‰ˆ[X]Úœİ]J
-Kœ^Y\œÖÍK›Ü™\ŠNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJL˜YPXİ[Û’Û
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+std::vector<PlayerSetup> roster() {
+  return {{10, Role::Insider}, {20, Role::Investigator}, {30, Role::Employee},
+          {40, Role::Employee}, {50, Role::Employee}};
+}
 
-Kš\×İ˜[YJ
-JNÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLL
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜[Y›İU\™Ù]
-NÂˆÒPÒÊX]ÚœİX›Z]İ›İJLİ›[Ü
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂŸB‚›ÚY\İØÛYWÜØÛÜWØ[™ÚY[\İ[˜ŞJ
-HÂˆX]ÚX]Ú
-›Üİ\Š
-JNÂˆİ\İ×İ˜Y[™ÊX]ÚJNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+std::vector<PlayerSetup> scaled_roster(std::size_t count) {
+  const auto counts = role_counts(count);
+  if (!counts) return {};
+  std::vector<PlayerSetup> players;
+  players.reserve(count);
+  for (std::size_t seat = 0; seat < count; ++seat) {
+    const auto role = seat < counts->insiders ? Role::Insider
+        : seat < counts->insiders + counts->investigators ? Role::Investigator : Role::Employee;
+    players.push_back({static_cast<PlayerId>(seat + 1U), role});
+  }
+  return players;
+}
 
-Kš\×İ˜[YJ
-JNÂˆÜ\˜][Û”™\İ[™\İ[ÂˆÒPÒÊ[X]Ú\ÙWØÛYJÌL™\İ[
-H	‰ˆ™\İ[™\œ›ÜˆOH\œ›ÜÛÙN“›İ[™\İYØ]ÜŠNÂˆÒPÒÊ[X]Ú\ÙWØÛYJŒŒ™\İ[
-H	‰ˆ™\İ[™\œ›ÜˆOH\œ›ÜÛÙN’[˜[YÛYU\™Ù]
-NÂˆÛÛœİ]]È[œİÙ\ˆHX]Ú\ÙWØÛYJŒL™\İ[
-NÂˆÒPÒÊ[œİÙ\‹š\×İ˜[YJ
-H	‰ˆ
-˜[œİÙ\ˆ	‰ˆ™\İ[
-NÂˆÛÛœİ]]È™]HHX]Ú\ÙWØÛYJŒL™\İ[
-NÂˆÒPÒÊ™]Kš\×İ˜[YJ
-H	‰ˆ
-œ™]H	‰ˆ™\İ[
-NÂˆÒPÒÊ[X]Ú\ÙWØÛYJŒÌ™\İ[
-H	‰ˆ™\İ[™\œ›ÜˆOH\œ›ÜÛÙNÛYP[™XYU\ÙY
-NÂˆÒPÒÊX]Úœİ]J
-K˜ÛYWİ\ÙY
-NÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂŸB‚›ÚY\İÛ][\WÚ[™\İYØ]Üœ×Ú]™WÚ[™\[™[ØÛY\Ê
-HÂˆX]ÚX]Ú
-ØØ[YÜ›Üİ\Š
-JNÂˆÒPÒÊX]Úœİ\
+PlayerState initial_player(PlayerId id, Role role) {
+  PlayerState player{};
+  player.id = id;
+  player.role = role;
+  return player;
+}
 
-JNÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+MatchState base_state() {
+  MatchState state;
+  state.players = {initial_player(10, Role::Insider), initial_player(20, Role::Investigator),
+                   initial_player(30, Role::Employee), initial_player(40, Role::Employee),
+                   initial_player(50, Role::Employee)};
+  state.reserve = 50;
+  state.total_supply = 100;
+  state.company = {5, 10};
+  state.phase = Phase::Trading;
+  state.round = 1;
+  return state;
+}
 
-Kš\×İ˜[YJ
-JNÂˆÜ\˜][Û”™\İ[š\œİÜ™\İ[ÂˆÛÛœİ]]Èš\œİHX]Ú\ÙWØÛYJKš\œİÜ™\İ[
-NÂˆÒPÒÊš\œİ	‰ˆ
-™š\œİ	‰ˆš\œİÜ™\İ[
-NÂˆÛÛœİ]]È™]HHX]Ú\ÙWØÛYJKš\œİÜ™\İ[
-NÂˆÒPÒÊ™]H	‰ˆ
-œ™]H	‰ˆš\œİÜ™\İ[
-NÂˆÛÛœİ]]Èİ]WØ™Y›Ü™WÜ™]\™Ù]HX]Ú˜Ø[›ÛšXØ[Üİ]J
-NÂˆÛÛœİ]]È]™[×Ø™Y›Ü™WÜ™]\™Ù]HX]Ú˜Ø[›ÛšXØ[Ù]™[Ê
-NÂˆÒPÒÊ[X]Ú\ÙWØÛYJ‹š\œİÜ™\İ[
-H	‰ˆš\œİÜ™\İ[™\œ›ÜˆOH\œ›ÜÛÙNÛYP[™XYU\ÙY
-NÂˆÒPÒÊX]Ú˜Ø[›ÛšXØ[Üİ]J
-HOHİ]WØ™Y›Ü™WÜ™]\™Ù]
-NÂˆÒPÒÊX]Ú˜Ø[›ÛšXØ[Ù]™[Ê
-HOH]™[×Ø™Y›Ü™WÜ™]\™Ù]
-NÂˆÜ\˜][Û”™\İ[ÙXÛÛ™Ü™\İ[ÂˆÛÛœİ]]ÈÙXÛÛ™HX]Ú\ÙWØÛYJK‹ÙXÛÛ™Ü™\İ[
-NÂˆÒPÒÊÙXÛÛ™	‰ˆ
-œÙXÛÛ™	‰ˆÙXÛÛ™Ü™\İ[
-NÂˆÒPÒÊX]Úœİ]J
-Kœ^Y\œÖÌ×K˜ÛYWİ\ÙY	‰ˆX]Úœİ]J
-Kœ^Y\œÖÍK˜ÛYWİ\ÙY
-NÂˆÒPÒÊX]Ú˜Ø[›ÛšXØ[Üİ]J
-K™š[™
-˜ÛYOMŒNŒHŠHOHİœİš[™Î›œÜÊNÂˆÒPÒÊX]Ú˜Ø[›ÛšXØ[Üİ]J
-K™š[™
-˜ÛYOMNŒŒHŠHOHİœİš[™Î›œÜÊNÂŸB‚›ÚY\İÜØ[YWİ\™Ù]ØÛYWÜ™]WØY\—İ\™Ù]Ù[[Z[˜][ÛŠ
-HÂˆX]ÚX]Ú
-›Üİ\Š
-JNÂˆÒPÒÊX]Úœİ\
+Match market_fixture(std::int32_t health, std::int32_t price, std::int32_t event,
+                     std::vector<std::pair<std::size_t, TradeAction>> actions,
+                     Shares reserve = 50) {
+  auto state = base_state();
+  state.company = {health, price};
+  state.event_impact = event;
+  state.reserve = reserve;
+  std::uint64_t held = 0;
+  for (const auto& [seat, action] : actions) {
+    state.players.at(seat).action_submitted = true;
+    state.players.at(seat).order = action;
+    if (action == TradeAction::Sell) ++state.players.at(seat).shares;
+  }
+  for (const auto& player : state.players) held += player.shares;
+  if (held + state.reserve != state.total_supply) {
+    const auto delta = static_cast<std::int64_t>(state.total_supply) - static_cast<std::int64_t>(held + state.reserve);
+    if (delta >= 0) state.reserve += static_cast<Shares>(delta);
+    else state.reserve -= static_cast<Shares>(-delta);
+  }
+  return Match::from_state(std::move(state));
+}
 
-JNÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+void start_to_trading(Match& match, std::int32_t event) {
+  CHECK(match.start());
+  CHECK(match.publish_event(event));
+  CHECK(match.open_trading());
+}
 
-JNÂˆÜ\˜][Û”™\İ[™\İ[ÂˆÛÛœİ]]ÈÛYHHX]Ú\ÙWØÛYJŒL™\İ[
-NÂˆÒPÒÊÛYH	‰ˆJ˜ÛYH	‰ˆ™\İ[
-NÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJŒL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJÌL
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™Wİ›İ\Ê
-KO™[[Z[˜]YOHLJNÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+void round_to_voting(Match& match, std::int32_t event) {
+  CHECK(match.publish_event(event));
+  CHECK(match.open_trading());
+  const auto market = match.resolve_market();
+  CHECK(market.has_value());
+  if (match.state().phase == Phase::Clue) CHECK(match.open_voting());
+}
 
-JNÂˆÛÛœİ]]È™]HHX]Ú\ÙWØÛYJŒL™\İ[
-NÂˆÒPÒÊ™]H	‰ˆJœ™]H	‰ˆ™\İ[
-NÂŸB‚›ÚY\İÛ][WÚ[œÚY\—İšXİÜWÚ\×İX[WØ˜\ÙY
+void finish_round_without_elimination(Match& match) {
+  for (const auto& p : match.state().players) {
+    if (p.active) CHECK(match.submit_vote(p.id, std::nullopt));
+  }
+  CHECK(match.resolve_votes().has_value());
+}
 
-HÂˆX]ÚX]Ú
-ØØ[YÜ›Üİ\ŠJJNÂˆÒPÒÊX]Úœİ\
+void test_state_fixture_invariants() {
+  const auto rejected = [](MatchState state) {
+    try { (void)Match::from_state(std::move(state)); }
+    catch (const std::invalid_argument&) { return true; }
+    return false;
+  };
 
-JNÂˆ›İ[™İ×İ›İ[™ÊX]Ú
-NÂˆ›Üˆ
-^Y\’Y›İ\ˆHÎÈ›İ\ˆHÎÈ
-Êİ›İ\ŠHÒPÒÊX]ÚœİX›Z]İ›İJ›İ\‹JJNÂˆÛÛœİ]]Èš\œİHX]Úœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊš\œİ	‰ˆš\œİO™[[Z[˜]YOHUH	‰ˆš\œİO›İ]ÛÛYHOHİ]ÛÛYN“›Û™JNÂˆÒPÒÊX]Úœİ]J
-Kœ\ÙHOH\ÙN]ØZ][™Ñ]™[
-NÂ‚ˆ›İ[™İ×İ›İ[™ÊX]Ú
-NÂˆ›Üˆ
-^Y\’Y›İ\ˆHÎÈ›İ\ˆHÎÈ
-Êİ›İ\ŠHÒPÒÊX]ÚœİX›Z]İ›İJ›İ\‹ŠJNÂˆÛÛœİ]]È\İHX]Úœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊ\İ	‰ˆ\İO™[[Z[˜]YOH•H	‰ˆ\İO›İ]ÛÛYHOHİ]ÛÛYN‘[\ŞYY\ÕÚ[ŠNÂˆÒPÒÊX]Úœİ]J
-Kœ\ÙHOH\ÙN‘š[š\ÚY
-NÂŸB‚›ÚY\İİ˜\šXX›Wİ›İ[™×İ™\ÚÛ×Ø[™İX[WÜİ\š]˜[
+  auto finished_without_outcome = base_state();
+  finished_without_outcome.phase = Phase::Finished;
+  CHECK(rejected(std::move(finished_without_outcome)));
 
-HÂˆX]ÚZ[š[][JØØ[YÜ›Üİ\ŠÊJNÂˆÒPÒÊZ[š[][Kœİ\
+  auto live_with_outcome = base_state();
+  live_with_outcome.outcome = Outcome::InsiderWin;
+  CHECK(rejected(std::move(live_with_outcome)));
 
-JNÂˆ›İ[™İ×İ›İ[™ÊZ[š[][K
-NÂˆÒPÒÊZ[š[][KœİX›Z]İ›İJKÊJNÂˆÒPÒÊZ[š[][KœİX›Z]İ›İJ‹ÊJNÈËÈˆÙˆÈ\ÈHİšXİXZ›Üš]K‚ˆÛÛœİ]]ÈZ[—İ›İHHZ[š[][Kœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊZ[—İ›İH	‰ˆZ[—İ›İKO™[[Z[˜]YOHÕH	‰ˆZ[—İ›İKO™[YÚX›Wİ›İ\œÈOHÕJNÂ‚ˆX]ÚZYÚİYJØØ[YÜ›Üİ\Š
-JNÂˆÒPÒÊZYÚİYKœİ\
+  auto zero_health_live = base_state();
+  zero_health_live.company.health = 0;
+  CHECK(rejected(std::move(zero_health_live)));
 
-JNÂˆ›İ[™İ×İ›İ[™ÊZYÚİYK
-NÂˆ›Üˆ
-^Y\’Y›İ\ˆHNÈ›İ\ˆHÈ
-Êİ›İ\ŠHÒPÒÊZYÚİYKœİX›Z]İ›İJ›İ\‹
-JNÂˆÛÛœİ]]ÈYHHZYÚİYKœ™\ÛÛ™Wİ›İ\Ê
-NÈËÈÙˆ\È›İİšXİH[Ü™H[ˆ[‹‚ˆÒPÒÊYH	‰ˆ]YKO™[[Z[˜]Y	‰ˆYKO™[YÚX›Wİ›İ\œÈOHJNÂ‚ˆX]ÚÛ×Ú[œÚY\œ×Ü™[XZ[ŠØØ[YÜ›Üİ\ŠJJNÂˆÒPÒÊÛ×Ú[œÚY\œ×Ü™[XZ[‹œİ\
+  auto zero_health_wrong_winner = base_state();
+  zero_health_wrong_winner.phase = Phase::Finished;
+  zero_health_wrong_winner.company.health = 0;
+  zero_health_wrong_winner.players[0].active = false;
+  zero_health_wrong_winner.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(zero_health_wrong_winner)));
 
-JNÂˆ›İ[™İ×İ›İ[™ÊÛ×Ú[œÚY\œ×Ü™[XZ[‹
-NÂˆ›Üˆ
-^Y\’Y›İ\ˆHÎÈ›İ\ˆHÎÈ
-Êİ›İ\ŠHÒPÒÊÛ×Ú[œÚY\œ×Ü™[XZ[‹œİX›Z]İ›İJ›İ\‹JJNÂˆÒPÒÊÛ×Ú[œÚY\œ×Ü™[XZ[‹œ™\ÛÛ™Wİ›İ\Ê
-KO›İ]ÛÛYHOHİ]ÛÛYN“›Û™JNÂˆ›İ[™İ×İ›İ[™ÊÛ×Ú[œÚY\œ×Ü™[XZ[‹
-NÂˆš[š\ÚÜ›İ[™İÚ]İ]Ù[[Z[˜][ÛŠÛ×Ú[œÚY\œ×Ü™[XZ[ŠNÂˆ›İ[™İ×İ›İ[™ÊÛ×Ú[œÚY\œ×Ü™[XZ[‹
-NÂˆš[š\ÚÜ›İ[™İÚ]İ]Ù[[Z[˜][ÛŠÛ×Ú[œÚY\œ×Ü™[XZ[ŠNÂˆÒPÒÊÛ×Ú[œÚY\œ×Ü™[XZ[‹œİ]J
-K›İ]ÛÛYHOHİ]ÛÛYN’[œÚY\•Ú[ŠNÂ‚ˆ]]ÈX[Üİ]HHX]Ú
-ØØ[YÜ›Üİ\ŠJJKœİ]J
-NÂˆX[Üİ]Kœ\ÙHH\ÙN•˜Y[™ÎÂˆX[Üİ]Kœ›İ[™HNÂˆX[Üİ]K˜ÛÛ\[KšX[HNÂˆX[Üİ]K™]™[Ú[\XİHLÂˆX]ÚÛÛ\ÙHHX]Ú™œ›ÛWÜİ]Jİ›[İ™JX[Üİ]JJNÂˆÛÛœİ]]ÈX\šÙ]HÛÛ\ÙKœ™\ÛÛ™WÛX\šÙ]
+  auto premature_insider_win = base_state();
+  premature_insider_win.phase = Phase::Finished;
+  premature_insider_win.outcome = Outcome::InsiderWin;
+  premature_insider_win.round = 2;
+  CHECK(rejected(std::move(premature_insider_win)));
 
-NÂˆÒPÒÊX\šÙ]	‰ˆX\šÙ]O˜ÛÜÚ[™×ÚX[OH	‰ˆX\šÙ]O›İ]ÛÛYHOHİ]ÛÛYN’[œÚY\•Ú[ŠNÂŸB‚›ÚY\İÙ[[Z[˜]YÜÜXÚX[Ü›Û\×ØØ[››İØXİ
+  auto employees_win_with_insider_alive = base_state();
+  employees_win_with_insider_alive.phase = Phase::Finished;
+  employees_win_with_insider_alive.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(employees_win_with_insider_alive)));
 
-HÂˆ›Üˆ
-ÛÛœİ^Y\’Y[[Z[˜]YÚYˆÔ^Y\’YÌ_K^Y\’YÌß_JHÂˆ]]Èİ]HHX]Ú
-ØØ[YÜ›Üİ\ŠJJKœİ]J
-NÂˆİ]Kœ\ÙHH\ÙN]ØZ][™Ñ]™[Âˆİ]Kœ›İ[™HÂˆİ]K™[YÚX›Wİ›İ\œ×Ø]ÛÜ[ˆHNÂˆ]]È[[Z[˜]YHİ™š[™ÚYŠİ]Kœ^Y\œË˜™YÚ[Š
-Kİ]Kœ^Y\œË™[™
+  auto trade_in_lobby = base_state();
+  trade_in_lobby.phase = Phase::Lobby;
+  trade_in_lobby.round = 0;
+  trade_in_lobby.players[0].action_submitted = true;
+  trade_in_lobby.players[0].order = TradeAction::Hold;
+  CHECK(rejected(std::move(trade_in_lobby)));
 
-KˆÙ[[Z[˜]YÚYJÛÛœİ^Y\”İ]Iˆ^Y\ŠHÈ™]\›ˆ^Y\‹šYOH[[Z[˜]YÚYÈJNÂˆ[[Z[˜]YO˜Xİ]™HH˜[ÙNÂˆİZ[Ì—İ›İ\ÈHÂˆ›Üˆ
-]]Éˆ›İ\ˆˆİ]Kœ^Y\œÊHÂˆYˆ
-›İ\‹˜Xİ]™H	‰ˆ›İ\ÈUJHÂˆ›İ\‹›İWÜİX›Z]YHYNÂˆ›İ\‹›İWİ\™Ù]H[[Z[˜]YÚYÂˆ
-Êİ›İ\ÎÂˆBˆBˆX]ÚX]ÚHX]Ú™œ›ÛWÜİ]Jİ›[İ™Jİ]JJNÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-
-JNÂˆÜ\˜][Û”™\İ[™\İ[ÂˆÒPÒÊ[X]Úš[œÚY\—Ú[
-[[Z[˜]YÚY™\İ[
-H	‰ˆ™\İ[™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJ[[Z[˜]YÚY˜YPXİ[Û’Û
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+  auto trade_before_trading = base_state();
+  trade_before_trading.phase = Phase::Discussion;
+  trade_before_trading.players[0].action_submitted = true;
+  trade_before_trading.players[0].order = TradeAction::Hold;
+  CHECK(rejected(std::move(trade_before_trading)));
 
-JNÂˆÒPÒÊ[X]Ú\ÙWØÛYJ[[Z[˜]YÚY‹™\İ[
-H	‰ˆ™\İ[™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJ[[Z[˜]YÚYİ›[Ü
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜Xİ]™T^Y\ŠNÂˆBŸB‚›ÚY\İİ›İWÙYÙ\×Ø[™İšXİÜšY\Ê
-HÂˆX]ÚYY
-›Üİ\Š
-JNÂˆÒPÒÊYYœİ\
+  auto vote_before_voting = base_state();
+  vote_before_voting.phase = Phase::Discussion;
+  vote_before_voting.players[0].vote_submitted = true;
+  vote_before_voting.players[0].vote_target = 20;
+  CHECK(rejected(std::move(vote_before_voting)));
 
-JNÂˆ›İ[™İ×İ›İ[™ÊYY
-NÂˆÒPÒÊYYœİX›Z]İ›İJLŒ
-JNÂˆÒPÒÊYYœİX›Z]İ›İJŒÌ
-JNÂˆÒPÒÊYYœİX›Z]İ›İJÌİ›[Ü
-JNÂˆÒPÒÊYYœİX›Z]İ›İJİ›[Ü
-JNÂˆËÈ^Y\ˆL\ÈZ\ÜÚ[™Îˆ]\È[ˆXœİ[[Ûˆ[™™[XZ[œÈ[ˆOMK‚ˆÛÛœİ]]È›×ÛXZ›Üš]HHYYœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊ›×ÛXZ›Üš]H	‰ˆ[›×ÛXZ›Üš]KO™[[Z[˜]Y	‰ˆ›×ÛXZ›Üš]KO™[YÚX›Wİ›İ\œÈOHUJNÂˆÒPÒÊYYœİ]J
-Kœ›İ[™OH•H	‰ˆYYœİ]J
-Kœ\ÙHOH\ÙN]ØZ][™Ñ]™[
-NÂ‚ˆX]Ú[œÚY\—ØØ]YÚ
-›Üİ\Š
-JNÂˆÒPÒÊ[œÚY\—ØØ]YÚœİ\
+  auto clue_before_clue_phase = base_state();
+  clue_before_clue_phase.clue_used = true;
+  clue_before_clue_phase.clue_target = 30;
+  clue_before_clue_phase.clue_result = false;
+  CHECK(rejected(std::move(clue_before_clue_phase)));
 
-JNÂˆ›İ[™İ×İ›İ[™Ê[œÚY\—ØØ]YÚ
-NÂˆÒPÒÊ[œÚY\—ØØ]YÚœİX›Z]İ›İJŒL
-JNÂˆÒPÒÊ[œÚY\—ØØ]YÚœİX›Z]İ›İJÌL
-JNÂˆÒPÒÊ[œÚY\—ØØ]YÚœİX›Z]İ›İJL
-JNÂˆÛÛœİ]]ÈØ]YÚH[œÚY\—ØØ]YÚœ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊØ]YÚ	‰ˆØ]YÚO™[[Z[˜]YOHLH	‰ˆØ]YÚO›İ]ÛÛYHOHİ]ÛÛYN‘[\ŞYY\ÕÚ[ŠNÂˆÒPÒÊ[œÚY\—ØØ]YÚœİ]J
-Kœ\ÙHOH\ÙN‘š[š\ÚY
-NÂ‚ˆX]Ú[\ŞYYWÛİ]
-›Üİ\Š
-JNÂˆÒPÒÊ[\ŞYYWÛİ]œİ\
+  auto inactive_first_round_clue_target = base_state();
+  inactive_first_round_clue_target.phase = Phase::Clue;
+  inactive_first_round_clue_target.clue_used = true;
+  inactive_first_round_clue_target.clue_target = 50;
+  inactive_first_round_clue_target.clue_result = false;
+  inactive_first_round_clue_target.players[1].clue_used = true;
+  inactive_first_round_clue_target.players[1].clue_target = 50;
+  inactive_first_round_clue_target.players[1].clue_result = false;
+  inactive_first_round_clue_target.players[4].active = false;
+  CHECK(rejected(std::move(inactive_first_round_clue_target)));
 
-JNÂˆ›İ[™İ×İ›İ[™Ê[\ŞYYWÛİ]
-NÂˆÒPÒÊ[\ŞYYWÛİ]œİX›Z]İ›İJLÌ
-JNÂˆÒPÒÊ[\ŞYYWÛİ]œİX›Z]İ›İJŒÌ
-JNÂˆÒPÒÊ[\ŞYYWÛİ]œİX›Z]İ›İJÌ
-JNÂˆÛÛœİ]]È[[Z[˜]YÙ[\ŞYYHH[\ŞYYWÛİ]œ™\ÛÛ™Wİ›İ\Ê
-NÂˆÒPÒÊ[[Z[˜]YÙ[\ŞYYH	‰ˆ[[Z[˜]YÙ[\ŞYYKO™[[Z[˜]YOHÌJNÂˆÒPÒÊ[\ŞYYWÛİ]œİ]J
-Kœ^Y\œÖÌ—KœÚ\™\ÈOHLJNÂˆÒPÒÊ[\ŞYYWÛİ]œİX›Z]İ›İJÌL
-K™\œ›ÜˆOH\œ›ÜÛÙN•Ü›Û™Ô\ÙJNÈËÈ™^›İ[™›İÜ[™Y‚ˆX]Úš[˜[Üİ\š]˜[
-›Üİ\Š
-JNÂˆÒPÒÊš[˜[Üİ\š]˜[œİ\
+  auto fabricated_finished_activity = base_state();
+  fabricated_finished_activity.phase = Phase::Finished;
+  fabricated_finished_activity.players[0].active = false;
+  fabricated_finished_activity.players[2].active = false;
+  fabricated_finished_activity.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(fabricated_finished_activity)));
 
-JNÂˆ›İ[™İ×İ›İ[™Êš[˜[Üİ\š]˜[
-NÂˆš[š\ÚÜ›İ[™İÚ]İ]Ù[[Z[˜][ÛŠš[˜[Üİ\š]˜[
-NÂˆ›İ[™İ×İ›İ[™Êš[˜[Üİ\š]˜[
-NÂˆš[š\ÚÜ›İ[™İÚ]İ]Ù[[Z[˜][ÛŠš[˜[Üİ\š]˜[
-NÂˆ›İ[™İ×İ›İ[™Êš[˜[Üİ\š]˜[
-NÂˆš[š\ÚÜ›İ[™İÚ]İ]Ù[[Z[˜][ÛŠš[˜[Üİ\š]˜[
-NÂˆÒPÒÊš[˜[Üİ\š]˜[œİ]J
-K›İ]ÛÛYHOHİ]ÛÛYN’[œÚY\•Ú[ŠNÂŸB‚›ÚY\İÚ[˜[Yİ›İ\×Ø[™Ù[[Z[˜]Yİ›İ\Š
-HÂˆX]ÚX]Ú
-›Üİ\Š
-JNÂˆÒPÒÊX]Úœİ\
+  auto inactive_vote_target_without_majority = base_state();
+  inactive_vote_target_without_majority.phase = Phase::AwaitingEvent;
+  inactive_vote_target_without_majority.round = 2;
+  inactive_vote_target_without_majority.eligible_voters_at_open = 5;
+  inactive_vote_target_without_majority.players[4].active = false;
+  inactive_vote_target_without_majority.players[0].vote_submitted = true;
+  inactive_vote_target_without_majority.players[0].vote_target = 50;
+  CHECK(rejected(std::move(inactive_vote_target_without_majority)));
 
-JNÂˆ›İ[™İ×İ›İ[™ÊX]Ú
-NÂˆÒPÒÊX]ÚœİX›Z]İ›İJLL
-K™\œ›ÜˆOH\œ›ÜÛÙN’[˜[Y›İU\™Ù]
-NÂˆÒPÒÊX]ÚœİX›Z]İ›İJLNNJK™\œ›ÜˆOH\œ›ÜÛÙN’[˜[Y›İU\™Ù]
-NÂˆÒPÒÊX]ÚœİX›Z]İ›İJLŒ
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLİ›[Ü
-K™\œ›ÜˆOH\œ›ÜÛÙN•›İP[™XYTİX›Z]Y
-NÂŸB‚›ÚY^WÜ™\^JX]Ú	ˆX]Ú
-HÂˆÒPÒÊX]ÚœX›\ÚÙ]™[
-LJJNÂˆÒPÒÊX]Ú›Ü[—İ˜Y[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJL˜YPXİ[Û^JJNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJŒ˜YPXİ[Û’Û
-JNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJL˜YPXİ[Û”Ù[
-JNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJÌ˜YPXİ[Û^JJNÂˆÒPÒÊX]ÚœİX›Z]İ˜YJ˜YPXİ[Û’Û
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™WÛX\šÙ]
+  auto valid_resolved_vote_to_eliminated_player = base_state();
+  valid_resolved_vote_to_eliminated_player.phase = Phase::AwaitingEvent;
+  valid_resolved_vote_to_eliminated_player.round = 2;
+  valid_resolved_vote_to_eliminated_player.eligible_voters_at_open = 5;
+  valid_resolved_vote_to_eliminated_player.players[4].active = false;
+  for (std::size_t i = 0; i < 3; ++i) {
+    valid_resolved_vote_to_eliminated_player.players[i].vote_submitted = true;
+    valid_resolved_vote_to_eliminated_player.players[i].vote_target = 50;
+  }
+  (void)Match::from_state(std::move(valid_resolved_vote_to_eliminated_player));
 
-Kš\×İ˜[YJ
-JNÂˆÒPÒÊX]Ú›Ü[—İ›İ[™Ê
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLİ›[Ü
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJŒL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJÌL
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJİ›[Ü
-JNÂˆÒPÒÊX]ÚœİX›Z]İ›İJLİ›[Ü
-JNÂˆÒPÒÊX]Úœ™\ÛÛ™Wİ›İ\Ê
-Kš\×İ˜[YJ
-JNÂŸB‚›ÚY\İÙ]\›Z[š\İX×Ü™\^J
-HÂˆX]Úš\œİ
-›Üİ\Š
-JNÂˆX]ÚÙXÛÛ™
-›Üİ\Š
-JNÂˆÒPÒÊš\œİœİ\
+  auto vote_count_mismatch = base_state();
+  vote_count_mismatch.phase = Phase::Voting;
+  vote_count_mismatch.eligible_voters_at_open = 4;
+  CHECK(rejected(std::move(vote_count_mismatch)));
 
-H	‰ˆÙXÛÛ™œİ\
+  auto inactive_voter = base_state();
+  inactive_voter.phase = Phase::Voting;
+  inactive_voter.players[4].active = false;
+  inactive_voter.eligible_voters_at_open = 4;
+  inactive_voter.players[4].vote_submitted = true;
+  CHECK(rejected(std::move(inactive_voter)));
 
-JNÂˆ^WÜ™\^Jš\œİ
-NÂˆ^WÜ™\^JÙXÛÛ™
-NÂˆÒPÒÊš\œİ˜Ø[›ÛšXØ[Üİ]J
-HOHÙXÛÛ™˜Ø[›ÛšXØ[Üİ]J
-JNÂˆÒPÒÊš\œİ˜Ø[›ÛšXØ[Ù]™[Ê
-HOHÙXÛÛ™˜Ø[›ÛšXØ[Ù]™[Ê
-JNÂ‚ˆX]Ú\œš]˜[ØJ›Üİ\Š
-JNÂˆX]Ú\œš]˜[ØŠ›Üİ\Š
-JNÂˆİ\İ×İ˜Y[™Ê\œš]˜[ØK
-NÂˆİ\İ×İ˜Y[™Ê\œš]˜[Ø‹
-NÂˆÒPÒÊ\œš]˜[ØKœİX›Z]İ˜YJL˜YPXİ[Û^JJNÂˆÒPÒÊ\œš]˜[ØKœİX›Z]İ˜YJŒ˜YPXİ[Û”Ù[
-JNÂˆÒPÒÊ\œš]˜[Ø‹œİX›Z]İ˜YJŒ˜YPXİ[Û”Ù[
-JNÂˆÒPÒÊ\œš]˜[Ø‹œİX›Z]İ˜YJL˜YPXİ[Û^JJNÂˆÒPÒÊ\œš]˜[ØKœ™\ÛÛ™WÛX\šÙ]
+  auto clue_without_result = base_state();
+  clue_without_result.clue_used = true;
+  clue_without_result.clue_target = 30;
+  CHECK(rejected(std::move(clue_without_result)));
 
-Kš\×İ˜[YJ
-JNÂˆÒPÒÊ\œš]˜[Ø‹œ™\ÛÛ™WÛX\šÙ]
+  auto incorrect_clue_result = base_state();
+  incorrect_clue_result.clue_used = true;
+  incorrect_clue_result.clue_target = 30;
+  incorrect_clue_result.clue_result = true; // target 30 is an Employee
+  CHECK(rejected(std::move(incorrect_clue_result)));
 
-Kš\×İ˜[YJ
-JNÂˆÒPÒÊ\œš]˜[ØK˜Ø[›ÛšXØ[Üİ]J
-HOH\œš]˜[Ø‹˜Ø[›ÛšXØ[Üİ]J
-JNÂŸB‚ŸHËÈ˜[Y\ÜXÙB‚š[XZ[Š
-HÂˆ\İÜİ]WÙš^\™WÚ[˜\šX[Ê
-NÂˆ\İÚ[š]X[^˜][Û—Ø[™Üİ\J
-NÂˆ\İİ˜\šXX›WÜ›Üİ\œ×Ø[™Üİ\J
-NÂˆ\İİ˜\šXX›WÛX\šÙ]ØÛÛœÙ\˜][Û—Ø[™Ù]\›Z[š\ÛJ
-NÂˆ\İÛ›Ü›X[Ùš]™WÜ^Y\—İÛÜšÙYÙ^[\J
-NÂˆ\İÜ™\Ù\™WÜÚÜYÙWØ[™ØÛÛœÙ\˜][ÛŠ
-NÂˆ\İÚ[˜[Yİ˜Y\×Ø[™ØÜ™Y]ØØ\
+  // A once-valid clue target can later be eliminated; preserve that valid historical state.
+  auto used_clue_target_later_eliminated = base_state();
+  used_clue_target_later_eliminated.phase = Phase::Voting;
+  used_clue_target_later_eliminated.round = 2;
+  used_clue_target_later_eliminated.players[4].active = false;
+  used_clue_target_later_eliminated.eligible_voters_at_open = 4;
+  used_clue_target_later_eliminated.clue_used = true;
+  used_clue_target_later_eliminated.clue_target = 50;
+  used_clue_target_later_eliminated.clue_result = false;
+  (void)Match::from_state(std::move(used_clue_target_later_eliminated));
 
-NÂˆ\İİ˜YWÛÜ™\—Ü™XÛÛ™][Ûœ×Ú[—Ùš^\™Wİ˜[Y][ÛŠ
-NÂˆ\İÙ›Ü›][WØ›İ[™Ê
-NÂˆ\İØÛYWÜØÛÜWØ[™ÚY[\İ[˜ŞJ
-NÂˆ\İÛ][\WÚ[™\İYØ]Üœ×Ú]™WÚ[™\[™[ØÛY\Ê
-NÂˆ\İÜØ[YWİ\™Ù]ØÛYWÜ™]WØY\—İ\™Ù]Ù[[Z[˜][ÛŠ
-NÂˆ\İÛ][WÚ[œÚY\—İšXİÜWÚ\×İX[WØ˜\ÙY
+  auto valid_health_win = base_state();
+  valid_health_win.phase = Phase::Finished;
+  valid_health_win.company.health = 0;
+  valid_health_win.outcome = Outcome::InsiderWin;
+  (void)Match::from_state(std::move(valid_health_win));
 
-NÂˆ\İİ˜\šXX›Wİ›İ[™×İ™\ÚÛ×Ø[™İX[WÜİ\š]˜[
+  auto invalid_final_win_without_vote = base_state();
+  invalid_final_win_without_vote.phase = Phase::Finished;
+  invalid_final_win_without_vote.round = kRoundCount;
+  invalid_final_win_without_vote.outcome = Outcome::InsiderWin;
+  CHECK(rejected(std::move(invalid_final_win_without_vote)));
 
-NÂˆ\İÙ[[Z[˜]YÜÜXÚX[Ü›Û\×ØØ[››İØXİ
+  auto valid_final_survival = base_state();
+  valid_final_survival.phase = Phase::Finished;
+  valid_final_survival.round = kRoundCount;
+  valid_final_survival.eligible_voters_at_open = 5;
+  valid_final_survival.outcome = Outcome::InsiderWin;
+  for (auto& player : valid_final_survival.players) player.vote_submitted = true;
+  (void)Match::from_state(std::move(valid_final_survival));
 
-NÂˆ\İİ›İWÙYÙ\×Ø[™İšXİÜšY\Ê
-NÂˆ\İÚ[˜[Yİ›İ\×Ø[™Ù[[Z[˜]Yİ›İ\Š
-NÂˆ\İÙ[[Z[˜]YÜ^Y\œ×ØØ[››İØXİÛÜ—Ø™Wİ\™Ù]Ê
-NÂˆ\İÙ]\›Z[š\İX×Ü™\^J
-NÂˆYˆ
-˜Z[\™\ÈOH
-HÂˆİ˜Ù\œˆ˜Z[\™\Èˆ\İ\ÜÙ\[ÛŠÊH˜Z[YˆÂˆ™]\›ˆVUÑRST‘NÂˆBˆİ˜Ûİ][T’ÔÓÓÌH[™Ú[™H\İÈ\ÜÙYˆÂˆ™]\›ˆVUÔÕPĞÑTÔÎÂŸB‚
+  auto invalid_insider_elimination_without_vote = base_state();
+  invalid_insider_elimination_without_vote.phase = Phase::Finished;
+  invalid_insider_elimination_without_vote.players[0].active = false;
+  invalid_insider_elimination_without_vote.outcome = Outcome::EmployeesWin;
+  CHECK(rejected(std::move(invalid_insider_elimination_without_vote)));
+
+  auto valid_insider_elimination = base_state();
+  valid_insider_elimination.phase = Phase::Finished;
+  valid_insider_elimination.players[0].active = false;
+  valid_insider_elimination.eligible_voters_at_open = 5;
+  valid_insider_elimination.outcome = Outcome::EmployeesWin;
+  for (std::size_t i = 1; i <= 3; ++i) {
+    valid_insider_elimination.players[i].vote_submitted = true;
+    valid_insider_elimination.players[i].vote_target = 10;
+  }
+  (void)Match::from_state(std::move(valid_insider_elimination));
+}
+
+void test_initialization_and_supply() {
+  Match match(roster());
+  CHECK(match.state().players.size() == 5U);
+  CHECK(match.state().reserve == 50U);
+  CHECK(match.state().total_supply == 100U);
+  CHECK(match.state().company.health == 5);
+  CHECK(match.state().company.price == 10);
+  CHECK(match.state().phase == Phase::Lobby);
+  std::uint32_t insiders = 0, investigators = 0, employees = 0;
+  for (const auto& player : match.state().players) {
+    CHECK(player.credits == 100U && player.shares == 10U && player.active);
+    if (player.role == Role::Insider) ++insiders;
+    else if (player.role == Role::Investigator) ++investigators;
+    else ++employees;
+  }
+  CHECK(insiders == 1U && investigators == 1U && employees == 3U);
+  CHECK(match.publish_event(0).error == ErrorCode::WrongPhase);
+  CHECK(match.start());
+  CHECK(match.publish_event(3).error == ErrorCode::InvalidEventImpact);
+  CHECK(match.publish_event(-2));
+  CHECK(match.state().phase == Phase::Discussion);
+  const auto wrong_market_phase = match.resolve_market();
+  CHECK(wrong_market_phase.status.error == ErrorCode::WrongPhase && !wrong_market_phase.has_value());
+  const auto five = supply_plan(5);
+  const auto sixty_four = supply_plan(64);
+  CHECK(five && five->total == 100U && five->player_held == 50U && five->reserve == 50U);
+  CHECK(sixty_four && sixty_four->total == 1280U && sixty_four->player_held == 640U && sixty_four->reserve == 640U);
+  CHECK(!supply_plan(2));
+  CHECK(!supply_plan(65));
+
+  bool rejected = false;
+  try { Match invalid({{1, Role::Insider}, {2, Role::Investigator}, {3, Role::Employee}, {4, Role::Employee}, {5, Role::Insider}}); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+
+  auto duplicate_ids = roster();
+  duplicate_ids[4].id = duplicate_ids[3].id;
+  rejected = false;
+  try { Match invalid(duplicate_ids); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+
+  auto zero_id = roster();
+  zero_id[0].id = 0;
+  rejected = false;
+  try { Match invalid(zero_id); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+
+  auto invalid_role = roster();
+  invalid_role[4].role = static_cast<Role>(99);
+  rejected = false;
+  try { Match invalid(invalid_role); }
+  catch (const std::invalid_argument&) { rejected = true; }
+  CHECK(rejected);
+}
+
+void test_variable_rosters_and_supply() {
+  struct Expected { std::size_t n; std::size_t insiders; std::size_t investigators; std::size_t employees; };
+  constexpr Expected expected[]{{3,1,1,1},{4,1,1,2},{5,1,1,3},{8,1,1,6},
+      {9,2,1,6},{16,2,1,13},{24,3,2,19},{32,4,2,26},{64,8,4,52}};
+  for (const auto& item : expected) {
+    const auto counts = role_counts(item.n);
+    const auto supply = supply_plan(item.n);
+    CHECK(counts && counts->insiders == item.insiders &&
+          counts->investigators == item.investigators && counts->employees == item.employees);
+    CHECK(counts && counts->employees >= 1U);
+    CHECK(supply && supply->total == 20U * item.n && supply->player_held == 10U * item.n &&
+          supply->reserve == 10U * item.n);
+    Match match(scaled_roster(item.n));
+    CHECK(match.state().players.size() == item.n);
+    CHECK(match.state().total_supply == 20U * item.n && match.state().reserve == 10U * item.n);
+    std::uint64_t held = 0;
+    for (const auto& player : match.state().players) {
+      CHECK(player.credits == kStartingCredits && player.shares == kStartingShares);
+      held += player.shares;
+    }
+    CHECK(held + match.state().reserve == match.state().total_supply);
+  }
+  CHECK(!role_counts(2));
+  CHECK(!role_counts(65));
+  for (const auto bad_size : {std::size_t{2}, std::size_t{65}}) {
+    bool rejected = false;
+    try { Match invalid(scaled_roster(bad_size)); }
+    catch (const std::invalid_argument&) { rejected = true; }
+    CHECK(rejected);
+  }
+  auto missing_investigator = scaled_roster(9);
+  missing_investigator[2].role = Role::Employee;
+  bool invalid_distribution = false;
+  try { Match invalid(missing_investigator); }
+  catch (const std::invalid_argument&) { invalid_distribution = true; }
+  CHECK(invalid_distribution);
+}
+
+void test_variable_market_conservation_and_determinism() {
+  for (const auto count : {std::size_t{3}, std::size_t{16}, std::size_t{64}}) {
+    Match first(scaled_roster(count));
+    Match second(scaled_roster(count));
+    start_to_trading(first, -1);
+    start_to_trading(second, -1);
+    for (std::size_t seat = 0; seat < count; ++seat) {
+      const auto action = seat % 3U == 0U ? TradeAction::Buy
+          : seat % 3U == 1U ? TradeAction::Sell : TradeAction::Hold;
+      const auto player = first.state().players[seat].id;
+      CHECK(first.submit_trade(player, action));
+      CHECK(second.submit_trade(player, action));
+    }
+    const auto first_market = first.resolve_market();
+    const auto second_market = second.resolve_market();
+    CHECK(first_market && second_market);
+    CHECK(first.canonical_state() == second.canonical_state());
+    CHECK(first.canonical_events() == second.canonical_events());
+    std::uint64_t held = 0;
+    for (const auto& player : first.state().players) held += player.shares;
+    CHECK(held + first.state().reserve == first.state().total_supply);
+  }
+}
+
+void test_normal_five_player_worked_example() {
+  Match match(roster());
+  start_to_trading(match, -1);
+  OperationResult result;
+  CHECK(match.insider_hint(10, result) == -1 && result);
+  CHECK(!match.insider_hint(20, result) && result.error == ErrorCode::NotInvestigator);
+  CHECK(match.submit_trade(10, TradeAction::Buy));
+  CHECK(match.submit_trade(20, TradeAction::Buy));
+  CHECK(match.submit_trade(30, TradeAction::Sell));
+  CHECK(match.submit_trade(40, TradeAction::Hold));
+  CHECK(match.submit_trade(50, TradeAction::Hold));
+  const auto market = match.resolve_market();
+  CHECK(market.has_value());
+  if (!market) return;
+  CHECK(market->executed_buys == 2U && market->executed_sells == 1U);
+  CHECK(market->closing_reserve == 49U);
+  CHECK(market->closing_health == 5 && market->closing_price == 9);
+  std::uint32_t held = 0;
+  for (const auto& player : match.state().players) held += player.shares;
+  CHECK(held + match.state().reserve == 100U && held == 51U);
+  CHECK(match.state().players[0].credits == 90U);
+  CHECK(match.state().players[1].credits == 90U);
+  CHECK(match.state().players[2].credits == 110U);
+}
+
+void test_reserve_shortage_and_conservation() {
+  auto state = base_state();
+  state.reserve = 1;
+  state.players[0].shares += 49;  // held=99; total remains 100 including reserve
+  state.players[0].action_submitted = true;
+  state.players[0].order = TradeAction::Buy;
+  state.players[1].action_submitted = true;
+  state.players[1].order = TradeAction::Buy;
+  Match match = Match::from_state(std::move(state));
+  const auto result = match.resolve_market();
+  CHECK(result.has_value());
+  if (!result) return;
+  CHECK(result->receipts[0].disposition == TradeDisposition::Executed);
+  CHECK(result->receipts[1].disposition == TradeDisposition::RejectedInsufficientReserve);
+  CHECK(result->executed_buys == 1U && result->closing_reserve == 0U);
+  std::uint32_t held = 0;
+  for (const auto& p : match.state().players) held += p.shares;
+  CHECK(held == 100U && held + match.state().reserve == match.state().total_supply);
+
+  auto same_round_state = base_state();
+  same_round_state.reserve = 1;
+  same_round_state.players[0].shares += 49;
+  same_round_state.players[0].action_submitted = true;
+  same_round_state.players[0].order = TradeAction::Buy;
+  same_round_state.players[1].action_submitted = true;
+  same_round_state.players[1].order = TradeAction::Buy;
+  same_round_state.players[2].action_submitted = true;
+  same_round_state.players[2].order = TradeAction::Sell;
+  Match same_round = Match::from_state(std::move(same_round_state));
+  const auto batch = same_round.resolve_market();
+  CHECK(batch && batch->executed_buys == 1U && batch->executed_sells == 1U);
+  CHECK(batch && batch->receipts[1].disposition == TradeDisposition::RejectedInsufficientReserve);
+  CHECK(batch && batch->closing_reserve == 1U); // the SELL replenishes only after BUY allocation
+}
+
+void test_invalid_trades_and_credit_cap() {
+  auto state = base_state();
+  state.players[0].credits = 5;
+  state.players[0].shares = 0;
+  state.players[1].shares += 10;
+  state.players[1].credits = kCreditBalanceCap;
+  Match match = Match::from_state(std::move(state));
+  const auto before_credits = match.state().players[0].credits;
+  const auto before_shares = match.state().players[0].shares;
+  CHECK(match.submit_trade(10, TradeAction::Buy).error == ErrorCode::InsufficientCredits);
+  CHECK(match.state().players[0].credits == before_credits && match.state().players[0].shares == before_shares);
+  CHECK(match.submit_trade(10, TradeAction::Hold).error == ErrorCode::ActionAlreadySubmitted);
+  CHECK(match.submit_trade(20, TradeAction::Sell).error == ErrorCode::CreditCapExceeded);
+  CHECK(match.submit_trade(40, static_cast<TradeAction>(99)).error == ErrorCode::InvalidAction);
+  CHECK(match.state().players[1].credits == kCreditBalanceCap && match.state().players[1].shares == 20U);
+  CHECK(match.submit_trade(30, TradeAction::Sell));
+  const auto result = match.resolve_market();
+  CHECK(result.has_value());
+  CHECK(match.state().players[2].credits == 110U);
+
+  auto fixture = base_state();
+  fixture.players[0].shares = 0;
+  fixture.players[1].shares = 20;
+  Match zero_share_match = Match::from_state(std::move(fixture));
+  CHECK(zero_share_match.submit_trade(10, TradeAction::Sell).error == ErrorCode::NoSharesToSell);
+}
+
+void test_trade_order_preconditions_in_fixture_validation() {
+  const auto rejected = [](MatchState state) {
+    try {
+      (void)Match::from_state(std::move(state));
+      return false;
+    } catch (const std::invalid_argument&) {
+      return true;
+    }
+  };
+
+  auto buy_without_cash = base_state();
+  buy_without_cash.players[0].action_submitted = true;
+  buy_without_cash.players[0].order = TradeAction::Buy;
+  buy_without_cash.players[0].credits = 9;
+  CHECK(rejected(std::move(buy_without_cash)));
+
+  auto sell_without_share = base_state();
+  sell_without_share.players[0].action_submitted = true;
+  sell_without_share.players[0].order = TradeAction::Sell;
+  sell_without_share.players[0].shares = 0;
+  sell_without_share.players[1].shares += 10; // preserve total supply
+  CHECK(rejected(std::move(sell_without_share)));
+
+  auto sell_exceeding_cap = base_state();
+  sell_exceeding_cap.players[0].action_submitted = true;
+  sell_exceeding_cap.players[0].order = TradeAction::Sell;
+  sell_exceeding_cap.players[0].credits = kCreditBalanceCap;
+  CHECK(rejected(std::move(sell_exceeding_cap)));
+
+  auto valid_buy_pending_zero_reserve = base_state();
+  valid_buy_pending_zero_reserve.reserve = 0;
+  valid_buy_pending_zero_reserve.players[0].shares += 50; // preserve total supply
+  valid_buy_pending_zero_reserve.players[0].action_submitted = true;
+  valid_buy_pending_zero_reserve.players[0].order = TradeAction::Buy;
+  valid_buy_pending_zero_reserve.players[0].credits = 100;
+  // A BUY can be accepted as a request and rejected later by opening-reserve allocation.
+  (void)Match::from_state(std::move(valid_buy_pending_zero_reserve));
+
+  auto valid_sell_at_cap_boundary = base_state();
+  valid_sell_at_cap_boundary.players[0].action_submitted = true;
+  valid_sell_at_cap_boundary.players[0].order = TradeAction::Sell;
+  valid_sell_at_cap_boundary.players[0].credits = kCreditBalanceCap - 10;
+  (void)Match::from_state(std::move(valid_sell_at_cap_boundary));
+}
+
+void test_formula_bounds() {
+  auto lower = market_fixture(1, 1, -2, {{0, TradeAction::Sell}});
+  auto low = lower.resolve_market();
+  CHECK(low && low->closing_health == 0 && low->closing_price == 1);
+  CHECK(low && low->outcome == Outcome::InsiderWin);
+  CHECK(lower.state().phase == Phase::Finished);
+
+  auto upper = market_fixture(10, 100, 2, {{0, TradeAction::Buy}});
+  auto high = upper.resolve_market();
+  CHECK(high && high->closing_health == 10 && high->closing_price == 100);
+
+  auto tie = market_fixture(5, 10, 0, {{0, TradeAction::Buy}, {1, TradeAction::Sell}});
+  auto equal = tie.resolve_market();
+  CHECK(equal && equal->closing_health == 5 && equal->closing_price == 10);
+
+  auto vector = market_fixture(5, 10, 1, {{0, TradeAction::Buy}, {1, TradeAction::Buy}});
+  auto exact = vector.resolve_market();
+  CHECK(exact && exact->closing_health == 7 && exact->closing_price == 13);
+
+  // Zero health is already terminal and cannot be an opening market state.
+  for (std::int32_t health = kMinHealth + 1; health <= kMaxHealth; ++health) {
+    for (std::int32_t price = kMinPrice; price <= kMaxPrice; ++price) {
+      for (std::int32_t event = -2; event <= 2; ++event) {
+        for (std::int32_t net : {-1, 0, 1}) {
+          std::vector<std::pair<std::size_t, TradeAction>> orders;
+          if (net < 0) orders.emplace_back(0U, TradeAction::Sell);
+          if (net > 0) orders.emplace_back(0U, TradeAction::Buy);
+          auto m = market_fixture(health, price, event, std::move(orders));
+          const auto got = m.resolve_market();
+          const auto expected_health = std::clamp(health + event + net, kMinHealth, kMaxHealth);
+          const auto expected_price = std::clamp(price + 2 * event + net, kMinPrice, kMaxPrice);
+          CHECK(got && got->closing_health == expected_health && got->closing_price == expected_price);
+          std::uint32_t held = 0;
+          for (const auto& player : m.state().players) held += player.shares;
+          CHECK(held + m.state().reserve == m.state().total_supply);
+        }
+      }
+    }
+  }
+}
+
+void test_eliminated_players_cannot_act_or_be_targets() {
+  Match match(roster());
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  for (const PlayerId id : {10U, 20U, 30U, 40U, 50U}) {
+    CHECK(match.submit_trade(id, TradeAction::Hold));
+  }
+  CHECK(match.resolve_market().has_value());
+  CHECK(match.open_voting());
+  CHECK(match.submit_vote(10, 50));
+  CHECK(match.submit_vote(20, 50));
+  CHECK(match.submit_vote(30, 50));
+  const auto eliminated = match.resolve_votes();
+  CHECK(eliminated && eliminated->eliminated == 50U);
+  CHECK(match.state().players[4].shares == 10U); // holdings remain after elimination
+
+  // The just-resolved vote may still point at its eliminated target, and the
+  // eliminated player may have submitted a vote/action before elimination.
+  (void)Match::from_state(match.state());
+  CHECK(match.state().players[4].action_submitted);
+  CHECK(match.state().players[4].order == TradeAction::Hold);
+
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(!match.state().players[4].action_submitted && !match.state().players[4].order);
+  CHECK(match.submit_trade(50, TradeAction::Hold).error == ErrorCode::InactivePlayer);
+  CHECK(match.resolve_market().has_value());
+  CHECK(match.open_voting());
+  CHECK(match.submit_vote(10, 50).error == ErrorCode::InvalidVoteTarget);
+  CHECK(match.submit_vote(50, std::nullopt).error == ErrorCode::InactivePlayer);
+}
+
+void test_clue_scope_and_idempotency() {
+  Match match(roster());
+  start_to_trading(match, 1);
+  CHECK(match.resolve_market().has_value());
+  OperationResult result;
+  CHECK(!match.use_clue(30, 10, result) && result.error == ErrorCode::NotInvestigator);
+  CHECK(!match.use_clue(20, 20, result) && result.error == ErrorCode::InvalidClueTarget);
+  const auto answer = match.use_clue(20, 10, result);
+  CHECK(answer.has_value() && *answer && result);
+  const auto retry = match.use_clue(20, 10, result);
+  CHECK(retry.has_value() && *retry && result);
+  CHECK(!match.use_clue(20, 30, result) && result.error == ErrorCode::ClueAlreadyUsed);
+  CHECK(match.state().clue_used);
+  CHECK(match.open_voting());
+}
+
+void test_multiple_investigators_have_independent_clues() {
+  Match match(scaled_roster(24));
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market().has_value());
+  OperationResult first_result;
+  const auto first = match.use_clue(4, 1, first_result);
+  CHECK(first && *first && first_result);
+  const auto retry = match.use_clue(4, 1, first_result);
+  CHECK(retry && *retry && first_result);
+  const auto state_before_retarget = match.canonical_state();
+  const auto events_before_retarget = match.canonical_events();
+  CHECK(!match.use_clue(4, 2, first_result) && first_result.error == ErrorCode::ClueAlreadyUsed);
+  CHECK(match.canonical_state() == state_before_retarget);
+  CHECK(match.canonical_events() == events_before_retarget);
+  OperationResult second_result;
+  const auto second = match.use_clue(5, 2, second_result);
+  CHECK(second && *second && second_result);
+  CHECK(match.state().players[3].clue_used && match.state().players[4].clue_used);
+  CHECK(match.canonical_state().find("clue=4:1:1") != std::string::npos);
+  CHECK(match.canonical_state().find("clue=5:2:1") != std::string::npos);
+}
+
+void test_same_target_clue_retry_after_target_elimination() {
+  Match match(roster());
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market());
+  OperationResult result;
+  const auto clue = match.use_clue(20, 50, result);
+  CHECK(clue && !*clue && result);
+  CHECK(match.open_voting());
+  CHECK(match.submit_vote(10, 50));
+  CHECK(match.submit_vote(20, 50));
+  CHECK(match.submit_vote(30, 50));
+  CHECK(match.resolve_votes()->eliminated == 50U);
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+  CHECK(match.resolve_market());
+  const auto retry = match.use_clue(20, 50, result);
+  CHECK(retry && !*retry && result);
+}
+
+void test_multi_insider_victory_is_team_based() {
+  Match match(scaled_roster(9));
+  CHECK(match.start());
+  round_to_voting(match, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(match.submit_vote(voter, 1));
+  const auto first = match.resolve_votes();
+  CHECK(first && first->eliminated == 1U && first->outcome == Outcome::None);
+  CHECK(match.state().phase == Phase::AwaitingEvent);
+
+  round_to_voting(match, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(match.submit_vote(voter, 2));
+  const auto last = match.resolve_votes();
+  CHECK(last && last->eliminated == 2U && last->outcome == Outcome::EmployeesWin);
+  CHECK(match.state().phase == Phase::Finished);
+}
+
+void test_variable_voting_thresholds_and_team_survival() {
+  Match minimum(scaled_roster(3));
+  CHECK(minimum.start());
+  round_to_voting(minimum, 0);
+  CHECK(minimum.submit_vote(1, 3));
+  CHECK(minimum.submit_vote(2, 3)); // 2 of 3 is a strict majority.
+  const auto min_vote = minimum.resolve_votes();
+  CHECK(min_vote && min_vote->eliminated == 3U && min_vote->eligible_voters == 3U);
+
+  Match eight_tie(scaled_roster(8));
+  CHECK(eight_tie.start());
+  round_to_voting(eight_tie, 0);
+  for (PlayerId voter = 1; voter <= 4; ++voter) CHECK(eight_tie.submit_vote(voter, 8));
+  const auto tie = eight_tie.resolve_votes(); // 4 of 8 is not strictly more than half.
+  CHECK(tie && !tie->eliminated && tie->eligible_voters == 8U);
+
+  Match two_insiders_remain(scaled_roster(9));
+  CHECK(two_insiders_remain.start());
+  round_to_voting(two_insiders_remain, 0);
+  for (PlayerId voter = 3; voter <= 7; ++voter) CHECK(two_insiders_remain.submit_vote(voter, 1));
+  CHECK(two_insiders_remain.resolve_votes()->outcome == Outcome::None);
+  round_to_voting(two_insiders_remain, 0);
+  finish_round_without_elimination(two_insiders_remain);
+  round_to_voting(two_insiders_remain, 0);
+  finish_round_without_elimination(two_insiders_remain);
+  CHECK(two_insiders_remain.state().outcome == Outcome::InsiderWin);
+
+  auto health_state = Match(scaled_roster(9)).state();
+  health_state.phase = Phase::Trading;
+  health_state.round = 1;
+  health_state.company.health = 1;
+  health_state.event_impact = -2;
+  Match collapse = Match::from_state(std::move(health_state));
+  const auto market = collapse.resolve_market();
+  CHECK(market && market->closing_health == 0 && market->outcome == Outcome::InsiderWin);
+}
+
+void test_eliminated_special_roles_cannot_act() {
+  for (const PlayerId eliminated_id : {PlayerId{1}, PlayerId{3}}) {
+    auto state = Match(scaled_roster(9)).state();
+    state.phase = Phase::AwaitingEvent;
+    state.round = 2;
+    state.eligible_voters_at_open = 9;
+    auto eliminated = std::find_if(state.players.begin(), state.players.end(),
+        [eliminated_id](const PlayerState& player) { return player.id == eliminated_id; });
+    eliminated->active = false;
+    std::uint32_t votes = 0;
+    for (auto& voter : state.players) {
+      if (voter.active && votes < 5U) {
+        voter.vote_submitted = true;
+        voter.vote_target = eliminated_id;
+        ++votes;
+      }
+    }
+    Match match = Match::from_state(std::move(state));
+    CHECK(match.publish_event(0));
+    OperationResult result;
+    CHECK(!match.insider_hint(eliminated_id, result) && result.error == ErrorCode::InactivePlayer);
+    CHECK(match.open_trading());
+    CHECK(match.submit_trade(eliminated_id, TradeAction::Hold).error == ErrorCode::InactivePlayer);
+    CHECK(match.resolve_market());
+    CHECK(!match.use_clue(eliminated_id, 2, result) && result.error == ErrorCode::InactivePlayer);
+    CHECK(match.open_voting());
+    CHECK(match.submit_vote(eliminated_id, std::nullopt).error == ErrorCode::InactivePlayer);
+  }
+}
+
+void test_vote_edges_and_victories() {
+  Match tied(roster());
+  CHECK(tied.start());
+  round_to_voting(tied, 0);
+  CHECK(tied.submit_vote(10, 20));
+  CHECK(tied.submit_vote(20, 30));
+  CHECK(tied.submit_vote(30, std::nullopt));
+  CHECK(tied.submit_vote(40, std::nullopt));
+  // Player 50 is missing: it is an abstention and remains in E=5.
+  const auto no_majority = tied.resolve_votes();
+  CHECK(no_majority && !no_majority->eliminated && no_majority->eligible_voters == 5U);
+  CHECK(tied.state().round == 2U && tied.state().phase == Phase::AwaitingEvent);
+
+  Match insider_caught(roster());
+  CHECK(insider_caught.start());
+  round_to_voting(insider_caught, 0);
+  CHECK(insider_caught.submit_vote(20, 10));
+  CHECK(insider_caught.submit_vote(30, 10));
+  CHECK(insider_caught.submit_vote(40, 10));
+  const auto caught = insider_caught.resolve_votes();
+  CHECK(caught && caught->eliminated == 10U && caught->outcome == Outcome::EmployeesWin);
+  CHECK(insider_caught.state().phase == Phase::Finished);
+
+  Match employee_out(roster());
+  CHECK(employee_out.start());
+  round_to_voting(employee_out, 0);
+  CHECK(employee_out.submit_vote(10, 30));
+  CHECK(employee_out.submit_vote(20, 30));
+  CHECK(employee_out.submit_vote(40, 30));
+  const auto eliminated_employee = employee_out.resolve_votes();
+  CHECK(eliminated_employee && eliminated_employee->eliminated == 30U);
+  CHECK(employee_out.state().players[2].shares == 10U);
+  CHECK(employee_out.submit_vote(30, 10).error == ErrorCode::WrongPhase); // next round not opened
+
+  Match final_survival(roster());
+  CHECK(final_survival.start());
+  round_to_voting(final_survival, 0);
+  finish_round_without_elimination(final_survival);
+  round_to_voting(final_survival, 0);
+  finish_round_without_elimination(final_survival);
+  round_to_voting(final_survival, 0);
+  finish_round_without_elimination(final_survival);
+  CHECK(final_survival.state().outcome == Outcome::InsiderWin);
+}
+
+void test_invalid_votes_and_eliminated_voter() {
+  Match match(roster());
+  CHECK(match.start());
+  round_to_voting(match, 0);
+  CHECK(match.submit_vote(10, 10).error == ErrorCode::InvalidVoteTarget);
+  CHECK(match.submit_vote(10, 999).error == ErrorCode::InvalidVoteTarget);
+  CHECK(match.submit_vote(10, 20));
+  CHECK(match.submit_vote(10, std::nullopt).error == ErrorCode::VoteAlreadySubmitted);
+}
+
+void play_replay(Match& match) {
+  CHECK(match.publish_event(-1));
+  CHECK(match.open_trading());
+  CHECK(match.submit_trade(50, TradeAction::Buy));
+  CHECK(match.submit_trade(20, TradeAction::Hold));
+  CHECK(match.submit_trade(10, TradeAction::Sell));
+  CHECK(match.submit_trade(30, TradeAction::Buy));
+  CHECK(match.submit_trade(40, TradeAction::Hold));
+  CHECK(match.resolve_market().has_value());
+  CHECK(match.open_voting());
+  CHECK(match.submit_vote(10, std::nullopt));
+  CHECK(match.submit_vote(20, 10));
+  CHECK(match.submit_vote(30, 10));
+  CHECK(match.submit_vote(40, std::nullopt));
+  CHECK(match.submit_vote(50, std::nullopt));
+  CHECK(match.resolve_votes().has_value());
+}
+
+void test_deterministic_replay() {
+  Match first(roster());
+  Match second(roster());
+  CHECK(first.start() && second.start());
+  play_replay(first);
+  play_replay(second);
+  CHECK(first.canonical_state() == second.canonical_state());
+  CHECK(first.canonical_events() == second.canonical_events());
+
+  Match arrival_a(roster());
+  Match arrival_b(roster());
+  start_to_trading(arrival_a, 0);
+  start_to_trading(arrival_b, 0);
+  CHECK(arrival_a.submit_trade(10, TradeAction::Buy));
+  CHECK(arrival_a.submit_trade(20, TradeAction::Sell));
+  CHECK(arrival_b.submit_trade(20, TradeAction::Sell));
+  CHECK(arrival_b.submit_trade(10, TradeAction::Buy));
+  CHECK(arrival_a.resolve_market().has_value());
+  CHECK(arrival_b.resolve_market().has_value());
+  CHECK(arrival_a.canonical_state() == arrival_b.canonical_state());
+}
+
+}  // namespace
+
+int main() {
+  test_state_fixture_invariants();
+  test_initialization_and_supply();
+  test_variable_rosters_and_supply();
+  test_variable_market_conservation_and_determinism();
+  test_normal_five_player_worked_example();
+  test_reserve_shortage_and_conservation();
+  test_invalid_trades_and_credit_cap();
+  test_trade_order_preconditions_in_fixture_validation();
+  test_formula_bounds();
+  test_clue_scope_and_idempotency();
+  test_multiple_investigators_have_independent_clues();
+  test_same_target_clue_retry_after_target_elimination();
+  test_multi_insider_victory_is_team_based();
+  test_variable_voting_thresholds_and_team_survival();
+  test_eliminated_special_roles_cannot_act();
+  test_vote_edges_and_victories();
+  test_invalid_votes_and_eliminated_voter();
+  test_eliminated_players_cannot_act_or_be_targets();
+  test_deterministic_replay();
+  if (failures != 0) {
+    std::cerr << failures << " test assertion(s) failed\n";
+    return EXIT_FAILURE;
+  }
+  std::cout << "All DARKPOOL S1 engine tests passed\n";
+  return EXIT_SUCCESS;
+}
+
