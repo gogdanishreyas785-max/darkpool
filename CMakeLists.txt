@@ -107,6 +107,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_unix_socket_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> unix)
   set_tests_properties(darkpool_unix_socket_tests PROPERTIES TIMEOUT 20)
+
+  add_executable(darkpool_load_tests tests/load_test_harness.cpp)
+  target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests)
+  execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE DARKPOOL_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_tests
+    COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server>)
+  set_tests_properties(darkpool_load_tests PROPERTIES TIMEOUT 30)
 else()
   message(STATUS "TCP/UNIX server and CLI client require Linux; engine and framing tests remain available")
 endif()

@@ -43,18 +43,46 @@ Use automated clients speaking the real protocol; opening sockets alone does not
 
 ## Verification status
 
-The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest run for implementation commit `54e3e28287de3840caef2ec65009dfee0e5719a5` (GitHub Actions run 62) passed the engine roster cases for N=3,4,5,8,9,16,24,32,64 and complete real-TCP matches at N=5 and N=8. No load test has run. In particular, a 64-player live match, four concurrent 64-player matches, and the 256-player server target remain unverified.
+The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest run for implementation commit `54e3e28287de3840caef2ec65009dfee0e5719a5` (GitHub Actions run 62) passed the engine roster cases for N=3,4,5,8,9,16,24,32,64 and complete real-TCP matches at N=5 and N=8.
 
-| Run | Configuration | Evidence |
-|---|---|---|
-| L1 | 5 players/1 match, full game | Correctness, CPU/RSS, protocol errors. |
-| L2 | 8 and 16/1 match | Three 16-player runs; p50/p95 and resources. |
-| L3 | 32/1 match | Queue depth, rejected requests, latency. |
-| L4 | 64/1 match | 10-minute smoke test; bounded resources, CPU/latency. |
-| L5 | 2 × 32 | Isolation/starvation results. |
-| L6 | 4 × up to 64 | Attempt 256 plus moderators/test clients where hardware permits; report actual maximum/failure. |
-| L7 | Slow/disconnected clients | Bounded queue, cleanup, responsiveness. |
-| L8 | Malformed/flood traffic | Safe rejection and no corruption. |
+### Load Test Matrix
+
+| Run | Configuration | Status | Evidence / Notes |
+|---|---|:---:|---|
+| L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
+| L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success). p50=0.26 ms, p95=0.65 ms, p99=1.09 ms, Peak RSS=4.1 MB. |
+| L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
+| L4 | 64 players/1 match | **NOT RUN** | Single 64-player match capacity remains unverified. |
+| L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
+| L6 | 4 × up to 64 (256-player server target) | **NOT RUN** | Four-match 256-player capacity remains unverified. |
+| L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
+| L8 | Malformed/flood traffic | NOT RUN | Malformed isolation verified functionally; high-rate flood unmeasured. |
+
+### Measured 16-Player Real-Server Load Test Results (L2)
+
+- **Test Command**:
+  ```bash
+  ./build/darkpool_load_tests ./build/darkpool_server --players 16 --runs 3 --out docs/load_test_16p_results.json
+  ```
+  *(Automated CTest target: `ctest --test-dir build --output-on-failure -R '^darkpool_load_tests$'`)*
+- **Source Commit**: `a54c07678c2c94dead4ba67ebf33f58dcf1c4cd3`
+- **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
+- **Timing & ACK Boundary**:
+  Timing is captured using `std::chrono::steady_clock` (monotonic clock). The measurement interval begins immediately before the client writes the request frame bytes to the socket and ends immediately when the complete correlated response frame is received and parsed. Intentional phase waits and intervals are excluded from latency measurements.
+- **Workload**:
+  Real protocol clients driving a complete 16-player match (1 moderator + 16 players = 17 connected clients). Includes match creation, 16 player joins, match start, all 3 complete rounds (event publication, 2 insider hints per round, open trading, 16 legal trades per round, market resolution, round 1 investigator clue request, open voting, 16 player votes per round, vote resolution), and final match status verification. Each run executes 154 legal protocol requests (462 requests across 3 runs).
+
+| Run | Clients | Duration | Requests (OK / Fail) | p50 Latency | p95 Latency | p99 Latency | Peak Server RSS | Server CPU Time |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 17 (16P + 1M) | 82 ms | 154 / 0 | 0.24 ms | 0.49 ms | 1.09 ms | 4,124 kB | 20.0 ms |
+| Run 2 | 17 (16P + 1M) | 64 ms | 154 / 0 | 0.18 ms | 0.39 ms | 0.71 ms | 4,108 kB | 20.0 ms |
+| Run 3 | 17 (16P + 1M) | 118 ms | 154 / 0 | 0.42 ms | 0.79 ms | 1.09 ms | 4,116 kB | 40.0 ms |
+| **Aggregate** | **17** | **264 ms** | **462 / 0 (100%)** | **0.26 ms** | **0.65 ms** | **1.09 ms** | **4,124 kB** | **80.0 ms** |
+
+*Machine-readable report stored in: [`docs/load_test_16p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_16p_results.json)*
+
+> [!IMPORTANT]
+> A single 64-player live match (L4), four concurrent 64-player matches, and the 256-player server target (L6) have **NOT RUN** and remain unverified until larger-scale load tests are executed.
 
 ## Proposed mixed64-v1 p95 workload — approval required
 
