@@ -82,18 +82,36 @@ bool prepare_unix_socket_path(const std::string &path) {
     }
 
     const int probe = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
-    if (probe >= 0) {
-      sockaddr_un probe_addr{};
-      probe_addr.sun_family = AF_UNIX;
-      std::strncpy(probe_addr.sun_path, path.c_str(), sizeof(probe_addr.sun_path) - 1);
-      const int res = connect(probe, reinterpret_cast<sockaddr *>(&probe_addr), sizeof(probe_addr));
-      (void)close(probe);
-      if (res == 0) {
-        std::cerr << "error: another server is actively listening on " << path << '\n';
-        return false;
-      }
+    if (probe < 0) {
+      std::cerr << "error: cannot probe existing socket at '" << path
+                << "': " << std::strerror(errno) << '\n';
+      return false;
     }
 
+    sockaddr_un probe_addr{};
+    probe_addr.sun_family = AF_UNIX;
+    std::strncpy(probe_addr.sun_path, path.c_str(), sizeof(probe_addr.sun_path) - 1);
+    const int res = connect(probe, reinterpret_cast<sockaddr *>(&probe_addr), sizeof(probe_addr));
+    const int connect_err = (res < 0) ? errno : 0;
+    (void)close(probe);
+
+    if (res == 0) {
+      std::cerr << "error: another server is actively listening on " << path << '\n';
+      return false;
+    }
+
+    if (connect_err == ENOENT) {
+      // Path disappeared between lstat and connect (benign race condition)
+      return true;
+    }
+
+    if (connect_err != ECONNREFUSED) {
+      std::cerr << "error: cannot verify if socket '" << path
+                << "' is stale (connect failed: " << std::strerror(connect_err) << ")\n";
+      return false;
+    }
+
+    // Connect was specifically refused (ECONNREFUSED), establishing that the socket is stale
     if (::unlink(path.c_str()) != 0 && errno != ENOENT) {
       std::cerr << "error: failed to unlink stale socket file '" << path
                 << "': " << std::strerror(errno) << '\n';

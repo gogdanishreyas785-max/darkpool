@@ -1138,7 +1138,42 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     }
   }
 
-  // 3. Active server conflict refusal
+  // 3. Non-ECONNREFUSED probe failure refusal (EACCES: does not unlink)
+  {
+    const std::string perm_path = "/tmp/darkpool_test_perm_" + pid_str + ".sock";
+    (void)::unlink(perm_path.c_str());
+
+    const int dummy_sock = socket(AF_UNIX, SOCK_STREAM, 0);
+    CHECK(dummy_sock >= 0);
+    if (dummy_sock >= 0) {
+      sockaddr_un d_addr{};
+      d_addr.sun_family = AF_UNIX;
+      std::strncpy(d_addr.sun_path, perm_path.c_str(), sizeof(d_addr.sun_path) - 1);
+      CHECK(bind(dummy_sock, reinterpret_cast<sockaddr*>(&d_addr), sizeof(d_addr)) == 0);
+      (void)close(dummy_sock);
+
+      // Set permissions to 0000 so connect() yields EACCES
+      CHECK(chmod(perm_path.c_str(), 0000) == 0);
+
+      const auto child = start_unix_server(server_path, perm_path, "mod-token");
+      CHECK(child >= 0);
+      if (child >= 0) {
+        int status = 0;
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) != 0);
+      }
+
+      // Verify the socket file was preserved and NOT unlinked
+      struct stat st {};
+      CHECK(::lstat(perm_path.c_str(), &st) == 0);
+      CHECK(S_ISSOCK(st.st_mode));
+
+      (void)chmod(perm_path.c_str(), 0700);
+      (void)::unlink(perm_path.c_str());
+    }
+  }
+
+  // 4. Active server conflict refusal
   {
     const std::string active_path = "/tmp/darkpool_test_active_" + pid_str + ".sock";
     (void)::unlink(active_path.c_str());
