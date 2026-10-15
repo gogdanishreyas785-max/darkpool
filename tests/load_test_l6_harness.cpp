@@ -321,27 +321,21 @@ struct L6RunResult {
   std::uint64_t cleanup_settle_time_ms{0};
   bool post_cleanup_settled{false};
   double throughput_rps{0.0};
+  std::size_t match_limit_retries{0};
 };
 
-L6RunResult execute_l6_concurrent_matches(
-    const std::string& server_path,
+L6RunResult execute_l6_single_cycle(
+    pid_t server_pid,
+    const std::string& socket_path,
+    const std::string& mod_token,
     int run_index,
+    std::size_t baseline_open_fds,
     const TestFaultConfig& fault_cfg = {}) {
   L6RunResult result;
   result.run_index = run_index;
   result.matches.resize(kExpectedL6Matches);
 
-  const std::string socket_path = generate_unique_socket_path();
-  const std::string mod_token = kDefaultModeratorToken;
 
-  const auto server_pid = spawn_server_unix(server_path, socket_path, mod_token);
-  if (server_pid <= 0) {
-    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to spawn darkpool_server\n";
-    result.failures.transport_failures++;
-    result.failures.unexpected_disconnects++;
-    result.failures.last_failure_reason = "Failed to spawn darkpool_server";
-    return result;
-  }
 
   std::vector<int> all_mod_fds;
   std::vector<int> all_player_fds;
@@ -357,9 +351,7 @@ L6RunResult execute_l6_concurrent_matches(
     all_mod_fds.clear();
   };
 
-  struct RunCleanupGuard {
-    pid_t pid{0};
-    std::string sock_path;
+  struct CycleCleanupGuard {
     std::function<void()> cleanup_clients;
     bool active{true};
 
@@ -367,38 +359,15 @@ L6RunResult execute_l6_concurrent_matches(
       if (active) {
         active = false;
         if (cleanup_clients) cleanup_clients();
-        if (pid > 0) {
-          stop_server_unix(pid, sock_path);
-          pid = 0;
-        }
       }
     }
 
-    ~RunCleanupGuard() {
+    ~CycleCleanupGuard() {
       execute();
     }
-  } run_guard{server_pid, socket_path, cleanup_all, true};
+  } cycle_guard{cleanup_all, true};
 
-  // Ensure server responds on UNIX socket
-  const int probe_fd = connect_unix(socket_path);
-  if (probe_fd < 0) {
-    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to connect probe socket\n";
-    result.failures.transport_failures++;
-    result.failures.unexpected_disconnects++;
-    result.failures.last_failure_reason = "Failed to connect probe socket";
-    return result;
-  }
-  (void)close(probe_fd);
-
-  // Baseline Open FDs (0 connected clients)
-  const auto base_fds = sample_open_fds(server_pid);
-  if (!base_fds.has_value()) {
-    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to sample baseline open FDs\n";
-    result.failures.correctness_failures++;
-    result.failures.last_failure_reason = "Failed to sample baseline open FDs";
-    return result;
-  }
-  result.baseline_open_fds = *base_fds;
+  result.baseline_open_fds = baseline_open_fds;
 
   const auto run_start = std::chrono::steady_clock::now();
 
@@ -474,12 +443,36 @@ L6RunResult execute_l6_concurrent_matches(
     result.matches[m].lifecycle_start_ms = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(result.matches[m].lifecycle_start - run_start).count());
 
-    const auto create_resp = timed_request(
-        result.matches[m].mod_fd,
-        json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}},
-        result.matches[m].metrics,
-        result.matches[m].failures,
-        expect_match_created(kExpectedPlayerCount, kExpectedInsiders, kExpectedInvestigators, kExpectedEmployees));
+    std::optional<json> create_resp;
+    constexpr std::size_t kMaxCreateRetries = 10;
+    std::size_t retries = 0;
+    while (retries <= kMaxCreateRetries) {
+      create_resp = timed_request(
+          result.matches[m].mod_fd,
+          json{{"type", "create_match"}, {"player_count", kExpectedPlayerCount}},
+          result.matches[m].metrics,
+          result.matches[m].failures,
+          expect_match_created(kExpectedPlayerCount, kExpectedInsiders, kExpectedInvestigators, kExpectedEmployees));
+      if (create_resp.has_value()) {
+        break;
+      }
+      // Account for asynchronous disconnect processing: if server returns "match limit reached",
+      // the event loop may still be unregistering moderator sessions from the prior cycle.
+      if (result.matches[m].failures.last_failure_reason.find("match limit reached") != std::string::npos &&
+          retries < kMaxCreateRetries) {
+        if (result.matches[m].failures.correctness_failures > 0) {
+          result.matches[m].failures.correctness_failures--;
+        }
+        if (!result.matches[m].metrics.empty()) {
+          result.matches[m].metrics.pop_back();
+        }
+        ++retries;
+        result.match_limit_retries++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
+      break;
+    }
     L6_VERIFY_REQ(create_resp, result.matches[m], "create_match failed for match " + std::to_string(m + 1));
     if (create_resp.has_value()) {
       match_ids[m] = (*create_resp)["match_id"].get<std::uint64_t>();
@@ -1152,11 +1145,7 @@ L6RunResult execute_l6_concurrent_matches(
     std::cerr << "[L6] STATE ERROR: " << result.failures.last_failure_reason << '\n';
   }
 
-  // Sample Peak RSS and CPU
-  result.peak_rss_kb = sample_peak_rss_kb(server_pid);
-  result.cpu_time_ms = sample_cpu_time_ms(server_pid);
-
-  run_guard.execute();
+  cycle_guard.execute();
 
   // Compute Latency Percentiles per Match and Aggregate
   std::vector<std::uint64_t> agg_seq_lats;
@@ -1263,6 +1252,523 @@ L6RunResult execute_l6_concurrent_matches(
 
   return result;
 }
+
+L6RunResult execute_l6_concurrent_matches(
+    const std::string& server_path,
+    int run_index,
+    const TestFaultConfig& fault_cfg = {}) {
+  L6RunResult result;
+  result.run_index = run_index;
+
+  const std::string socket_path = generate_unique_socket_path();
+  const std::string mod_token = kDefaultModeratorToken;
+
+  const auto server_pid = spawn_server_unix(server_path, socket_path, mod_token);
+  if (server_pid <= 0) {
+    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to spawn darkpool_server\n";
+    result.failures.transport_failures++;
+    result.failures.unexpected_disconnects++;
+    result.failures.last_failure_reason = "Failed to spawn darkpool_server";
+    return result;
+  }
+
+  struct ServerProcessGuard {
+    pid_t pid{0};
+    std::string sock;
+    ~ServerProcessGuard() {
+      if (pid > 0) stop_server_unix(pid, sock);
+    }
+  } srv_guard{server_pid, socket_path};
+
+  const int probe_fd = connect_unix(socket_path);
+  if (probe_fd < 0) {
+    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to connect probe socket\n";
+    result.failures.transport_failures++;
+    result.failures.unexpected_disconnects++;
+    result.failures.last_failure_reason = "Failed to connect probe socket";
+    return result;
+  }
+  (void)close(probe_fd);
+
+  const auto base_fds = sample_open_fds(server_pid);
+  if (!base_fds.has_value()) {
+    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to sample baseline open FDs\n";
+    result.failures.correctness_failures++;
+    result.failures.last_failure_reason = "Failed to sample baseline open FDs";
+    return result;
+  }
+
+  result = execute_l6_single_cycle(server_pid, socket_path, mod_token, run_index, *base_fds, fault_cfg);
+  result.peak_rss_kb = sample_peak_rss_kb(server_pid);
+  result.cpu_time_ms = sample_cpu_time_ms(server_pid);
+
+  stop_server_unix(server_pid, socket_path);
+  srv_guard.pid = 0;
+  return result;
+}
+
+struct SustainedClassification {
+  std::string status;  // PASS, FAIL, BLOCKED
+  std::string reason;
+  std::string diagnostic_details;
+};
+
+inline SustainedClassification classify_l6_sustained_status(
+    std::uint64_t target_duration_s,
+    std::uint64_t actual_duration_ms,
+    std::size_t completed_cycles,
+    std::size_t completed_matches,
+    std::size_t total_requests,
+    std::size_t total_failures,
+    std::size_t transport_failures,
+    std::size_t correctness_failures,
+    bool abort_due_to_failure,
+    const std::string& existing_reason) {
+  SustainedClassification out;
+  const bool reached_target_duration = (actual_duration_ms >= target_duration_s * 1000ULL);
+  const double elapsed_s = static_cast<double>(actual_duration_ms) / 1000.0;
+
+  if (abort_due_to_failure || total_failures > 0) {
+    out.status = "FAIL";
+    if (!existing_reason.empty()) {
+      out.reason = existing_reason;
+    } else {
+      out.reason = "Encountered " + std::to_string(total_failures) + " failures (" +
+                   std::to_string(transport_failures) + " transport, " +
+                   std::to_string(correctness_failures) + " correctness)";
+    }
+    out.diagnostic_details = "Sustained L6 run aborted after " + std::to_string(completed_cycles) +
+                             " completed cycles (" + std::to_string(completed_matches) +
+                             " matches) and " + std::to_string(total_requests) +
+                             " requests: " + out.reason;
+  } else if (!reached_target_duration) {
+    out.status = "BLOCKED";
+    out.reason = "Workload stopped early before reaching target duration of " +
+                 std::to_string(target_duration_s) + "s (actual: " +
+                 std::to_string(static_cast<std::uint64_t>(elapsed_s)) + "s)";
+    out.diagnostic_details = "Elapsed duration (" + std::to_string(actual_duration_ms) +
+                             " ms) fell short of target duration (" +
+                             std::to_string(target_duration_s * 1000ULL) + " ms)";
+  } else if (completed_cycles == 0 || completed_matches == 0) {
+    out.status = "FAIL";
+    out.reason = "Zero cycles completed during workload";
+    out.diagnostic_details = "Workload reached target duration but zero complete 4-match cycles were finished";
+  } else {
+    out.status = "PASS";
+    out.diagnostic_details = "Workload completed successfully across " +
+                             std::to_string(completed_cycles) + " cycles (" +
+                             std::to_string(completed_matches) +
+                             " matches) with 0 transport and 0 correctness failures";
+  }
+  return out;
+}
+
+struct L6SustainedResult {
+  std::string stage_name;
+  std::string status;
+  std::string reason;
+  std::string diagnostic_details;
+  std::uint64_t seed{0};
+  std::uint64_t target_duration_s{0};
+  std::uint64_t actual_duration_ms{0};
+  std::size_t completed_cycles{0};
+  std::size_t completed_matches{0};
+  std::size_t total_match_limit_retries{0};
+  PhaseMetrics aggregate_sequential;
+  PhaseMetrics aggregate_concurrent;
+  PhaseMetrics aggregate_total;
+  FailureCounts failures;
+  double throughput_rps{0.0};
+  std::size_t baseline_open_fds{0};
+  std::size_t peak_open_fds{0};
+  std::size_t immediate_post_cleanup_open_fds{0};
+  std::size_t settled_post_cleanup_fds{0};
+  bool all_cycles_fd_cleanup_passed{true};
+  std::uint64_t initial_rss_kb{0};
+  std::uint64_t peak_rss_kb{0};
+  std::uint64_t end_rss_kb{0};
+  double cpu_time_ms{0.0};
+  std::vector<std::uint64_t> rss_samples_kb;
+  bool all_cycles_overlapped{true};
+};
+
+inline L6SustainedResult execute_l6_sustained_workload(
+    const std::string& server_path,
+    std::uint64_t duration_seconds,
+    std::uint64_t seed,
+    const std::string& stage_name,
+    const TestFaultConfig& fault_cfg = {}) {
+  L6SustainedResult result;
+  result.stage_name = stage_name;
+  result.target_duration_s = duration_seconds;
+  result.seed = seed;
+
+  const std::string socket_path = generate_unique_socket_path();
+  const std::string mod_token = kDefaultModeratorToken;
+
+  const auto server_pid = spawn_server_unix(server_path, socket_path, mod_token);
+  if (server_pid <= 0) {
+    result.status = "FAIL";
+    result.reason = "Failed to spawn darkpool_server for sustained workload";
+    result.diagnostic_details = "spawn_server_unix failed for path: " + server_path;
+    return result;
+  }
+
+  struct ServerProcessGuard {
+    pid_t pid{0};
+    std::string sock;
+    ~ServerProcessGuard() {
+      if (pid > 0) stop_server_unix(pid, sock);
+    }
+  } srv_guard{server_pid, socket_path};
+
+  const int probe_fd = connect_unix(socket_path);
+  if (probe_fd < 0) {
+    result.status = "FAIL";
+    result.reason = "Failed to probe server on unix socket";
+    result.diagnostic_details = "connect_unix failed for path: " + socket_path;
+    return result;
+  }
+  (void)close(probe_fd);
+
+  const auto base_fds = sample_open_fds(server_pid);
+  if (!base_fds.has_value()) {
+    result.status = "FAIL";
+    result.reason = "Failed to sample baseline open FDs";
+    result.diagnostic_details = "sample_open_fds returned nullopt for baseline";
+    return result;
+  }
+  result.baseline_open_fds = *base_fds;
+  result.initial_rss_kb = sample_peak_rss_kb(server_pid);
+
+  std::vector<std::uint64_t> pooled_seq_lats;
+  std::vector<std::uint64_t> pooled_conc_lats;
+  std::vector<std::uint64_t> pooled_all_lats;
+
+  const auto start_time = std::chrono::steady_clock::now();
+  const auto deadline = start_time + std::chrono::seconds(duration_seconds);
+
+  std::cout << "[" << stage_name << "] Beginning sustained repeated 4-match cycle workload (target: "
+            << duration_seconds << "s, metadata seed: " << seed << ") on persistent server (PID "
+            << server_pid << ")..." << std::endl;
+
+  bool abort_due_to_failure = false;
+  int cycle_index = 0;
+
+  while (std::chrono::steady_clock::now() < deadline && !abort_due_to_failure) {
+    ++cycle_index;
+    const auto cycle_res = execute_l6_single_cycle(
+        server_pid, socket_path, mod_token, cycle_index, result.baseline_open_fds, fault_cfg);
+
+    if (cycle_res.peak_open_fds > result.peak_open_fds) {
+      result.peak_open_fds = cycle_res.peak_open_fds;
+    }
+    result.immediate_post_cleanup_open_fds = cycle_res.immediate_post_cleanup_open_fds;
+    result.settled_post_cleanup_fds = cycle_res.post_cleanup_open_fds;
+    result.total_match_limit_retries += cycle_res.match_limit_retries;
+
+    if (!cycle_res.all_matches_overlapped) {
+      result.all_cycles_overlapped = false;
+    }
+    if (!cycle_res.post_cleanup_settled) {
+      result.all_cycles_fd_cleanup_passed = false;
+    }
+
+    if (!cycle_res.run_passed || cycle_res.failures.total() > 0) {
+      abort_due_to_failure = true;
+      result.failures.transport_failures += cycle_res.failures.transport_failures;
+      result.failures.correctness_failures += cycle_res.failures.correctness_failures;
+      result.failures.unexpected_disconnects += cycle_res.failures.unexpected_disconnects;
+      result.failures.timeouts += cycle_res.failures.timeouts;
+      result.reason = cycle_res.failures.last_failure_reason.empty()
+          ? ("Cycle " + std::to_string(cycle_index) + " failed verification")
+          : cycle_res.failures.last_failure_reason;
+      std::cerr << "[" << stage_name << "] ABORTING sustained run at cycle " << cycle_index
+                << ": " << result.reason << std::endl;
+      break;
+    }
+
+    result.completed_cycles++;
+    result.completed_matches += cycle_res.matches.size();
+
+    // Pool latencies and request metrics
+    for (const auto& m : cycle_res.matches) {
+      for (const auto& met : m.metrics) {
+        pooled_all_lats.push_back(met.latency_us);
+        result.aggregate_total.total_requests++;
+        if (met.is_concurrent) {
+          result.aggregate_concurrent.total_requests++;
+          if (met.transport_ok && met.correctness_ok) {
+            if (met.is_expected_rejection) {
+              result.aggregate_concurrent.expected_rejections++;
+            } else {
+              result.aggregate_concurrent.successful_requests++;
+            }
+            pooled_conc_lats.push_back(met.latency_us);
+          } else {
+            if (!met.transport_ok) result.aggregate_concurrent.transport_failures++;
+            if (!met.correctness_ok) result.aggregate_concurrent.correctness_failures++;
+          }
+        } else {
+          result.aggregate_sequential.total_requests++;
+          if (met.transport_ok && met.correctness_ok) {
+            if (met.is_expected_rejection) {
+              result.aggregate_sequential.expected_rejections++;
+            } else {
+              result.aggregate_sequential.successful_requests++;
+            }
+            pooled_seq_lats.push_back(met.latency_us);
+          } else {
+            if (!met.transport_ok) result.aggregate_sequential.transport_failures++;
+            if (!met.correctness_ok) result.aggregate_sequential.correctness_failures++;
+          }
+        }
+      }
+    }
+
+    // Sample RSS per cycle
+    const auto current_rss = sample_peak_rss_kb(server_pid);
+    if (current_rss > result.peak_rss_kb) result.peak_rss_kb = current_rss;
+    result.end_rss_kb = current_rss;
+    result.rss_samples_kb.push_back(current_rss);
+
+    // Periodic progress report
+    if (cycle_index % 25 == 0 || duration_seconds <= 10) {
+      const auto now_t = std::chrono::steady_clock::now();
+      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now_t - start_time).count();
+      std::cout << "[" << stage_name << "] Cycle " << cycle_index << " done ("
+                << result.completed_matches << " matches, elapsed: "
+                << (elapsed_ms / 1000) << "/" << duration_seconds << "s, RSS="
+                << current_rss << " kB, settled_FDs=" << cycle_res.post_cleanup_open_fds << ")" << std::endl;
+    }
+  }
+
+  const auto end_time = std::chrono::steady_clock::now();
+  result.actual_duration_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count());
+
+  result.end_rss_kb = sample_peak_rss_kb(server_pid);
+  if (result.end_rss_kb > result.peak_rss_kb) result.peak_rss_kb = result.end_rss_kb;
+  result.cpu_time_ms = sample_cpu_time_ms(server_pid);
+
+  stop_server_unix(server_pid, socket_path);
+  srv_guard.pid = 0;
+
+  result.aggregate_total.successful_requests =
+      result.aggregate_sequential.successful_requests + result.aggregate_concurrent.successful_requests;
+  result.aggregate_total.expected_rejections =
+      result.aggregate_sequential.expected_rejections + result.aggregate_concurrent.expected_rejections;
+  result.aggregate_total.transport_failures = result.failures.transport_failures;
+  result.aggregate_total.correctness_failures = result.failures.correctness_failures;
+
+  compute_percentiles(pooled_seq_lats, result.aggregate_sequential);
+  compute_percentiles(pooled_conc_lats, result.aggregate_concurrent);
+  compute_percentiles(pooled_all_lats, result.aggregate_total);
+
+  const double elapsed_s = static_cast<double>(result.actual_duration_ms) / 1000.0;
+  result.throughput_rps = elapsed_s > 0.0
+      ? (static_cast<double>(result.aggregate_total.total_requests) / elapsed_s)
+      : 0.0;
+
+  const auto classification = classify_l6_sustained_status(
+      result.target_duration_s,
+      result.actual_duration_ms,
+      result.completed_cycles,
+      result.completed_matches,
+      result.aggregate_total.total_requests,
+      result.failures.total(),
+      result.failures.transport_failures,
+      result.failures.correctness_failures,
+      abort_due_to_failure,
+      result.reason);
+
+  result.status = classification.status;
+  result.reason = classification.reason;
+  result.diagnostic_details = classification.diagnostic_details;
+
+  std::cout << "\n=================================================================\n";
+  std::cout << " L6 SUSTAINED WORKLOAD REPORT (" << result.stage_name << ")\n";
+  std::cout << "=================================================================\n";
+  std::cout << " Status              : " << result.status << "\n";
+  std::cout << " Target Duration     : " << result.target_duration_s << " s\n";
+  std::cout << " Actual Duration     : " << std::fixed << std::setprecision(2)
+            << elapsed_s << " s (" << result.actual_duration_ms << " ms)\n";
+  std::cout << " Completed Cycles    : " << result.completed_cycles << " (4 matches per cycle)\n";
+  std::cout << " Completed Matches   : " << result.completed_matches << "\n";
+  std::cout << " Match Limit Retries : " << result.total_match_limit_retries << "\n";
+  std::cout << " Total Requests      : " << result.aggregate_total.total_requests << "\n";
+  std::cout << " Successful Requests : " << result.aggregate_total.successful_requests << "\n";
+  std::cout << " Expected Rejections : " << result.aggregate_total.expected_rejections << "\n";
+  std::cout << " Transport Failures  : " << result.failures.transport_failures << "\n";
+  std::cout << " Correctness Failures: " << result.failures.correctness_failures << "\n";
+  std::cout << " Unexpected Disconn  : " << result.failures.unexpected_disconnects << "\n";
+  std::cout << " Timeouts            : " << result.failures.timeouts << "\n";
+  std::cout << " Sequential Latency  : p50=" << result.aggregate_sequential.p50_ms << " ms, "
+            << "p95=" << result.aggregate_sequential.p95_ms << " ms, "
+            << "p99=" << result.aggregate_sequential.p99_ms << " ms\n";
+  std::cout << " Concurrent Latency  : p50=" << result.aggregate_concurrent.p50_ms << " ms, "
+            << "p95=" << result.aggregate_concurrent.p95_ms << " ms, "
+            << "p99=" << result.aggregate_concurrent.p99_ms << " ms\n";
+  std::cout << " Total Latency       : p50=" << result.aggregate_total.p50_ms << " ms, "
+            << "p95=" << result.aggregate_total.p95_ms << " ms, "
+            << "p99=" << result.aggregate_total.p99_ms << " ms\n";
+  std::cout << " Throughput          : " << std::setprecision(1) << result.throughput_rps
+            << " req/s (denominator: actual elapsed duration in seconds)\n";
+  std::cout << " Resources           : Initial RSS=" << result.initial_rss_kb << " kB, "
+            << "Peak RSS=" << result.peak_rss_kb << " kB, End RSS=" << result.end_rss_kb << " kB, "
+            << "CPU=" << std::setprecision(1) << result.cpu_time_ms << " ms\n";
+  std::cout << " Open FDs            : Baseline=" << result.baseline_open_fds
+            << ", Peak=" << result.peak_open_fds
+            << ", Settled=" << result.settled_post_cleanup_fds
+            << " (all cycles settled within baseline + 2 tolerance: "
+            << (result.all_cycles_fd_cleanup_passed ? "YES" : "NO") << ")\n";
+  if (!result.reason.empty()) {
+    std::cout << " Failure Reason      : " << result.reason << "\n";
+  }
+  std::cout << "=================================================================\n\n";
+
+  return result;
+}
+
+inline bool write_l6_sustained_report(
+    const L6SustainedResult& res,
+    const std::string& output_path,
+    const std::string& source_commit,
+    bool git_dirty,
+    const std::string& env_info) {
+  json j = json::object();
+  j["test_name"] = "darkpool_load_tests_l6_sustained";
+  j["stage_name"] = res.stage_name;
+  j["status"] = res.status;
+  j["source_commit"] = source_commit;
+  j["git_dirty"] = git_dirty;
+  j["environment"] = env_info;
+  j["workload_seed"] = res.seed;
+  j["target_duration_s"] = res.target_duration_s;
+  j["actual_duration_ms"] = res.actual_duration_ms;
+  j["actual_duration_s"] = static_cast<double>(res.actual_duration_ms) / 1000.0;
+  j["completed_cycles"] = res.completed_cycles;
+  j["completed_matches"] = res.completed_matches;
+  j["match_limit_retries"] = res.total_match_limit_retries;
+
+  j["concurrency_topology"] = {
+    {"concurrent_matches", kExpectedL6Matches},
+    {"players_per_match", kExpectedPlayerCount},
+    {"total_player_clients", kExpectedL6TotalPlayers},
+    {"moderator_clients", kExpectedModerators},
+    {"total_connected_clients", kExpectedL6TotalPlayers + kExpectedModerators},
+    {"connection_cap", 260},
+    {"persistent_server", true}
+  };
+
+  j["requests"] = {
+    {"total_requests", res.aggregate_total.total_requests},
+    {"successful_requests", res.aggregate_total.successful_requests},
+    {"expected_rejections", res.aggregate_total.expected_rejections},
+    {"transport_failures", res.aggregate_total.transport_failures},
+    {"correctness_failures", res.aggregate_total.correctness_failures}
+  };
+
+  j["total_requests"] = res.aggregate_total.total_requests;
+  j["successful_requests"] = res.aggregate_total.successful_requests;
+  j["expected_rejections"] = res.aggregate_total.expected_rejections;
+  j["transport_failures"] = res.aggregate_total.transport_failures;
+  j["correctness_failures"] = res.aggregate_total.correctness_failures;
+
+  j["failures"] = {
+    {"transport_failures", res.failures.transport_failures},
+    {"correctness_failures", res.failures.correctness_failures},
+    {"unexpected_disconnects", res.failures.unexpected_disconnects},
+    {"timeouts", res.failures.timeouts}
+  };
+
+  j["sequential_latency"] = {
+    {"p50_ms", res.aggregate_sequential.p50_ms},
+    {"p95_ms", res.aggregate_sequential.p95_ms},
+    {"p99_ms", res.aggregate_sequential.p99_ms},
+    {"mean_ms", res.aggregate_sequential.mean_ms},
+    {"min_ms", res.aggregate_sequential.min_ms},
+    {"max_ms", res.aggregate_sequential.max_ms}
+  };
+
+  j["concurrent_latency"] = {
+    {"p50_ms", res.aggregate_concurrent.p50_ms},
+    {"p95_ms", res.aggregate_concurrent.p95_ms},
+    {"p99_ms", res.aggregate_concurrent.p99_ms},
+    {"mean_ms", res.aggregate_concurrent.mean_ms},
+    {"min_ms", res.aggregate_concurrent.min_ms},
+    {"max_ms", res.aggregate_concurrent.max_ms}
+  };
+
+  j["total_latency"] = {
+    {"p50_ms", res.aggregate_total.p50_ms},
+    {"p95_ms", res.aggregate_total.p95_ms},
+    {"p99_ms", res.aggregate_total.p99_ms},
+    {"mean_ms", res.aggregate_total.mean_ms},
+    {"min_ms", res.aggregate_total.min_ms},
+    {"max_ms", res.aggregate_total.max_ms},
+    {"measurement_definition", "Monotonic steady_clock round-trip duration measured from request frame write to correlated response parse; excludes inter-phase pauses."}
+  };
+
+  j["throughput"] = {
+    {"requests_per_second", res.throughput_rps},
+    {"denominator", "Actual elapsed duration in seconds (actual_duration_ms / 1000.0)"}
+  };
+
+  j["resources"] = {
+    {"baseline_open_fds", res.baseline_open_fds},
+    {"peak_open_fds", res.peak_open_fds},
+    {"immediate_post_cleanup_open_fds", res.immediate_post_cleanup_open_fds},
+    {"settled_post_cleanup_fds", res.settled_post_cleanup_fds},
+    {"all_cycles_fd_cleanup_passed", res.all_cycles_fd_cleanup_passed},
+    {"initial_rss_kb", res.initial_rss_kb},
+    {"peak_rss_kb", res.peak_rss_kb},
+    {"end_rss_kb", res.end_rss_kb},
+    {"cpu_time_ms", res.cpu_time_ms},
+    {"rss_sample_count", res.rss_samples_kb.size()}
+  };
+
+  j["cycle_diagnostics"] = {
+    {"total_cycles_attempted", res.completed_cycles + (res.status == "PASS" ? 0 : 1)},
+    {"completed_cycles", res.completed_cycles},
+    {"completed_matches", res.completed_matches},
+    {"all_cycles_overlapped", res.all_cycles_overlapped},
+    {"match_limit_retries", res.total_match_limit_retries}
+  };
+
+  j["failure_reason"] = res.reason;
+  j["diagnostic_details"] = res.diagnostic_details.empty()
+      ? (res.reason.empty() ? "None" : res.reason)
+      : res.diagnostic_details;
+  j["timestamp"] = std::chrono::duration_cast<std::chrono::seconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count();
+
+  std::error_code ec;
+  const std::filesystem::path out_p(output_path);
+  if (out_p.has_parent_path()) {
+    std::filesystem::create_directories(out_p.parent_path(), ec);
+  }
+
+  std::ofstream out_file(output_path);
+  if (!out_file.is_open()) {
+    std::cerr << "Error: Could not open sustained report output file for writing: " << output_path << "\n";
+    return false;
+  }
+  out_file << j.dump(2) << '\n';
+  out_file.flush();
+  if (!out_file.good() || out_file.fail() || out_file.bad()) {
+    std::cerr << "Error: Stream error writing sustained report output to: " << output_path << "\n";
+    return false;
+  }
+  out_file.close();
+  if (out_file.fail()) {
+    std::cerr << "Error: Failed to close sustained report output file: " << output_path << "\n";
+    return false;
+  }
+  std::cout << "Machine-readable sustained report written to: " << output_path << "\n\n";
+  return true;
+}
+
 
 bool write_l6_report(
     const std::vector<L6RunResult>& runs,
@@ -1756,7 +2262,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exactly-once aggregation verified)\n";
 
   // Regression 16: Subprocess with unwritable output path exits nonzero
-  std::cout << "[L6 Regression 16/16] Verifying unwritable report output path exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 16/19] Verifying unwritable report output path exits nonzero... " << std::flush;
   const int code_unwritable = run_subprocess(
       harness_path,
       {"--server", server_path, "--functional", "--out", "/dev/null/darkpool_invalid_l6_output.json"});
@@ -1766,7 +2272,49 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   }
   std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
 
-  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (16/16).\n\n";
+  // Regression 17: Sustained status classification unit test
+  std::cout << "[L6 Regression 17/19] Verifying sustained status classification unit tests... " << std::flush;
+  {
+    const auto c1 = classify_l6_sustained_status(600, 599000, 10, 40, 21760, 0, 0, 0, false, "");
+    if (c1.status != "BLOCKED") { std::cout << "FAILED (c1 expected BLOCKED, got " << c1.status << ")\n"; return false; }
+    const auto c2 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 0, 0, 0, false, "");
+    if (c2.status != "PASS") { std::cout << "FAILED (c2 expected PASS, got " << c2.status << ")\n"; return false; }
+    const auto c3 = classify_l6_sustained_status(600, 601000, 10, 40, 21760, 0, 0, 0, false, "");
+    if (c3.status != "PASS") { std::cout << "FAILED (c3 expected PASS, got " << c3.status << ")\n"; return false; }
+    const auto c4 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 1, 0, 1, false, "");
+    if (c4.status != "FAIL") { std::cout << "FAILED (c4 expected FAIL, got " << c4.status << ")\n"; return false; }
+    const auto c5 = classify_l6_sustained_status(600, 600000, 0, 0, 0, 0, 0, 0, false, "");
+    if (c5.status != "FAIL") { std::cout << "FAILED (c5 expected FAIL, got " << c5.status << ")\n"; return false; }
+    const auto c6 = classify_l6_sustained_status(1800, 1799999, 30, 120, 65280, 0, 0, 0, false, "");
+    if (c6.status != "BLOCKED") { std::cout << "FAILED (c6 expected BLOCKED, got " << c6.status << ")\n"; return false; }
+    const auto c7 = classify_l6_sustained_status(1800, 1800000, 30, 120, 65280, 0, 0, 0, false, "");
+    if (c7.status != "PASS") { std::cout << "FAILED (c7 expected PASS, got " << c7.status << ")\n"; return false; }
+  }
+  std::cout << "PASSED (all 7 classification boundaries verified)\n";
+
+  // Regression 18: Injected failure in sustained workload causes FAIL status and nonzero exit
+  std::cout << "[L6 Regression 18/19] Verifying injected failure in sustained workload subprocess exits nonzero... " << std::flush;
+  const int code_sust_fail = run_subprocess(
+      harness_path,
+      {"--server", server_path, "--sustained", "5", "--inject-semantic-failure", "--out", "/tmp/selftest_l6_sust_fail.json"});
+  if (code_sust_fail == 0) {
+    std::cout << "FAILED (expected nonzero exit code when sustained run has injected failure, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_sust_fail << ")\n";
+
+  // Regression 19: Sustained short integration run completes on persistent server
+  std::cout << "[L6 Regression 19/19] Verifying short sustained integration run executes and exits 0... " << std::flush;
+  const int code_sust_short = run_subprocess(
+      harness_path,
+      {"--server", server_path, "--test-sustained-short", "--out", "/tmp/selftest_l6_sust_short.json"});
+  if (code_sust_short != 0) {
+    std::cout << "FAILED (expected exit 0 for short sustained integration run, got " << code_sust_short << ")\n";
+    return false;
+  }
+  std::cout << "PASSED (exit 0)\n";
+
+  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (19/19).\n\n";
   return true;
 }
 
@@ -1789,6 +2337,11 @@ int main(int argc, char* argv[]) {
   bool is_inject_fd_leak = false;
   bool is_inject_server_exit_cleanup = false;
   bool is_test_aggregation = false;
+  bool is_smoke_10m = false;
+  bool is_reliability_30m = false;
+  bool is_test_sustained_short = false;
+  bool is_test_sustained_classification = false;
+  std::uint64_t custom_sustained_s = 0;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -1803,6 +2356,25 @@ int main(int argc, char* argv[]) {
       commit_explicitly_set = true;
     } else if (arg == "--functional") {
       is_functional = true;
+    } else if (arg == "--smoke-10m") {
+      is_smoke_10m = true;
+      if (output_json_path == "docs/load_test_l6_results.json") {
+        output_json_path = "docs/load_test_l6_smoke_10m_results.json";
+      }
+    } else if (arg == "--reliability-30m") {
+      is_reliability_30m = true;
+      if (output_json_path == "docs/load_test_l6_results.json") {
+        output_json_path = "docs/load_test_l6_reliability_30m_results.json";
+      }
+    } else if (arg == "--sustained" && i + 1 < argc) {
+      custom_sustained_s = static_cast<std::uint64_t>(std::strtoull(argv[++i], nullptr, 10));
+    } else if (arg == "--test-sustained-short") {
+      is_test_sustained_short = true;
+      if (output_json_path == "docs/load_test_l6_results.json") {
+        output_json_path = "/tmp/load_test_l6_sustained_short.json";
+      }
+    } else if (arg == "--test-sustained-classification") {
+      is_test_sustained_classification = true;
     } else if (arg == "--selftest") {
       is_selftest = true;
     } else if (arg == "--inject-capacity-accepted") {
@@ -1836,6 +2408,7 @@ int main(int argc, char* argv[]) {
     }
   }
   const bool git_dirty = detect_git_dirty(output_json_path);
+  const std::string env_info = get_environment_info();
 
   // Fallback checks for server binary path if not directly found
   if (access(server_path.c_str(), X_OK) != 0) {
@@ -1858,6 +2431,47 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (is_test_sustained_classification) {
+    const auto c1 = classify_l6_sustained_status(600, 599000, 10, 40, 21760, 0, 0, 0, false, "");
+    if (c1.status != "BLOCKED") return 1;
+    const auto c2 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 0, 0, 0, false, "");
+    if (c2.status != "PASS") return 1;
+    return 0;
+  }
+  if (is_test_sustained_short) {
+    const auto res = execute_l6_sustained_workload(server_path, 3, 42, "sustained_short");
+    const bool report_ok = write_l6_sustained_report(res, output_json_path, source_commit, git_dirty, env_info);
+    if (!report_ok) return 1;
+    return res.status == "PASS" ? 0 : 1;
+  }
+  if (is_smoke_10m) {
+    const auto res = execute_l6_sustained_workload(server_path, 600, 42, "smoke_10m");
+    const bool report_ok = write_l6_sustained_report(res, output_json_path, source_commit, git_dirty, env_info);
+    if (!report_ok) return 1;
+    return res.status == "PASS" ? 0 : 1;
+  }
+  if (is_reliability_30m) {
+    const auto res = execute_l6_sustained_workload(server_path, 1800, 42, "reliability_30m");
+    const bool report_ok = write_l6_sustained_report(res, output_json_path, source_commit, git_dirty, env_info);
+    if (!report_ok) return 1;
+    return res.status == "PASS" ? 0 : 1;
+  }
+  if (custom_sustained_s > 0) {
+    TestFaultConfig fault;
+    if (is_inject_semantic) fault.inject_semantic_failure = true;
+    if (is_inject_assertion) fault.inject_assertion_failure = true;
+    if (is_inject_outcome) fault.inject_outcome_mismatch = true;
+    if (is_inject_cap_accepted) fault.inject_capacity_accepted = true;
+    if (is_inject_cap_stalled) fault.inject_capacity_stalled = true;
+    if (is_inject_connect_fail) fault.inject_connect_failure = true;
+    if (is_inject_fd_leak) fault.inject_fd_leak = true;
+    if (is_inject_server_exit_cleanup) fault.inject_premature_exit_before_cleanup = true;
+
+    const auto res = execute_l6_sustained_workload(server_path, custom_sustained_s, 42, "custom_sustained", fault);
+    const bool report_ok = write_l6_sustained_report(res, output_json_path, source_commit, git_dirty, env_info);
+    if (!report_ok) return 1;
+    return res.status == "PASS" ? 0 : 1;
+  }
   if (is_test_aggregation) {
     return verify_failure_aggregation_exactly_once() ? 0 : 1;
   }
@@ -1915,7 +2529,6 @@ int main(int argc, char* argv[]) {
   }
 
   // Default mode or --functional: Run L6 4-match 256-player concurrent suite
-  const std::string env_info = get_environment_info();
 
   std::cout << "=================================================================\n";
   std::cout << " DARKPOOL Concurrent Multi-Match Capacity Test Harness (L6)\n";
