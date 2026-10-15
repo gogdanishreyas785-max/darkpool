@@ -133,6 +133,7 @@ struct TestFaultConfig {
   bool inject_capacity_stalled{false};
   bool inject_connect_failure{false};
   bool inject_fd_leak{false};
+  bool inject_premature_exit_before_cleanup{false};
 };
 
 struct ValidationResult {
@@ -605,10 +606,23 @@ inline double sample_cpu_time_ms(pid_t pid) {
   return 0.0;
 }
 
-inline std::size_t sample_open_fds(pid_t pid) {
+inline bool is_process_alive(pid_t pid) {
+  if (pid <= 0) return false;
+  int status = 0;
+  const pid_t w = waitpid(pid, &status, WNOHANG);
+  if (w == pid) {
+    return false;
+  }
+  return (kill(pid, 0) == 0);
+}
+
+inline std::optional<std::size_t> sample_open_fds(pid_t pid) {
+  if (!is_process_alive(pid)) {
+    return std::nullopt;
+  }
   const std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
   DIR* dir = opendir(fd_dir.c_str());
-  if (!dir) return 0;
+  if (!dir) return std::nullopt;
   std::size_t count = 0;
   while (struct dirent* entry = readdir(dir)) {
     if (entry->d_name[0] != '.') ++count;
@@ -622,6 +636,9 @@ struct FdCleanupReport {
   std::size_t settled_open_fds{0};
   std::uint64_t settle_time_ms{0};
   bool settled_within_tolerance{false};
+  bool sampling_failed{false};
+  bool server_exited_prematurely{false};
+  std::string failure_reason;
 };
 
 inline FdCleanupReport sample_settled_open_fds(
@@ -630,12 +647,35 @@ inline FdCleanupReport sample_settled_open_fds(
     std::size_t allowed_tolerance = 2,
     std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
   FdCleanupReport rep{};
-  rep.immediate_open_fds = sample_open_fds(pid);
+  if (!is_process_alive(pid)) {
+    rep.server_exited_prematurely = true;
+    rep.sampling_failed = true;
+    rep.settled_within_tolerance = false;
+    rep.failure_reason = "Server process exited prematurely before FD cleanup sampling";
+    return rep;
+  }
+
+  const auto initial_opt = sample_open_fds(pid);
+  if (!initial_opt.has_value()) {
+    rep.sampling_failed = true;
+    rep.settled_within_tolerance = false;
+    rep.failure_reason = "Failed to sample immediate open FDs from /proc/" + std::to_string(pid) + "/fd";
+    return rep;
+  }
+  rep.immediate_open_fds = *initial_opt;
   const auto start = std::chrono::steady_clock::now();
   const std::size_t max_allowed = baseline_fds + allowed_tolerance;
 
   std::size_t current = rep.immediate_open_fds;
   while (true) {
+    if (!is_process_alive(pid)) {
+      rep.server_exited_prematurely = true;
+      rep.sampling_failed = true;
+      rep.settled_within_tolerance = false;
+      rep.failure_reason = "Server process terminated unexpectedly during FD settle polling";
+      return rep;
+    }
+
     if (current <= max_allowed) {
       rep.settled_open_fds = current;
       rep.settled_within_tolerance = true;
@@ -649,7 +689,14 @@ inline FdCleanupReport sample_settled_open_fds(
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    current = sample_open_fds(pid);
+    const auto current_opt = sample_open_fds(pid);
+    if (!current_opt.has_value()) {
+      rep.sampling_failed = true;
+      rep.settled_within_tolerance = false;
+      rep.failure_reason = "Failed to sample open FDs during settle polling for PID " + std::to_string(pid);
+      return rep;
+    }
+    current = *current_opt;
   }
 
   rep.settled_open_fds = current;
@@ -657,6 +704,12 @@ inline FdCleanupReport sample_settled_open_fds(
   rep.settle_time_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::steady_clock::now() - start).count());
+  if (!rep.settled_within_tolerance) {
+    rep.failure_reason = "FD count (" + std::to_string(current) +
+                         ") did not settle to baseline (" + std::to_string(baseline_fds) +
+                         ") within tolerance of " + std::to_string(allowed_tolerance) +
+                         " before timeout";
+  }
   return rep;
 }
 

@@ -193,8 +193,9 @@ inline CapacityRejectionOutcome verify_connection_cap_rejection(
   tv.tv_sec = static_cast<time_t>(timeout.count() / 1000);
   tv.tv_usec = static_cast<suseconds_t>((timeout.count() % 1000) * 1000);
   (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  (void)setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-  char buf[64];
+  char buf[512];
   const auto r = recv(fd, buf, sizeof(buf), 0);
   (void)close(fd);
 
@@ -202,12 +203,72 @@ inline CapacityRejectionOutcome verify_connection_cap_rejection(
     return CapacityRejectionOutcome::PromptEofClosed;
   }
   if (r > 0) {
+    std::size_t consumed = 0;
+    const auto parsed = Frame::parse(std::string(buf, static_cast<std::size_t>(r)), consumed);
+    if (parsed) {
+      const auto& p = parsed->payload();
+      if (p.is_object() && p.value("type", "") == "error") {
+        return CapacityRejectionOutcome::ExplicitRejectionFrame;
+      }
+      if (p.is_object() && p.value("type", "") == "connect") {
+        return CapacityRejectionOutcome::UnexpectedAcceptance;
+      }
+    }
     return CapacityRejectionOutcome::UnexpectedData;
   }
   if (r < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
     return CapacityRejectionOutcome::TimedOutWithoutClose;
   }
   return CapacityRejectionOutcome::SocketReadError;
+}
+
+inline bool evaluate_capacity_outcome(
+    CapacityRejectionOutcome outcome,
+    const std::string& test_name,
+    FailureCounts& run_failures) {
+  switch (outcome) {
+    case CapacityRejectionOutcome::PromptEofClosed:
+    case CapacityRejectionOutcome::ExplicitRejectionFrame:
+      return true;
+    case CapacityRejectionOutcome::UnexpectedAcceptance:
+      run_failures.correctness_failures++;
+      run_failures.last_failure_reason = test_name + " was unexpectedly accepted";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+    case CapacityRejectionOutcome::UnexpectedData:
+      run_failures.correctness_failures++;
+      run_failures.last_failure_reason = test_name + " received unexpected data";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+    case CapacityRejectionOutcome::TimedOutWithoutClose:
+      run_failures.timeouts++;
+      run_failures.transport_failures++;
+      run_failures.last_failure_reason = test_name + " timed out without server rejection/closure";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+    case CapacityRejectionOutcome::ConnectFailed:
+      run_failures.unexpected_disconnects++;
+      run_failures.transport_failures++;
+      run_failures.last_failure_reason = test_name + " failed to establish connection";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+    case CapacityRejectionOutcome::SendFailed:
+      run_failures.unexpected_disconnects++;
+      run_failures.transport_failures++;
+      run_failures.last_failure_reason = test_name + " failed to send handshake";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+    case CapacityRejectionOutcome::SocketReadError:
+      run_failures.unexpected_disconnects++;
+      run_failures.transport_failures++;
+      run_failures.last_failure_reason = test_name + " encountered socket read error";
+      std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+      return false;
+  }
+  run_failures.correctness_failures++;
+  run_failures.last_failure_reason = test_name + ": unknown outcome";
+  std::cerr << "[L6] CAPACITY ERROR: " << run_failures.last_failure_reason << '\n';
+  return false;
 }
 
 struct MatchRunRecord {
@@ -330,7 +391,14 @@ L6RunResult execute_l6_concurrent_matches(
   (void)close(probe_fd);
 
   // Baseline Open FDs (0 connected clients)
-  result.baseline_open_fds = sample_open_fds(server_pid);
+  const auto base_fds = sample_open_fds(server_pid);
+  if (!base_fds.has_value()) {
+    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to sample baseline open FDs\n";
+    result.failures.correctness_failures++;
+    result.failures.last_failure_reason = "Failed to sample baseline open FDs";
+    return result;
+  }
+  result.baseline_open_fds = *base_fds;
 
   const auto run_start = std::chrono::steady_clock::now();
 
@@ -397,28 +465,7 @@ L6RunResult execute_l6_concurrent_matches(
   }
 
   const auto mod5_outcome = verify_fifth_moderator_rejection(mod5_target_sock, mod_token, mod5_timeout);
-  if (mod5_outcome == CapacityRejectionOutcome::TimedOutWithoutClose) {
-    result.failures.timeouts++;
-    result.failures.transport_failures++;
-    result.matches[0].failures.timeouts++;
-    result.matches[0].failures.transport_failures++;
-    result.matches[0].failures.last_failure_reason = "5th moderator connection timed out without server rejection/closure";
-  } else if (mod5_outcome == CapacityRejectionOutcome::ConnectFailed) {
-    result.failures.unexpected_disconnects++;
-    result.failures.transport_failures++;
-    result.matches[0].failures.unexpected_disconnects++;
-    result.matches[0].failures.transport_failures++;
-    result.matches[0].failures.last_failure_reason = "5th moderator connection failed to establish";
-  } else if (mod5_outcome == CapacityRejectionOutcome::UnexpectedAcceptance) {
-    result.failures.correctness_failures++;
-    result.matches[0].failures.correctness_failures++;
-    result.matches[0].failures.last_failure_reason = "5th moderator connection unexpectedly accepted";
-  }
-  const bool mod5_rejected = (mod5_outcome == CapacityRejectionOutcome::PromptEofClosed ||
-                              mod5_outcome == CapacityRejectionOutcome::ExplicitRejectionFrame);
-  L6_VERIFY_STATE(mod5_rejected, result.matches[0],
-                  std::string("5th moderator connection must be deterministically rejected, but got: ") +
-                      capacity_outcome_string(mod5_outcome));
+  (void)evaluate_capacity_outcome(mod5_outcome, "5th moderator connection", result.failures);
 
   // 2. Create 4 Concurrent Matches (each moderator creates its own match)
   std::vector<std::uint64_t> match_ids(kExpectedL6Matches, 0);
@@ -531,10 +578,8 @@ L6RunResult execute_l6_concurrent_matches(
         result.matches[0].failures.transport_failures++;
         result.matches[0].failures.unexpected_disconnects++;
         result.matches[0].failures.last_failure_reason = "Failed to connect client for excess 65th player test";
-      }
-      L6_VERIFY_STATE(extra_pfd >= 0, result.matches[0],
-                      "Failed to connect client for excess 65th player test");
-      if (extra_pfd >= 0) {
+        std::cerr << "[L6] STATE ERROR: Failed to connect client for excess 65th player test\n";
+      } else {
         const auto p_hello = timed_request(
             extra_pfd,
             json{{"type", "connect"}, {"role", "player"}},
@@ -557,32 +602,18 @@ L6RunResult execute_l6_concurrent_matches(
   }
 
   // 4. Sample Peak Open FDs (all 260 clients: 4 moderators + 256 players connected)
-  result.peak_open_fds = sample_open_fds(server_pid);
+  const auto peak_fds = sample_open_fds(server_pid);
+  if (!peak_fds.has_value()) {
+    std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to sample peak open FDs\n";
+    result.failures.correctness_failures++;
+    result.failures.last_failure_reason = "Failed to sample peak open FDs";
+    return result;
+  }
+  result.peak_open_fds = *peak_fds;
 
   // Negative test: 261st connection cap (260 maximum connections) must be deterministically rejected
   const auto cap_outcome = verify_connection_cap_rejection(socket_path);
-  if (cap_outcome == CapacityRejectionOutcome::TimedOutWithoutClose) {
-    result.failures.timeouts++;
-    result.failures.transport_failures++;
-    result.matches[0].failures.timeouts++;
-    result.matches[0].failures.transport_failures++;
-    result.matches[0].failures.last_failure_reason = "261st connection timed out without server rejection/closure";
-  } else if (cap_outcome == CapacityRejectionOutcome::ConnectFailed) {
-    result.failures.unexpected_disconnects++;
-    result.failures.transport_failures++;
-    result.matches[0].failures.unexpected_disconnects++;
-    result.matches[0].failures.transport_failures++;
-    result.matches[0].failures.last_failure_reason = "261st connection failed to establish";
-  } else if (cap_outcome == CapacityRejectionOutcome::UnexpectedAcceptance) {
-    result.failures.correctness_failures++;
-    result.matches[0].failures.correctness_failures++;
-    result.matches[0].failures.last_failure_reason = "261st connection unexpectedly accepted";
-  }
-  const bool cap_rejected = (cap_outcome == CapacityRejectionOutcome::PromptEofClosed ||
-                             cap_outcome == CapacityRejectionOutcome::ExplicitRejectionFrame);
-  L6_VERIFY_STATE(cap_rejected, result.matches[0],
-                  std::string("261st connection beyond capacity limit (260) must be closed by server, but got: ") +
-                      capacity_outcome_string(cap_outcome));
+  (void)evaluate_capacity_outcome(cap_outcome, "261st connection", result.failures);
 
   // Negative test: Cross-match player action isolation
   // Player belonging to Match 0 attempts to vote in Match 1
@@ -774,6 +805,7 @@ L6RunResult execute_l6_concurrent_matches(
       std::uint64_t latency_us{0};
       bool transport_ok{false};
       bool correctness_ok{false};
+      FailureCounts failure_counts;
       std::string failure_reason;
     };
     std::vector<ThreadTradeOutcome> outcomes(kExpectedL6TotalPlayers);
@@ -803,6 +835,7 @@ L6RunResult execute_l6_concurrent_matches(
             outcomes[global_idx].correctness_ok = local_met[0].correctness_ok;
           }
           if (!resp.has_value()) {
+            outcomes[global_idx].failure_counts = local_fail;
             outcomes[global_idx].failure_reason = local_fail.last_failure_reason;
           }
         });
@@ -825,12 +858,11 @@ L6RunResult execute_l6_concurrent_matches(
             o.transport_ok,
             o.correctness_ok,
             /*is_expected_rejection=*/false});
-        if (!o.transport_ok) {
-          result.matches[m].failures.transport_failures++;
-          result.matches[m].failures.last_failure_reason = o.failure_reason;
-        }
-        if (!o.correctness_ok) {
-          result.matches[m].failures.correctness_failures++;
+        if (!o.transport_ok || !o.correctness_ok) {
+          result.matches[m].failures.transport_failures += o.failure_counts.transport_failures;
+          result.matches[m].failures.correctness_failures += o.failure_counts.correctness_failures;
+          result.matches[m].failures.timeouts += o.failure_counts.timeouts;
+          result.matches[m].failures.unexpected_disconnects += o.failure_counts.unexpected_disconnects;
           result.matches[m].failures.last_failure_reason = o.failure_reason;
         }
       }
@@ -867,6 +899,7 @@ L6RunResult execute_l6_concurrent_matches(
       std::uint64_t latency_us{0};
       bool transport_ok{false};
       bool correctness_ok{false};
+      FailureCounts failure_counts;
       std::string failure_reason;
     };
     std::vector<ThreadVoteOutcome> outcomes(kExpectedL6TotalPlayers);
@@ -896,6 +929,7 @@ L6RunResult execute_l6_concurrent_matches(
             outcomes[global_idx].correctness_ok = local_met[0].correctness_ok;
           }
           if (!resp.has_value()) {
+            outcomes[global_idx].failure_counts = local_fail;
             outcomes[global_idx].failure_reason = local_fail.last_failure_reason;
           }
         });
@@ -918,12 +952,11 @@ L6RunResult execute_l6_concurrent_matches(
             o.transport_ok,
             o.correctness_ok,
             /*is_expected_rejection=*/false});
-        if (!o.transport_ok) {
-          result.matches[m].failures.transport_failures++;
-          result.matches[m].failures.last_failure_reason = o.failure_reason;
-        }
-        if (!o.correctness_ok) {
-          result.matches[m].failures.correctness_failures++;
+        if (!o.transport_ok || !o.correctness_ok) {
+          result.matches[m].failures.transport_failures += o.failure_counts.transport_failures;
+          result.matches[m].failures.correctness_failures += o.failure_counts.correctness_failures;
+          result.matches[m].failures.timeouts += o.failure_counts.timeouts;
+          result.matches[m].failures.unexpected_disconnects += o.failure_counts.unexpected_disconnects;
           result.matches[m].failures.last_failure_reason = o.failure_reason;
         }
       }
@@ -1082,6 +1115,15 @@ L6RunResult execute_l6_concurrent_matches(
   // Full client cleanup
   cleanup_all();
 
+  // Fault injection: premature server exit during FD cleanup
+  if (fault_cfg.inject_premature_exit_before_cleanup) {
+    if (server_pid > 0) {
+      (void)kill(server_pid, SIGKILL);
+      int status = 0;
+      (void)waitpid(server_pid, &status, 0);
+    }
+  }
+
   // Bounded polling for server to process disconnect events and settle FDs
   const auto fd_report = sample_settled_open_fds(
       server_pid,
@@ -1099,13 +1141,16 @@ L6RunResult execute_l6_concurrent_matches(
     result.post_cleanup_open_fds = result.baseline_open_fds + 100;
   }
 
-  L6_VERIFY_STATE(
-      result.post_cleanup_settled,
-      result.matches[0],
-      "Post-cleanup server FDs failed to settle within baseline tolerance (" +
-          std::to_string(result.post_cleanup_open_fds) + " FDs vs baseline " +
-          std::to_string(result.baseline_open_fds) + " after " +
-          std::to_string(result.cleanup_settle_time_ms) + " ms)");
+  if (!result.post_cleanup_settled) {
+    result.failures.correctness_failures++;
+    result.failures.last_failure_reason = fd_report.failure_reason.empty()
+        ? ("Post-cleanup server FDs failed to settle within baseline tolerance (" +
+           std::to_string(result.post_cleanup_open_fds) + " FDs vs baseline " +
+           std::to_string(result.baseline_open_fds) + " after " +
+           std::to_string(result.cleanup_settle_time_ms) + " ms)")
+        : fd_report.failure_reason;
+    std::cerr << "[L6] STATE ERROR: " << result.failures.last_failure_reason << '\n';
+  }
 
   // Sample Peak RSS and CPU
   result.peak_rss_kb = sample_peak_rss_kb(server_pid);
@@ -1213,7 +1258,8 @@ L6RunResult execute_l6_concurrent_matches(
 
   const double elapsed_s = static_cast<double>(result.duration_ms) / 1000.0;
   result.throughput_rps = elapsed_s > 0.0 ? (static_cast<double>(result.aggregate_total.total_requests) / elapsed_s) : 0.0;
-  result.run_passed = all_passed && (result.failures.total() == 0) && result.all_matches_overlapped;
+  result.run_passed = all_passed && (result.failures.total() == 0) &&
+                      result.all_matches_overlapped && result.post_cleanup_settled;
 
   return result;
 }
@@ -1471,13 +1517,69 @@ bool write_l6_report(
   return true;
 }
 
+bool verify_failure_aggregation_exactly_once() {
+  // Test 1: Capacity outcome evaluation classifies correctly and counts exactly once
+  {
+    FailureCounts f;
+    const bool ok1 = evaluate_capacity_outcome(CapacityRejectionOutcome::PromptEofClosed, "test_prompt", f);
+    if (!ok1 || f.total() != 0) return false;
+
+    const bool ok2 = evaluate_capacity_outcome(CapacityRejectionOutcome::ExplicitRejectionFrame, "test_frame", f);
+    if (!ok2 || f.total() != 0) return false;
+
+    const bool ok3 = evaluate_capacity_outcome(CapacityRejectionOutcome::UnexpectedAcceptance, "test_acc", f);
+    if (ok3 || f.correctness_failures != 1 || f.total() != 1) return false;
+
+    const bool ok4 = evaluate_capacity_outcome(CapacityRejectionOutcome::TimedOutWithoutClose, "test_timeout", f);
+    if (ok4 || f.timeouts != 1 || f.transport_failures != 1 || f.total() != 2) return false;
+
+    const bool ok5 = evaluate_capacity_outcome(CapacityRejectionOutcome::ConnectFailed, "test_conn_fail", f);
+    if (ok5 || f.unexpected_disconnects != 1 || f.transport_failures != 2 || f.total() != 3) return false;
+  }
+
+  // Test 2: Aggregation across matches and run-level failures produces exactly-once totals
+  {
+    L6RunResult res;
+    res.matches.resize(kExpectedL6Matches);
+    // Add 1 run-level failure (e.g. from capacity check timeout)
+    evaluate_capacity_outcome(CapacityRejectionOutcome::TimedOutWithoutClose, "run_cap", res.failures);
+
+    // Match 0 has 1 transport failure (unexpected disconnect)
+    res.matches[0].failures.transport_failures = 1;
+    res.matches[0].failures.unexpected_disconnects = 1;
+
+    // Match 1 has 1 correctness failure
+    res.matches[1].failures.correctness_failures = 1;
+
+    // Simulate aggregation loop
+    for (std::size_t m = 0; m < kExpectedL6Matches; ++m) {
+      res.failures.transport_failures += res.matches[m].failures.transport_failures;
+      res.failures.correctness_failures += res.matches[m].failures.correctness_failures;
+      res.failures.unexpected_disconnects += res.matches[m].failures.unexpected_disconnects;
+      res.failures.timeouts += res.matches[m].failures.timeouts;
+    }
+    res.aggregate_total.transport_failures = res.failures.transport_failures;
+    res.aggregate_total.correctness_failures = res.failures.correctness_failures;
+
+    if (res.failures.timeouts != 1) return false;
+    if (res.failures.unexpected_disconnects != 1) return false;
+    if (res.failures.transport_failures != 2) return false;
+    if (res.failures.correctness_failures != 1) return false;
+    if (res.failures.total() != 3) return false;
+    if (res.aggregate_total.transport_failures != 2) return false;
+    if (res.aggregate_total.correctness_failures != 1) return false;
+  }
+
+  return true;
+}
+
 bool run_l6_regression_selftest(const std::string& harness_path, const std::string& server_path) {
   std::cout << "=================================================================\n";
   std::cout << " Running DARKPOOL L6 (256-Player / 4-Match) Regression Tests\n";
   std::cout << "=================================================================\n";
 
   // Regression 1: Normal 4-match 256-player concurrent execution with 4 independent moderators
-  std::cout << "[L6 Regression 1/11] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
+  std::cout << "[L6 Regression 1/14] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
   const auto run_res = execute_l6_concurrent_matches(server_path, 1, {});
   if (!run_res.run_passed || !run_res.all_matches_overlapped || run_res.moderator_clients != 4) {
     std::cout << "FAILED (run failed or matches did not overlap or mod count != 4)\n";
@@ -1487,8 +1589,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
             << run_res.overlap_duration_ms << " ms)\n";
 
   // Regression 2: Subprocess normal run exits 0
-  std::cout << "[L6 Regression 2/11] Verifying normal L6 subprocess exits 0... " << std::flush;
-  const int code_norm = run_subprocess(harness_path, {"--server", server_path, "--functional"});
+  std::cout << "[L6 Regression 2/14] Verifying normal L6 subprocess exits 0... " << std::flush;
+  const int code_norm = run_subprocess(harness_path, {"--server", server_path, "--functional", "--out", "/tmp/selftest_l6_norm.json"});
   if (code_norm != 0) {
     std::cout << "FAILED (expected exit 0, got " << code_norm << ")\n";
     return false;
@@ -1496,8 +1598,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exit code 0)\n";
 
   // Regression 3: Injected assertion failure subprocess exits nonzero
-  std::cout << "[L6 Regression 3/11] Verifying assertion failure subprocess exits nonzero... " << std::flush;
-  const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure"});
+  std::cout << "[L6 Regression 3/14] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure", "--out", "/tmp/selftest_l6_assert.json"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
@@ -1505,8 +1607,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
   // Regression 4: Injected outcome mismatch subprocess exits nonzero
-  std::cout << "[L6 Regression 4/11] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
-  const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch"});
+  std::cout << "[L6 Regression 4/14] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch", "--out", "/tmp/selftest_l6_outcome.json"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
@@ -1514,8 +1616,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
   // Regression 5: Injected semantic failure subprocess exits nonzero
-  std::cout << "[L6 Regression 5/11] Verifying semantic failure subprocess exits nonzero... " << std::flush;
-  const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure"});
+  std::cout << "[L6 Regression 5/14] Verifying semantic failure subprocess exits nonzero... " << std::flush;
+  const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure", "--out", "/tmp/selftest_l6_semantic.json"});
   if (code_semantic == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
     return false;
@@ -1523,8 +1625,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
 
   // Regression 6: Injected capacity accepted subprocess exits nonzero
-  std::cout << "[L6 Regression 6/11] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
-  const int code_cap_acc = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-accepted"});
+  std::cout << "[L6 Regression 6/14] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  const int code_cap_acc = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-accepted", "--out", "/tmp/selftest_l6_cap_acc.json"});
   if (code_cap_acc == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity is violated, got 0)\n";
     return false;
@@ -1532,8 +1634,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_acc << ")\n";
 
   // Regression 7: Injected capacity stalled subprocess exits nonzero
-  std::cout << "[L6 Regression 7/11] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
-  const int code_cap_stall = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-stalled"});
+  std::cout << "[L6 Regression 7/14] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  const int code_cap_stall = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-stalled", "--out", "/tmp/selftest_l6_cap_stall.json"});
   if (code_cap_stall == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity stalls, got 0)\n";
     return false;
@@ -1541,8 +1643,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_stall << ")\n";
 
   // Regression 8: Injected connection-establishment failure subprocess exits nonzero
-  std::cout << "[L6 Regression 8/11] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
-  const int code_conn_fail = run_subprocess(harness_path, {"--server", server_path, "--inject-connect-failure"});
+  std::cout << "[L6 Regression 8/14] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
+  const int code_conn_fail = run_subprocess(harness_path, {"--server", server_path, "--inject-connect-failure", "--out", "/tmp/selftest_l6_conn_fail.json"});
   if (code_conn_fail == 0) {
     std::cout << "FAILED (expected nonzero exit code when connection establishment fails, got 0)\n";
     return false;
@@ -1550,8 +1652,8 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_conn_fail << ")\n";
 
   // Regression 9: Unreachable server binary connection failure exits nonzero
-  std::cout << "[L6 Regression 9/11] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
-  const int code_unreach = run_subprocess(harness_path, {"--server", "/bin/false", "--functional"});
+  std::cout << "[L6 Regression 9/14] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
+  const int code_unreach = run_subprocess(harness_path, {"--server", "/bin/false", "--functional", "--out", "/tmp/selftest_l6_unreach.json"});
   if (code_unreach == 0) {
     std::cout << "FAILED (expected nonzero exit code when server binary is unreachable, got 0)\n";
     return false;
@@ -1559,16 +1661,50 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_unreach << ")\n";
 
   // Regression 10: Injected FD cleanup leak subprocess exits nonzero
-  std::cout << "[L6 Regression 10/11] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
-  const int code_fd_leak = run_subprocess(harness_path, {"--server", server_path, "--inject-fd-leak"});
+  std::cout << "[L6 Regression 10/14] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
+  const int code_fd_leak = run_subprocess(harness_path, {"--server", server_path, "--inject-fd-leak", "--out", "/tmp/selftest_l6_fd_leak.json"});
   if (code_fd_leak == 0) {
     std::cout << "FAILED (expected nonzero exit code when FDs leak, got 0)\n";
     return false;
   }
   std::cout << "PASSED (nonzero exit code: " << code_fd_leak << ")\n";
 
-  // Regression 11: Subprocess with unwritable output path exits nonzero
-  std::cout << "[L6 Regression 11/11] Verifying unwritable report output path exits nonzero... " << std::flush;
+  // Regression 11: Injected premature server exit during FD cleanup subprocess exits nonzero
+  std::cout << "[L6 Regression 11/14] Verifying premature server exit during FD cleanup exits nonzero... " << std::flush;
+  const int code_srv_exit = run_subprocess(harness_path, {"--server", server_path, "--inject-server-exit-cleanup", "--out", "/tmp/selftest_l6_srv_exit.json"});
+  if (code_srv_exit == 0) {
+    std::cout << "FAILED (expected nonzero exit code when server exits prematurely during FD cleanup, got 0)\n";
+    return false;
+  }
+  std::cout << "PASSED (nonzero exit code: " << code_srv_exit << ")\n";
+
+  // Regression 12: Direct check of sample_settled_open_fds with dead process
+  std::cout << "[L6 Regression 12/14] Verifying sample_settled_open_fds rejects dead PID without claiming cleanup... " << std::flush;
+  {
+    const pid_t dummy = fork();
+    if (dummy == 0) {
+      _exit(0);
+    }
+    int st = 0;
+    waitpid(dummy, &st, 0);
+    const auto dead_rep = sample_settled_open_fds(dummy, 9, 2, std::chrono::milliseconds(50));
+    if (dead_rep.settled_within_tolerance || !dead_rep.server_exited_prematurely) {
+      std::cout << "FAILED (dead process incorrectly reported as settled within tolerance!)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (dead PID rejected with server_exited_prematurely=true, settled_within_tolerance=false)\n";
+
+  // Regression 13: Exactly-once failure aggregation validation
+  std::cout << "[L6 Regression 13/14] Verifying exactly-once failure aggregation logic... " << std::flush;
+  if (!verify_failure_aggregation_exactly_once()) {
+    std::cout << "FAILED (failure aggregation logic failed assertions)\n";
+    return false;
+  }
+  std::cout << "PASSED (exactly-once aggregation verified)\n";
+
+  // Regression 14: Subprocess with unwritable output path exits nonzero
+  std::cout << "[L6 Regression 14/14] Verifying unwritable report output path exits nonzero... " << std::flush;
   const int code_unwritable = run_subprocess(
       harness_path,
       {"--server", server_path, "--functional", "--out", "/dev/null/darkpool_invalid_l6_output.json"});
@@ -1578,7 +1714,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   }
   std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
 
-  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (11/11).\n\n";
+  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (14/14).\n\n";
   return true;
 }
 
@@ -1599,6 +1735,8 @@ int main(int argc, char* argv[]) {
   bool is_inject_cap_stalled = false;
   bool is_inject_connect_fail = false;
   bool is_inject_fd_leak = false;
+  bool is_inject_server_exit_cleanup = false;
+  bool is_test_aggregation = false;
 
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg(argv[i]);
@@ -1623,6 +1761,10 @@ int main(int argc, char* argv[]) {
       is_inject_connect_fail = true;
     } else if (arg == "--inject-fd-leak") {
       is_inject_fd_leak = true;
+    } else if (arg == "--inject-server-exit-cleanup") {
+      is_inject_server_exit_cleanup = true;
+    } else if (arg == "--test-failure-aggregation") {
+      is_test_aggregation = true;
     } else if (arg == "--inject-assertion-failure") {
       is_inject_assertion = true;
     } else if (arg == "--inject-outcome-mismatch") {
@@ -1664,6 +1806,15 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  if (is_test_aggregation) {
+    return verify_failure_aggregation_exactly_once() ? 0 : 1;
+  }
+  if (is_inject_server_exit_cleanup) {
+    TestFaultConfig fault;
+    fault.inject_premature_exit_before_cleanup = true;
+    const auto res = execute_l6_concurrent_matches(server_path, 1, fault);
+    return res.run_passed ? 0 : 1;
+  }
   if (is_inject_cap_accepted) {
     TestFaultConfig fault;
     fault.inject_capacity_accepted = true;
