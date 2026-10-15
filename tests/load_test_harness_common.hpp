@@ -570,18 +570,37 @@ inline void stop_server_unix(pid_t server_pid, const std::string& socket_path) {
   }
 }
 
-inline std::uint64_t sample_peak_rss_kb(pid_t pid) {
-  std::ifstream status_file("/proc/" + std::to_string(pid) + "/status");
-  if (!status_file.is_open()) return 0;
+inline std::optional<std::uint64_t> parse_proc_status_field(
+    const std::string& status_content, const std::string& field_prefix) {
+  std::istringstream iss_lines(status_content);
   std::string line;
-  while (std::getline(status_file, line)) {
-    if (line.rfind("VmHWM:", 0) == 0) {
-      std::istringstream iss(line.substr(6));
+  while (std::getline(iss_lines, line)) {
+    if (line.rfind(field_prefix, 0) == 0) {
+      std::istringstream iss(line.substr(field_prefix.size()));
       std::uint64_t val = 0;
       if (iss >> val) return val;
+      return std::nullopt;
     }
   }
-  return 0;
+  return std::nullopt;
+}
+
+inline std::optional<std::uint64_t> sample_current_rss_kb(pid_t pid) {
+  if (pid <= 0) return std::nullopt;
+  std::ifstream status_file("/proc/" + std::to_string(pid) + "/status");
+  if (!status_file.is_open()) return std::nullopt;
+  std::stringstream buffer;
+  buffer << status_file.rdbuf();
+  return parse_proc_status_field(buffer.str(), "VmRSS:");
+}
+
+inline std::optional<std::uint64_t> sample_peak_rss_kb(pid_t pid) {
+  if (pid <= 0) return std::nullopt;
+  std::ifstream status_file("/proc/" + std::to_string(pid) + "/status");
+  if (!status_file.is_open()) return std::nullopt;
+  std::stringstream buffer;
+  buffer << status_file.rdbuf();
+  return parse_proc_status_field(buffer.str(), "VmHWM:");
 }
 
 inline double sample_cpu_time_ms(pid_t pid) {

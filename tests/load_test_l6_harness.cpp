@@ -316,10 +316,23 @@ struct L6RunResult {
   double cpu_time_ms{0.0};
   std::size_t baseline_open_fds{0};
   std::size_t peak_open_fds{0};
+  bool peak_open_fds_sample_ok{false};
+  std::optional<std::size_t> peak_open_fds_opt{std::nullopt};
   std::size_t immediate_post_cleanup_open_fds{0};
+  bool immediate_post_cleanup_sample_ok{false};
+  std::optional<std::size_t> immediate_post_cleanup_open_fds_opt{std::nullopt};
   std::size_t post_cleanup_open_fds{0};
+  bool post_cleanup_sample_ok{false};
+  std::optional<std::size_t> post_cleanup_open_fds_opt{std::nullopt};
   std::uint64_t cleanup_settle_time_ms{0};
   bool post_cleanup_settled{false};
+  std::string cleanup_failure_reason;
+  bool peak_conn_current_rss_sample_ok{false};
+  std::optional<std::uint64_t> peak_conn_current_rss_kb{std::nullopt};
+  bool post_cleanup_current_rss_sample_ok{false};
+  std::optional<std::uint64_t> post_cleanup_current_rss_kb{std::nullopt};
+  bool post_cleanup_peak_rss_sample_ok{false};
+  std::optional<std::uint64_t> post_cleanup_peak_rss_kb{std::nullopt};
   double throughput_rps{0.0};
   std::size_t match_limit_retries{0};
 };
@@ -594,15 +607,26 @@ L6RunResult execute_l6_single_cycle(
     }
   }
 
-  // 4. Sample Peak Open FDs (all 260 clients: 4 moderators + 256 players connected)
+  // 4. Sample Peak Open FDs and Peak-Connection Current RSS (all 260 clients: 4 moderators + 256 players connected)
   const auto peak_fds = sample_open_fds(server_pid);
   if (!peak_fds.has_value()) {
     std::cerr << "[L6 Run " << run_index << "] ERROR: Failed to sample peak open FDs\n";
     result.failures.correctness_failures++;
     result.failures.last_failure_reason = "Failed to sample peak open FDs";
+    result.peak_open_fds_sample_ok = false;
     return result;
   }
   result.peak_open_fds = *peak_fds;
+  result.peak_open_fds_opt = peak_fds;
+  result.peak_open_fds_sample_ok = true;
+
+  const auto peak_conn_rss = sample_current_rss_kb(server_pid);
+  if (peak_conn_rss.has_value()) {
+    result.peak_conn_current_rss_kb = peak_conn_rss;
+    result.peak_conn_current_rss_sample_ok = true;
+  } else {
+    result.peak_conn_current_rss_sample_ok = false;
+  }
 
   // Negative test: 261st connection cap (260 maximum connections) must be deterministically rejected
   const auto cap_outcome = verify_connection_cap_rejection(socket_path);
@@ -1128,10 +1152,38 @@ L6RunResult execute_l6_single_cycle(
   result.post_cleanup_open_fds = fd_report.settled_open_fds;
   result.cleanup_settle_time_ms = fd_report.settle_time_ms;
   result.post_cleanup_settled = fd_report.settled_within_tolerance;
+  result.cleanup_failure_reason = fd_report.failure_reason;
+
+  if (!fd_report.sampling_failed) {
+    result.immediate_post_cleanup_open_fds_opt = fd_report.immediate_open_fds;
+    result.immediate_post_cleanup_sample_ok = true;
+    result.post_cleanup_open_fds_opt = fd_report.settled_open_fds;
+    result.post_cleanup_sample_ok = true;
+  } else {
+    result.immediate_post_cleanup_sample_ok = false;
+    result.post_cleanup_sample_ok = false;
+  }
+
+  const auto post_rss = sample_current_rss_kb(server_pid);
+  if (post_rss.has_value()) {
+    result.post_cleanup_current_rss_kb = post_rss;
+    result.post_cleanup_current_rss_sample_ok = true;
+  } else {
+    result.post_cleanup_current_rss_sample_ok = false;
+  }
+
+  const auto post_peak = sample_peak_rss_kb(server_pid);
+  if (post_peak.has_value()) {
+    result.post_cleanup_peak_rss_kb = post_peak;
+    result.post_cleanup_peak_rss_sample_ok = true;
+  } else {
+    result.post_cleanup_peak_rss_sample_ok = false;
+  }
 
   if (fault_cfg.inject_fd_leak) {
     result.post_cleanup_settled = false;
     result.post_cleanup_open_fds = result.baseline_open_fds + 100;
+    result.post_cleanup_open_fds_opt = result.baseline_open_fds + 100;
   }
 
   if (!result.post_cleanup_settled) {
@@ -1299,7 +1351,7 @@ L6RunResult execute_l6_concurrent_matches(
   }
 
   result = execute_l6_single_cycle(server_pid, socket_path, mod_token, run_index, *base_fds, fault_cfg);
-  result.peak_rss_kb = sample_peak_rss_kb(server_pid);
+  result.peak_rss_kb = sample_peak_rss_kb(server_pid).value_or(0);
   result.cpu_time_ms = sample_cpu_time_ms(server_pid);
 
   stop_server_unix(server_pid, socket_path);
@@ -1323,12 +1375,15 @@ inline SustainedClassification classify_l6_sustained_status(
     std::size_t transport_failures,
     std::size_t correctness_failures,
     bool abort_due_to_failure,
-    const std::string& existing_reason) {
+    const std::string& existing_reason,
+    bool all_cycles_fd_cleanup_passed = true,
+    bool any_resource_sample_failed = false,
+    bool any_cycle_failed = false) {
   SustainedClassification out;
   const bool reached_target_duration = (actual_duration_ms >= target_duration_s * 1000ULL);
   const double elapsed_s = static_cast<double>(actual_duration_ms) / 1000.0;
 
-  if (abort_due_to_failure || total_failures > 0) {
+  if (abort_due_to_failure || total_failures > 0 || any_cycle_failed) {
     out.status = "FAIL";
     if (!existing_reason.empty()) {
       out.reason = existing_reason;
@@ -1341,6 +1396,14 @@ inline SustainedClassification classify_l6_sustained_status(
                              " completed cycles (" + std::to_string(completed_matches) +
                              " matches) and " + std::to_string(total_requests) +
                              " requests: " + out.reason;
+  } else if (!all_cycles_fd_cleanup_passed) {
+    out.status = "FAIL";
+    out.reason = existing_reason.empty() ? "One or more cycles failed FD cleanup tolerance check" : existing_reason;
+    out.diagnostic_details = "Completed " + std::to_string(completed_cycles) + " cycles but FD cleanup failed";
+  } else if (any_resource_sample_failed) {
+    out.status = "FAIL";
+    out.reason = existing_reason.empty() ? "One or more required resource telemetry samples failed" : existing_reason;
+    out.diagnostic_details = "Resource telemetry sampling failed during sustained run";
   } else if (!reached_target_duration) {
     out.status = "BLOCKED";
     out.reason = "Workload stopped early before reaching target duration of " +
@@ -1363,6 +1426,44 @@ inline SustainedClassification classify_l6_sustained_status(
   return out;
 }
 
+struct L6CycleEvidence {
+  int cycle_index{0};
+  std::uint64_t elapsed_ms{0};
+  std::uint64_t cycle_duration_ms{0};
+  bool completed{false};
+  std::size_t matches_completed{0};
+  bool matches_overlapped{false};
+  std::uint64_t overlap_duration_ms{0};
+
+  bool peak_connections_fd_sample_ok{false};
+  std::optional<std::size_t> peak_connections_open_fds{std::nullopt};
+
+  bool immediate_post_close_fd_sample_ok{false};
+  std::optional<std::size_t> immediate_post_close_open_fds{std::nullopt};
+
+  bool settled_post_cleanup_fd_sample_ok{false};
+  std::optional<std::size_t> settled_post_cleanup_open_fds{std::nullopt};
+  std::uint64_t cleanup_settle_time_ms{0};
+  bool cleanup_passed{false};
+  std::string cleanup_failure_reason;
+
+  bool peak_conn_rss_sample_ok{false};
+  std::optional<std::uint64_t> peak_conn_current_rss_kb{std::nullopt};
+
+  bool post_cleanup_current_rss_sample_ok{false};
+  std::optional<std::uint64_t> post_cleanup_current_rss_kb{std::nullopt};
+
+  bool post_cleanup_peak_rss_sample_ok{false};
+  std::optional<std::uint64_t> post_cleanup_peak_rss_kb{std::nullopt};
+
+  std::size_t total_requests{0};
+  std::size_t successful_requests{0};
+  std::size_t expected_rejections{0};
+  std::size_t transport_failures{0};
+  std::size_t correctness_failures{0};
+  std::string failure_reason;
+};
+
 struct L6SustainedResult {
   std::string stage_name;
   std::string status;
@@ -1380,16 +1481,23 @@ struct L6SustainedResult {
   FailureCounts failures;
   double throughput_rps{0.0};
   std::size_t baseline_open_fds{0};
+  bool baseline_fd_sample_ok{false};
   std::size_t peak_open_fds{0};
   std::size_t immediate_post_cleanup_open_fds{0};
   std::size_t settled_post_cleanup_fds{0};
   bool all_cycles_fd_cleanup_passed{true};
-  std::uint64_t initial_rss_kb{0};
-  std::uint64_t peak_rss_kb{0};
-  std::uint64_t end_rss_kb{0};
+  bool initial_current_rss_sample_ok{false};
+  std::optional<std::uint64_t> initial_current_rss_kb{std::nullopt};
+  bool end_current_rss_sample_ok{false};
+  std::optional<std::uint64_t> end_current_rss_kb{std::nullopt};
+  bool peak_rss_sample_ok{false};
+  std::optional<std::uint64_t> peak_rss_kb{std::nullopt};
   double cpu_time_ms{0.0};
-  std::vector<std::uint64_t> rss_samples_kb;
+  std::vector<std::uint64_t> current_rss_series_kb;
+  std::vector<L6CycleEvidence> cycle_evidence;
   bool all_cycles_overlapped{true};
+  bool any_cycle_failed{false};
+  bool any_resource_sample_failed{false};
 };
 
 inline L6SustainedResult execute_l6_sustained_workload(
@@ -1436,10 +1544,36 @@ inline L6SustainedResult execute_l6_sustained_workload(
     result.status = "FAIL";
     result.reason = "Failed to sample baseline open FDs";
     result.diagnostic_details = "sample_open_fds returned nullopt for baseline";
+    result.baseline_fd_sample_ok = false;
+    result.any_resource_sample_failed = true;
     return result;
   }
   result.baseline_open_fds = *base_fds;
-  result.initial_rss_kb = sample_peak_rss_kb(server_pid);
+  result.baseline_fd_sample_ok = true;
+
+  const auto init_curr = sample_current_rss_kb(server_pid);
+  if (init_curr.has_value()) {
+    result.initial_current_rss_kb = init_curr;
+    result.initial_current_rss_sample_ok = true;
+  } else {
+    result.any_resource_sample_failed = true;
+    result.status = "FAIL";
+    result.reason = "Failed to sample initial current RSS (VmRSS)";
+    result.diagnostic_details = "sample_current_rss_kb returned nullopt for baseline";
+    return result;
+  }
+
+  const auto init_peak = sample_peak_rss_kb(server_pid);
+  if (init_peak.has_value()) {
+    result.peak_rss_kb = init_peak;
+    result.peak_rss_sample_ok = true;
+  } else {
+    result.any_resource_sample_failed = true;
+    result.status = "FAIL";
+    result.reason = "Failed to sample initial peak RSS (VmHWM)";
+    result.diagnostic_details = "sample_peak_rss_kb returned nullopt for baseline";
+    return result;
+  }
 
   std::vector<std::uint64_t> pooled_seq_lats;
   std::vector<std::uint64_t> pooled_conc_lats;
@@ -1460,6 +1594,53 @@ inline L6SustainedResult execute_l6_sustained_workload(
     const auto cycle_res = execute_l6_single_cycle(
         server_pid, socket_path, mod_token, cycle_index, result.baseline_open_fds, fault_cfg);
 
+    const auto now_t = std::chrono::steady_clock::now();
+    const auto elapsed_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(now_t - start_time).count());
+
+    L6CycleEvidence ev;
+    ev.cycle_index = cycle_index;
+    ev.elapsed_ms = elapsed_ms;
+    ev.cycle_duration_ms = cycle_res.duration_ms;
+    ev.completed = cycle_res.run_passed;
+    ev.matches_completed = cycle_res.run_passed ? cycle_res.matches.size() : 0;
+    ev.matches_overlapped = cycle_res.all_matches_overlapped;
+    ev.overlap_duration_ms = cycle_res.overlap_duration_ms;
+
+    ev.peak_connections_fd_sample_ok = cycle_res.peak_open_fds_sample_ok;
+    ev.peak_connections_open_fds = cycle_res.peak_open_fds_opt;
+
+    ev.immediate_post_close_fd_sample_ok = cycle_res.immediate_post_cleanup_sample_ok;
+    ev.immediate_post_close_open_fds = cycle_res.immediate_post_cleanup_open_fds_opt;
+
+    ev.settled_post_cleanup_fd_sample_ok = cycle_res.post_cleanup_sample_ok;
+    ev.settled_post_cleanup_open_fds = cycle_res.post_cleanup_open_fds_opt;
+    ev.cleanup_settle_time_ms = cycle_res.cleanup_settle_time_ms;
+    ev.cleanup_passed = cycle_res.post_cleanup_settled;
+    ev.cleanup_failure_reason = cycle_res.cleanup_failure_reason;
+
+    ev.peak_conn_rss_sample_ok = cycle_res.peak_conn_current_rss_sample_ok;
+    ev.peak_conn_current_rss_kb = cycle_res.peak_conn_current_rss_kb;
+
+    ev.post_cleanup_current_rss_sample_ok = cycle_res.post_cleanup_current_rss_sample_ok;
+    ev.post_cleanup_current_rss_kb = cycle_res.post_cleanup_current_rss_kb;
+
+    ev.post_cleanup_peak_rss_sample_ok = cycle_res.post_cleanup_peak_rss_sample_ok;
+    ev.post_cleanup_peak_rss_kb = cycle_res.post_cleanup_peak_rss_kb;
+
+    ev.total_requests = cycle_res.aggregate_total.total_requests;
+    ev.successful_requests = cycle_res.aggregate_total.successful_requests;
+    ev.expected_rejections = cycle_res.aggregate_total.expected_rejections;
+    ev.transport_failures = cycle_res.failures.transport_failures;
+    ev.correctness_failures = cycle_res.failures.correctness_failures;
+    ev.failure_reason = cycle_res.failures.last_failure_reason;
+
+    if (!cycle_res.peak_open_fds_sample_ok || !cycle_res.post_cleanup_sample_ok ||
+        !cycle_res.peak_conn_current_rss_sample_ok || !cycle_res.post_cleanup_current_rss_sample_ok ||
+        !cycle_res.post_cleanup_peak_rss_sample_ok) {
+      result.any_resource_sample_failed = true;
+    }
+
     if (cycle_res.peak_open_fds > result.peak_open_fds) {
       result.peak_open_fds = cycle_res.peak_open_fds;
     }
@@ -1474,8 +1655,19 @@ inline L6SustainedResult execute_l6_sustained_workload(
       result.all_cycles_fd_cleanup_passed = false;
     }
 
+    if (cycle_res.post_cleanup_current_rss_kb.has_value()) {
+      result.current_rss_series_kb.push_back(*cycle_res.post_cleanup_current_rss_kb);
+    }
+    if (cycle_res.post_cleanup_peak_rss_kb.has_value()) {
+      if (!result.peak_rss_kb.has_value() || *cycle_res.post_cleanup_peak_rss_kb > *result.peak_rss_kb) {
+        result.peak_rss_kb = cycle_res.post_cleanup_peak_rss_kb;
+        result.peak_rss_sample_ok = true;
+      }
+    }
+
     if (!cycle_res.run_passed || cycle_res.failures.total() > 0) {
       abort_due_to_failure = true;
+      result.any_cycle_failed = true;
       result.failures.transport_failures += cycle_res.failures.transport_failures;
       result.failures.correctness_failures += cycle_res.failures.correctness_failures;
       result.failures.unexpected_disconnects += cycle_res.failures.unexpected_disconnects;
@@ -1485,11 +1677,13 @@ inline L6SustainedResult execute_l6_sustained_workload(
           : cycle_res.failures.last_failure_reason;
       std::cerr << "[" << stage_name << "] ABORTING sustained run at cycle " << cycle_index
                 << ": " << result.reason << std::endl;
+      result.cycle_evidence.push_back(ev);
       break;
     }
 
     result.completed_cycles++;
     result.completed_matches += cycle_res.matches.size();
+    result.cycle_evidence.push_back(ev);
 
     // Pool latencies and request metrics
     for (const auto& m : cycle_res.matches) {
@@ -1526,20 +1720,13 @@ inline L6SustainedResult execute_l6_sustained_workload(
       }
     }
 
-    // Sample RSS per cycle
-    const auto current_rss = sample_peak_rss_kb(server_pid);
-    if (current_rss > result.peak_rss_kb) result.peak_rss_kb = current_rss;
-    result.end_rss_kb = current_rss;
-    result.rss_samples_kb.push_back(current_rss);
-
     // Periodic progress report
     if (cycle_index % 25 == 0 || duration_seconds <= 10) {
-      const auto now_t = std::chrono::steady_clock::now();
-      const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now_t - start_time).count();
+      const auto post_rss_val = cycle_res.post_cleanup_current_rss_kb ? std::to_string(*cycle_res.post_cleanup_current_rss_kb) : "null";
       std::cout << "[" << stage_name << "] Cycle " << cycle_index << " done ("
                 << result.completed_matches << " matches, elapsed: "
-                << (elapsed_ms / 1000) << "/" << duration_seconds << "s, RSS="
-                << current_rss << " kB, settled_FDs=" << cycle_res.post_cleanup_open_fds << ")" << std::endl;
+                << (elapsed_ms / 1000) << "/" << duration_seconds << "s, current_VmRSS="
+                << post_rss_val << " kB, settled_FDs=" << cycle_res.post_cleanup_open_fds << ")" << std::endl;
     }
   }
 
@@ -1547,8 +1734,23 @@ inline L6SustainedResult execute_l6_sustained_workload(
   result.actual_duration_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count());
 
-  result.end_rss_kb = sample_peak_rss_kb(server_pid);
-  if (result.end_rss_kb > result.peak_rss_kb) result.peak_rss_kb = result.end_rss_kb;
+  const auto end_curr = sample_current_rss_kb(server_pid);
+  if (end_curr.has_value()) {
+    result.end_current_rss_kb = end_curr;
+    result.end_current_rss_sample_ok = true;
+  } else {
+    result.any_resource_sample_failed = true;
+  }
+
+  const auto end_peak = sample_peak_rss_kb(server_pid);
+  if (end_peak.has_value()) {
+    if (!result.peak_rss_kb.has_value() || *end_peak > *result.peak_rss_kb) {
+      result.peak_rss_kb = end_peak;
+    }
+    result.peak_rss_sample_ok = true;
+  } else {
+    result.any_resource_sample_failed = true;
+  }
   result.cpu_time_ms = sample_cpu_time_ms(server_pid);
 
   stop_server_unix(server_pid, socket_path);
@@ -1580,7 +1782,10 @@ inline L6SustainedResult execute_l6_sustained_workload(
       result.failures.transport_failures,
       result.failures.correctness_failures,
       abort_due_to_failure,
-      result.reason);
+      result.reason,
+      result.all_cycles_fd_cleanup_passed,
+      result.any_resource_sample_failed,
+      result.any_cycle_failed);
 
   result.status = classification.status;
   result.reason = classification.reason;
@@ -1614,9 +1819,10 @@ inline L6SustainedResult execute_l6_sustained_workload(
             << "p99=" << result.aggregate_total.p99_ms << " ms\n";
   std::cout << " Throughput          : " << std::setprecision(1) << result.throughput_rps
             << " req/s (denominator: actual elapsed duration in seconds)\n";
-  std::cout << " Resources           : Initial RSS=" << result.initial_rss_kb << " kB, "
-            << "Peak RSS=" << result.peak_rss_kb << " kB, End RSS=" << result.end_rss_kb << " kB, "
-            << "CPU=" << std::setprecision(1) << result.cpu_time_ms << " ms\n";
+  std::cout << " Resources           : Initial Current RSS=" << (result.initial_current_rss_kb ? std::to_string(*result.initial_current_rss_kb) + " kB" : "null")
+            << ", End Current RSS=" << (result.end_current_rss_kb ? std::to_string(*result.end_current_rss_kb) + " kB" : "null")
+            << ", Peak RSS (HWM)=" << (result.peak_rss_kb ? std::to_string(*result.peak_rss_kb) + " kB" : "null")
+            << ", CPU=" << std::setprecision(1) << result.cpu_time_ms << " ms\n";
   std::cout << " Open FDs            : Baseline=" << result.baseline_open_fds
             << ", Peak=" << result.peak_open_fds
             << ", Settled=" << result.settled_post_cleanup_fds
@@ -1717,19 +1923,77 @@ inline bool write_l6_sustained_report(
 
   j["resources"] = {
     {"baseline_open_fds", res.baseline_open_fds},
+    {"baseline_open_fds_sample_ok", res.baseline_fd_sample_ok},
     {"peak_open_fds", res.peak_open_fds},
     {"immediate_post_cleanup_open_fds", res.immediate_post_cleanup_open_fds},
     {"settled_post_cleanup_fds", res.settled_post_cleanup_fds},
     {"all_cycles_fd_cleanup_passed", res.all_cycles_fd_cleanup_passed},
-    {"initial_rss_kb", res.initial_rss_kb},
-    {"peak_rss_kb", res.peak_rss_kb},
-    {"end_rss_kb", res.end_rss_kb},
+    {"initial_current_rss_kb", res.initial_current_rss_kb.has_value() ? json(*res.initial_current_rss_kb) : json(nullptr)},
+    {"initial_current_rss_sample_ok", res.initial_current_rss_sample_ok},
+    {"end_current_rss_kb", res.end_current_rss_kb.has_value() ? json(*res.end_current_rss_kb) : json(nullptr)},
+    {"end_current_rss_sample_ok", res.end_current_rss_sample_ok},
+    {"peak_rss_kb", res.peak_rss_kb.has_value() ? json(*res.peak_rss_kb) : json(nullptr)},
+    {"peak_rss_sample_ok", res.peak_rss_sample_ok},
+    {"initial_rss_kb", res.initial_current_rss_kb.value_or(0)},
+    {"end_rss_kb", res.end_current_rss_kb.value_or(0)},
     {"cpu_time_ms", res.cpu_time_ms},
-    {"rss_sample_count", res.rss_samples_kb.size()}
+    {"current_rss_series_kb", res.current_rss_series_kb},
+    {"current_rss_sample_count", res.current_rss_series_kb.size()},
+    {"resource_sampling_ok", !res.any_resource_sample_failed}
   };
 
+  json cycles_arr = json::array();
+  for (const auto& cyc : res.cycle_evidence) {
+    json cj = json::object();
+    cj["cycle_index"] = cyc.cycle_index;
+    cj["elapsed_ms"] = cyc.elapsed_ms;
+    cj["cycle_duration_ms"] = cyc.cycle_duration_ms;
+    cj["completed"] = cyc.completed;
+    cj["matches_completed"] = cyc.matches_completed;
+    cj["matches_overlapped"] = cyc.matches_overlapped;
+    cj["overlap_duration_ms"] = cyc.overlap_duration_ms;
+
+    cj["peak_connections_open_fds"] = cyc.peak_connections_open_fds.has_value()
+        ? json(*cyc.peak_connections_open_fds) : json(nullptr);
+    cj["peak_connections_fd_sample_ok"] = cyc.peak_connections_fd_sample_ok;
+
+    cj["immediate_post_close_open_fds"] = cyc.immediate_post_close_open_fds.has_value()
+        ? json(*cyc.immediate_post_close_open_fds) : json(nullptr);
+    cj["immediate_post_close_fd_sample_ok"] = cyc.immediate_post_close_fd_sample_ok;
+
+    cj["settled_post_cleanup_open_fds"] = cyc.settled_post_cleanup_open_fds.has_value()
+        ? json(*cyc.settled_post_cleanup_open_fds) : json(nullptr);
+    cj["settled_post_cleanup_fd_sample_ok"] = cyc.settled_post_cleanup_fd_sample_ok;
+    cj["cleanup_settle_time_ms"] = cyc.cleanup_settle_time_ms;
+    cj["cleanup_passed"] = cyc.cleanup_passed;
+    cj["cleanup_failure_reason"] = cyc.cleanup_failure_reason;
+
+    cj["peak_conn_current_rss_kb"] = cyc.peak_conn_current_rss_kb.has_value()
+        ? json(*cyc.peak_conn_current_rss_kb) : json(nullptr);
+    cj["peak_conn_rss_sample_ok"] = cyc.peak_conn_rss_sample_ok;
+
+    cj["post_cleanup_current_rss_kb"] = cyc.post_cleanup_current_rss_kb.has_value()
+        ? json(*cyc.post_cleanup_current_rss_kb) : json(nullptr);
+    cj["post_cleanup_current_rss_sample_ok"] = cyc.post_cleanup_current_rss_sample_ok;
+
+    cj["post_cleanup_peak_rss_kb"] = cyc.post_cleanup_peak_rss_kb.has_value()
+        ? json(*cyc.post_cleanup_peak_rss_kb) : json(nullptr);
+    cj["post_cleanup_peak_rss_sample_ok"] = cyc.post_cleanup_peak_rss_sample_ok;
+
+    cj["requests"] = {
+      {"total_requests", cyc.total_requests},
+      {"successful_requests", cyc.successful_requests},
+      {"expected_rejections", cyc.expected_rejections},
+      {"transport_failures", cyc.transport_failures},
+      {"correctness_failures", cyc.correctness_failures}
+    };
+    cj["failure_reason"] = cyc.failure_reason;
+    cycles_arr.push_back(cj);
+  }
+  j["cycle_evidence"] = cycles_arr;
+
   j["cycle_diagnostics"] = {
-    {"total_cycles_attempted", res.completed_cycles + (res.status == "PASS" ? 0 : 1)},
+    {"total_cycles_attempted", res.cycle_evidence.size()},
     {"completed_cycles", res.completed_cycles},
     {"completed_matches", res.completed_matches},
     {"all_cycles_overlapped", res.all_cycles_overlapped},
@@ -2094,7 +2358,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "=================================================================\n";
 
   // Regression 1: Normal 4-match 256-player concurrent execution with 4 independent moderators
-  std::cout << "[L6 Regression 1/16] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
+  std::cout << "[L6 Regression 1/22] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
   const auto run_res = execute_l6_concurrent_matches(server_path, 1, {});
   if (!run_res.run_passed || !run_res.all_matches_overlapped || run_res.moderator_clients != 4) {
     std::cout << "FAILED (run failed or matches did not overlap or mod count != 4)\n";
@@ -2104,7 +2368,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
             << run_res.overlap_duration_ms << " ms)\n";
 
   // Regression 2: Subprocess normal run exits 0
-  std::cout << "[L6 Regression 2/16] Verifying normal L6 subprocess exits 0... " << std::flush;
+  std::cout << "[L6 Regression 2/22] Verifying normal L6 subprocess exits 0... " << std::flush;
   const int code_norm = run_subprocess(harness_path, {"--server", server_path, "--functional", "--out", "/tmp/selftest_l6_norm.json"});
   if (code_norm != 0) {
     std::cout << "FAILED (expected exit 0, got " << code_norm << ")\n";
@@ -2113,7 +2377,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exit code 0)\n";
 
   // Regression 3: Injected assertion failure subprocess exits nonzero
-  std::cout << "[L6 Regression 3/16] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 3/22] Verifying assertion failure subprocess exits nonzero... " << std::flush;
   const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure", "--out", "/tmp/selftest_l6_assert.json"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -2122,7 +2386,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
   // Regression 4: Injected outcome mismatch subprocess exits nonzero
-  std::cout << "[L6 Regression 4/16] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 4/22] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
   const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch", "--out", "/tmp/selftest_l6_outcome.json"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -2131,7 +2395,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
   // Regression 5: Injected semantic failure subprocess exits nonzero
-  std::cout << "[L6 Regression 5/16] Verifying semantic failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 5/22] Verifying semantic failure subprocess exits nonzero... " << std::flush;
   const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure", "--out", "/tmp/selftest_l6_semantic.json"});
   if (code_semantic == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -2140,7 +2404,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
 
   // Regression 6: Injected capacity accepted subprocess exits nonzero
-  std::cout << "[L6 Regression 6/16] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 6/22] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
   const int code_cap_acc = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-accepted", "--out", "/tmp/selftest_l6_cap_acc.json"});
   if (code_cap_acc == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity is violated, got 0)\n";
@@ -2149,7 +2413,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_acc << ")\n";
 
   // Regression 7: Injected capacity stalled subprocess exits nonzero
-  std::cout << "[L6 Regression 7/16] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 7/22] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
   const int code_cap_stall = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-stalled", "--out", "/tmp/selftest_l6_cap_stall.json"});
   if (code_cap_stall == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity stalls, got 0)\n";
@@ -2158,7 +2422,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_stall << ")\n";
 
   // Regression 8: Injected connection-establishment failure subprocess exits nonzero
-  std::cout << "[L6 Regression 8/16] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 8/22] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
   const int code_conn_fail = run_subprocess(harness_path, {"--server", server_path, "--inject-connect-failure", "--out", "/tmp/selftest_l6_conn_fail.json"});
   if (code_conn_fail == 0) {
     std::cout << "FAILED (expected nonzero exit code when connection establishment fails, got 0)\n";
@@ -2167,7 +2431,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_conn_fail << ")\n";
 
   // Regression 9: Unreachable server binary connection failure exits nonzero
-  std::cout << "[L6 Regression 9/16] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 9/22] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
   const int code_unreach = run_subprocess(harness_path, {"--server", "/bin/false", "--functional", "--out", "/tmp/selftest_l6_unreach.json"});
   if (code_unreach == 0) {
     std::cout << "FAILED (expected nonzero exit code when server binary is unreachable, got 0)\n";
@@ -2176,7 +2440,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_unreach << ")\n";
 
   // Regression 10: Injected FD cleanup leak subprocess exits nonzero
-  std::cout << "[L6 Regression 10/16] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 10/22] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
   const int code_fd_leak = run_subprocess(harness_path, {"--server", server_path, "--inject-fd-leak", "--out", "/tmp/selftest_l6_fd_leak.json"});
   if (code_fd_leak == 0) {
     std::cout << "FAILED (expected nonzero exit code when FDs leak, got 0)\n";
@@ -2185,7 +2449,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_fd_leak << ")\n";
 
   // Regression 11: Injected premature server exit during FD cleanup subprocess exits nonzero
-  std::cout << "[L6 Regression 11/16] Verifying premature server exit during FD cleanup exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 11/22] Verifying premature server exit during FD cleanup exits nonzero... " << std::flush;
   const int code_srv_exit = run_subprocess(harness_path, {"--server", server_path, "--inject-server-exit-cleanup", "--out", "/tmp/selftest_l6_srv_exit.json"});
   if (code_srv_exit == 0) {
     std::cout << "FAILED (expected nonzero exit code when server exits prematurely during FD cleanup, got 0)\n";
@@ -2194,7 +2458,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_srv_exit << ")\n";
 
   // Regression 12: Direct check of sample_settled_open_fds with dead process
-  std::cout << "[L6 Regression 12/16] Verifying sample_settled_open_fds rejects dead PID without claiming cleanup... " << std::flush;
+  std::cout << "[L6 Regression 12/22] Verifying sample_settled_open_fds rejects dead PID without claiming cleanup... " << std::flush;
   {
     const pid_t dummy = fork();
     if (dummy == 0) {
@@ -2211,7 +2475,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (dead PID rejected with server_exited_prematurely=true, settled_within_tolerance=false)\n";
 
   // Regression 13: Direct check of process exiting during settle polling
-  std::cout << "[L6 Regression 13/16] Verifying process exiting during settle polling classified as premature exit... " << std::flush;
+  std::cout << "[L6 Regression 13/22] Verifying process exiting during settle polling classified as premature exit... " << std::flush;
   {
     int poll_count = 0;
     auto mock_sampler = [&poll_count](pid_t) -> std::optional<std::size_t> {
@@ -2233,7 +2497,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exit during polling classified with server_exited_prematurely=true, sampling_failed=true)\n";
 
   // Regression 14: Direct check of sampling failure while process remains alive
-  std::cout << "[L6 Regression 14/16] Verifying FD sampling failure while process remains alive classified as sampling failure (not exit)... " << std::flush;
+  std::cout << "[L6 Regression 14/22] Verifying FD sampling failure while process remains alive classified as sampling failure (not exit)... " << std::flush;
   {
     int poll_count = 0;
     auto mock_sampler_alive = [&poll_count](pid_t) -> std::optional<std::size_t> {
@@ -2254,7 +2518,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (sampling failure while alive classified with server_exited_prematurely=false, sampling_failed=true)\n";
 
   // Regression 15: Exactly-once failure aggregation validation
-  std::cout << "[L6 Regression 15/16] Verifying exactly-once failure aggregation logic... " << std::flush;
+  std::cout << "[L6 Regression 15/22] Verifying exactly-once failure aggregation logic... " << std::flush;
   if (!verify_failure_aggregation_exactly_once()) {
     std::cout << "FAILED (failure aggregation logic failed assertions)\n";
     return false;
@@ -2262,7 +2526,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exactly-once aggregation verified)\n";
 
   // Regression 16: Subprocess with unwritable output path exits nonzero
-  std::cout << "[L6 Regression 16/19] Verifying unwritable report output path exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 16/22] Verifying unwritable report output path exits nonzero... " << std::flush;
   const int code_unwritable = run_subprocess(
       harness_path,
       {"--server", server_path, "--functional", "--out", "/dev/null/darkpool_invalid_l6_output.json"});
@@ -2273,7 +2537,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
 
   // Regression 17: Sustained status classification unit test
-  std::cout << "[L6 Regression 17/19] Verifying sustained status classification unit tests... " << std::flush;
+  std::cout << "[L6 Regression 17/22] Verifying sustained status classification unit tests... " << std::flush;
   {
     const auto c1 = classify_l6_sustained_status(600, 599000, 10, 40, 21760, 0, 0, 0, false, "");
     if (c1.status != "BLOCKED") { std::cout << "FAILED (c1 expected BLOCKED, got " << c1.status << ")\n"; return false; }
@@ -2289,11 +2553,17 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
     if (c6.status != "BLOCKED") { std::cout << "FAILED (c6 expected BLOCKED, got " << c6.status << ")\n"; return false; }
     const auto c7 = classify_l6_sustained_status(1800, 1800000, 30, 120, 65280, 0, 0, 0, false, "");
     if (c7.status != "PASS") { std::cout << "FAILED (c7 expected PASS, got " << c7.status << ")\n"; return false; }
+    const auto c8 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 0, 0, 0, false, "", /*all_cycles_fd_cleanup_passed=*/false);
+    if (c8.status != "FAIL") { std::cout << "FAILED (c8 expected FAIL when FD cleanup failed, got " << c8.status << ")\n"; return false; }
+    const auto c9 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 0, 0, 0, false, "", true, /*any_resource_sample_failed=*/true);
+    if (c9.status != "FAIL") { std::cout << "FAILED (c9 expected FAIL when resource sample failed, got " << c9.status << ")\n"; return false; }
+    const auto c10 = classify_l6_sustained_status(600, 600000, 10, 40, 21760, 0, 0, 0, false, "", true, false, /*any_cycle_failed=*/true);
+    if (c10.status != "FAIL") { std::cout << "FAILED (c10 expected FAIL when any cycle failed, got " << c10.status << ")\n"; return false; }
   }
-  std::cout << "PASSED (all 7 classification boundaries verified)\n";
+  std::cout << "PASSED (all 10 classification boundaries verified)\n";
 
   // Regression 18: Injected failure in sustained workload causes FAIL status and nonzero exit
-  std::cout << "[L6 Regression 18/19] Verifying injected failure in sustained workload subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 18/22] Verifying injected failure in sustained workload subprocess exits nonzero... " << std::flush;
   const int code_sust_fail = run_subprocess(
       harness_path,
       {"--server", server_path, "--sustained", "5", "--inject-semantic-failure", "--out", "/tmp/selftest_l6_sust_fail.json"});
@@ -2304,7 +2574,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_sust_fail << ")\n";
 
   // Regression 19: Sustained short integration run completes on persistent server
-  std::cout << "[L6 Regression 19/19] Verifying short sustained integration run executes and exits 0... " << std::flush;
+  std::cout << "[L6 Regression 19/22] Verifying short sustained integration run executes and exits 0... " << std::flush;
   const int code_sust_short = run_subprocess(
       harness_path,
       {"--server", server_path, "--test-sustained-short", "--out", "/tmp/selftest_l6_sust_short.json"});
@@ -2314,7 +2584,186 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   }
   std::cout << "PASSED (exit 0)\n";
 
-  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (19/19).\n\n";
+  // Regression 20: RSS parsing & error handling unit test
+  std::cout << "[L6 Regression 20/22] Verifying RSS parsing and error handling semantics... " << std::flush;
+  {
+    const std::string mock_status =
+        "Name:\tdarkpool_server\n"
+        "State:\tS (sleeping)\n"
+        "VmPeak:\t   18432 kB\n"
+        "VmHWM:\t   12345 kB\n"
+        "VmRSS:\t    6789 kB\n"
+        "RssAnon:\t    3456 kB\n";
+    const auto parsed_rss = parse_proc_status_field(mock_status, "VmRSS:");
+    if (!parsed_rss.has_value() || *parsed_rss != 6789) {
+      std::cout << "FAILED (expected VmRSS 6789 kB, got " << (parsed_rss ? std::to_string(*parsed_rss) : "nullopt") << ")\n";
+      return false;
+    }
+    const auto parsed_hwm = parse_proc_status_field(mock_status, "VmHWM:");
+    if (!parsed_hwm.has_value() || *parsed_hwm != 12345) {
+      std::cout << "FAILED (expected VmHWM 12345 kB, got " << (parsed_hwm ? std::to_string(*parsed_hwm) : "nullopt") << ")\n";
+      return false;
+    }
+    const auto parsed_missing = parse_proc_status_field(mock_status, "VmSize:");
+    if (parsed_missing.has_value()) {
+      std::cout << "FAILED (expected nullopt for missing field, got " << *parsed_missing << ")\n";
+      return false;
+    }
+    const auto parsed_malformed = parse_proc_status_field("VmRSS:\tnot_a_number kB\n", "VmRSS:");
+    if (parsed_malformed.has_value()) {
+      std::cout << "FAILED (expected nullopt for malformed field, got " << *parsed_malformed << ")\n";
+      return false;
+    }
+    const auto inv_pid_rss = sample_current_rss_kb(-1);
+    if (inv_pid_rss.has_value()) {
+      std::cout << "FAILED (expected nullopt for invalid PID -1)\n";
+      return false;
+    }
+    const auto nonexist_pid_rss = sample_current_rss_kb(99999999);
+    if (nonexist_pid_rss.has_value()) {
+      std::cout << "FAILED (expected nullopt for nonexistent PID)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (VmRSS and VmHWM parsing and missing/error semantics verified)\n";
+
+  // Regression 21: Cycle evidence serialization and reconciliation
+  std::cout << "[L6 Regression 21/22] Verifying cycle-level evidence serialization and reconciliation... " << std::flush;
+  {
+    L6SustainedResult mock_res;
+    mock_res.stage_name = "test_cycle_evidence";
+    mock_res.status = "PASS";
+    mock_res.target_duration_s = 60;
+    mock_res.actual_duration_ms = 60000;
+    mock_res.completed_cycles = 1;
+    mock_res.completed_matches = 4;
+    mock_res.baseline_open_fds = 10;
+    mock_res.baseline_fd_sample_ok = true;
+    mock_res.peak_open_fds = 270;
+    mock_res.immediate_post_cleanup_open_fds = 12;
+    mock_res.settled_post_cleanup_fds = 10;
+    mock_res.all_cycles_fd_cleanup_passed = true;
+    mock_res.initial_current_rss_kb = 5000;
+    mock_res.initial_current_rss_sample_ok = true;
+    mock_res.end_current_rss_kb = 5200;
+    mock_res.end_current_rss_sample_ok = true;
+    mock_res.peak_rss_kb = 7000;
+    mock_res.peak_rss_sample_ok = true;
+    mock_res.current_rss_series_kb = {5100};
+
+    L6CycleEvidence cyc;
+    cyc.cycle_index = 1;
+    cyc.elapsed_ms = 5000;
+    cyc.cycle_duration_ms = 4800;
+    cyc.completed = true;
+    cyc.matches_completed = 4;
+    cyc.matches_overlapped = true;
+    cyc.overlap_duration_ms = 4200;
+    cyc.peak_connections_fd_sample_ok = true;
+    cyc.peak_connections_open_fds = 270;
+    cyc.immediate_post_close_fd_sample_ok = true;
+    cyc.immediate_post_close_open_fds = 12;
+    cyc.settled_post_cleanup_fd_sample_ok = true;
+    cyc.settled_post_cleanup_open_fds = 10;
+    cyc.cleanup_settle_time_ms = 15;
+    cyc.cleanup_passed = true;
+    cyc.peak_conn_rss_sample_ok = true;
+    cyc.peak_conn_current_rss_kb = 6800;
+    cyc.post_cleanup_current_rss_sample_ok = true;
+    cyc.post_cleanup_current_rss_kb = 5100;
+    cyc.post_cleanup_peak_rss_sample_ok = true;
+    cyc.post_cleanup_peak_rss_kb = 7000;
+    cyc.total_requests = 2176;
+    cyc.successful_requests = 2172;
+    cyc.expected_rejections = 4;
+    cyc.transport_failures = 0;
+    cyc.correctness_failures = 0;
+    mock_res.cycle_evidence.push_back(cyc);
+
+    const std::string test_out = "/tmp/selftest_l6_cycle_ev.json";
+    if (!write_l6_sustained_report(mock_res, test_out, "test_commit", false, "test_env")) {
+      std::cout << "FAILED (failed to write report)\n";
+      return false;
+    }
+    std::ifstream ifs(test_out);
+    json j;
+    ifs >> j;
+    if (!j.contains("cycle_evidence") || !j["cycle_evidence"].is_array() || j["cycle_evidence"].size() != 1) {
+      std::cout << "FAILED (cycle_evidence missing or invalid length)\n";
+      return false;
+    }
+    const auto& cj = j["cycle_evidence"][0];
+    if (cj["cycle_index"] != 1 || cj["completed"] != true || cj["settled_post_cleanup_open_fds"] != 10 ||
+        cj["post_cleanup_current_rss_kb"] != 5100 || cj["post_cleanup_peak_rss_kb"] != 7000 ||
+        cj["peak_conn_current_rss_kb"] != 6800) {
+      std::cout << "FAILED (cycle_evidence field mismatch)\n";
+      return false;
+    }
+    const auto total_req = cj["requests"]["total_requests"].get<std::size_t>();
+    const auto succ_req = cj["requests"]["successful_requests"].get<std::size_t>();
+    const auto exp_rej = cj["requests"]["expected_rejections"].get<std::size_t>();
+    const auto tr_fail = cj["requests"]["transport_failures"].get<std::size_t>();
+    const auto cr_fail = cj["requests"]["correctness_failures"].get<std::size_t>();
+    if (total_req != succ_req + exp_rej + tr_fail + cr_fail) {
+      std::cout << "FAILED (cycle request count reconciliation failed)\n";
+      return false;
+    }
+    if (cj["settled_post_cleanup_open_fds"].get<std::size_t>() > mock_res.baseline_open_fds + 2) {
+      std::cout << "FAILED (settled FDs exceeded baseline + 2 tolerance)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (cycle-level evidence serialization, reconciliation, and auditability verified)\n";
+
+  // Regression 22: Missing samples and failed cycle serialization
+  std::cout << "[L6 Regression 22/22] Verifying failed/missing resource serialization and FAIL enforcement... " << std::flush;
+  {
+    L6SustainedResult mock_fail;
+    mock_fail.stage_name = "test_missing_sample";
+    mock_fail.status = "FAIL";
+    mock_fail.reason = "One or more required resource telemetry samples failed";
+    mock_fail.target_duration_s = 60;
+    mock_fail.actual_duration_ms = 60000;
+    mock_fail.completed_cycles = 0;
+    mock_fail.baseline_open_fds = 10;
+    mock_fail.any_resource_sample_failed = true;
+    mock_fail.any_cycle_failed = true;
+
+    L6CycleEvidence failed_cyc;
+    failed_cyc.cycle_index = 1;
+    failed_cyc.completed = false;
+    failed_cyc.peak_connections_fd_sample_ok = false;
+    failed_cyc.peak_connections_open_fds = std::nullopt;
+    failed_cyc.post_cleanup_current_rss_sample_ok = false;
+    failed_cyc.post_cleanup_current_rss_kb = std::nullopt;
+    failed_cyc.failure_reason = "FD sampling failed";
+    mock_fail.cycle_evidence.push_back(failed_cyc);
+
+    const std::string test_fail_out = "/tmp/selftest_l6_missing_sample.json";
+    if (!write_l6_sustained_report(mock_fail, test_fail_out, "test_commit", false, "test_env")) {
+      std::cout << "FAILED (failed to write report)\n";
+      return false;
+    }
+    std::ifstream ifs(test_fail_out);
+    json j;
+    ifs >> j;
+    const auto& cj = j["cycle_evidence"][0];
+    if (!cj["peak_connections_open_fds"].is_null() || cj["peak_connections_fd_sample_ok"] != false) {
+      std::cout << "FAILED (missing peak FD sample should be serialized as null and ok=false)\n";
+      return false;
+    }
+    if (!cj["post_cleanup_current_rss_kb"].is_null() || cj["post_cleanup_current_rss_sample_ok"] != false) {
+      std::cout << "FAILED (missing RSS sample should be serialized as null and ok=false)\n";
+      return false;
+    }
+    if (j["status"] != "FAIL") {
+      std::cout << "FAILED (report status must be FAIL)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (missing samples serialized as null and FAIL status strictly enforced)\n";
+
+  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (22/22).\n\n";
   return true;
 }
 
