@@ -1,0 +1,93 @@
+{
+  "actual_duration_ms": 600145,
+  "actual_duration_s": 600.145,
+  "completed_cycles": 1945,
+  "completed_matches": 7780,
+  "concurrency_topology": {
+    "concurrent_matches": 4,
+    "connection_cap": 260,
+    "moderator_clients": 4,
+    "persistent_server": true,
+    "players_per_match": 64,
+    "total_connected_clients": 260,
+    "total_player_clients": 256
+  },
+  "concurrent_latency": {
+    "max_ms": 238.86,
+    "mean_ms": 11.781207202964332,
+    "min_ms": 0.03,
+    "p50_ms": 11.165,
+    "p95_ms": 18.59,
+    "p99_ms": 32.233
+  },
+  "correctness_failures": 0,
+  "cycle_diagnostics": {
+    "all_cycles_overlapped": true,
+    "completed_cycles": 1945,
+    "completed_matches": 7780,
+    "match_limit_retries": 0,
+    "total_cycles_attempted": 1945
+  },
+  "diagnostic_details": "Workload completed successfully across 1945 cycles (7780 matches) with 0 transport and 0 correctness failures",
+  "environment": "Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0",
+  "expected_rejections": 23340,
+  "failure_reason": "",
+  "failures": {
+    "correctness_failures": 0,
+    "timeouts": 0,
+    "transport_failures": 0,
+    "unexpected_disconnects": 0
+  },
+  "git_dirty": false,
+  "match_limit_retries": 0,
+  "requests": {
+    "correctness_failures": 0,
+    "expected_rejections": 23340,
+    "successful_requests": 4208980,
+    "total_requests": 4232320,
+    "transport_failures": 0
+  },
+  "resources": {
+    "all_cycles_fd_cleanup_passed": true,
+    "baseline_open_fds": 9,
+    "cpu_time_ms": 287710.0,
+    "end_rss_kb": 4272,
+    "immediate_post_cleanup_open_fds": 113,
+    "initial_rss_kb": 3576,
+    "peak_open_fds": 268,
+    "peak_rss_kb": 4292,
+    "rss_sample_count": 1945,
+    "settled_post_cleanup_fds": 8
+  },
+  "sequential_latency": {
+    "max_ms": 144.648,
+    "mean_ms": 0.10916678428416057,
+    "min_ms": 0.016,
+    "p50_ms": 0.079,
+    "p95_ms": 0.219,
+    "p99_ms": 0.353
+  },
+  "source_commit": "9fdffebbe56458f1a32ef4dd0b4360cf99c38b74",
+  "stage_name": "smoke_10m",
+  "status": "PASS",
+  "successful_requests": 4208980,
+  "target_duration_s": 600,
+  "test_name": "darkpool_load_tests_l6_sustained",
+  "throughput": {
+    "denominator": "Actual elapsed duration in seconds (actual_duration_ms / 1000.0)",
+    "requests_per_second": 7052.162394088095
+  },
+  "timestamp": 1792091729,
+  "total_latency": {
+    "max_ms": 238.86,
+    "mean_ms": 2.855529235738319,
+    "measurement_definition": "Monotonic steady_clock round-trip duration measured from request frame write to correlated response parse; excludes inter-phase pauses.",
+    "min_ms": 0.016,
+    "p50_ms": 0.095,
+    "p95_ms": 13.302,
+    "p99_ms": 19.526
+  },
+  "total_requests": 4232320,
+  "transport_failures": 0,
+  "workload_seed": 42
+}

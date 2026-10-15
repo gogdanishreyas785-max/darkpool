@@ -56,7 +56,9 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L4-Smoke | 64 players, 10-min sustained | **PASS** | 10-minute sustained repeated-match workload (600.04s, 13,271 matches, 7,365,405 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.09 ms, p99=0.14 ms, mean=0.06 ms. Throughput: 12,274.9 req/s. Peak RSS=3,928 kB, CPU=301.1s, FDs=8. Single measured run completed. |
 | L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
-| L6 | 4 × up to 64 (256-player server target) | **NOT RUN** | Four-match 256-player capacity remains unverified. |
+| L6-Functional | 4 × 64 (256 players / 4 matches) | **PASS** | Three repeatable 4-match runs over UNIX sockets with 4 independent moderators (6,528 requests total, 100% pass; 0 transport/correctness failures). Sequential: p50=0.14 ms, p95=0.33 ms, p99=1.05 ms. Concurrent burst: p50=14.39 ms, p95=22.31 ms, p99=29.32 ms. Verified winner: `InsiderWin`. |
+| L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.14s, 1,945 cycles, 7,780 matches, 4,232,320 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.10 ms, p95=13.30 ms, p99=19.53 ms, mean=2.86 ms. Throughput: 7,052.2 req/s. Peak RSS=4,292 kB, CPU=287.7s, Settled FDs=8. Single measured run completed. |
+| L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.14s, 6,328 cycles, 25,312 matches, 13,769,728 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.09 ms, p95=12.89 ms, p99=16.88 ms, mean=2.77 ms. Throughput: 7,649.2 req/s. Peak RSS=4,452 kB, CPU=902.3s, Settled FDs=8. Flat memory across 30m (+160 kB peak RSS across >9.5M additional requests). Single measured run completed. |
 | L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
 | L8 | Malformed/flood traffic | NOT RUN | Malformed isolation verified functionally; high-rate flood unmeasured. |
 
@@ -161,21 +163,22 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Leak / Degradation Analysis**: Flat memory (+12 kB RSS increase from smoke to 30m reliability across >10.4M additional requests; exactly 8 open FDs maintained throughout) confirms no memory leaks, file-descriptor leaks, or event-loop degradation.
   - **Report File**: [`docs/load_test_64p_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_reliability_30m_results.json).
 
-- **L6 (Four-Match 256-Player Capacity)**: **PASS** (functional concurrent capacity verified; see dedicated L6 section below). Sustained long-duration multi-match testing remains a separate unverified stage.
+- **L6 (Four-Match 256-Player Capacity & Sustained Reliability)**: **PASS** (functional concurrent capacity, 10-minute smoke soak, and 30-minute reliability soak verified; see dedicated L6 sections below).
 
 > [!IMPORTANT]
-> The single-match 64-player capacity is verified across functional runs (3 repeatable runs) and sustained runs (one 10-minute smoke run and one 30-minute reliability run). Multi-run acceptance repetitions (three 10m or three 30m runs) were not executed and are not claimed. Four-match 256-player functional capacity (L6) is verified in a dedicated, isolated test harness; sustained multi-match soak remains a distinct stage.
+> Single-match 64-player capacity (L4) and four-match 256-player concurrent capacity (L6) are verified across both functional benchmarks (3 repeatable runs) and sustained soak workloads (one 10-minute smoke run and one 30-minute reliability run each on a persistent server process). Multi-run soak repetitions (e.g. three 10m or three 30m runs) were not executed and are not claimed.
 
 ## L6: Four-Match Concurrent Capacity Test (256 Players, 4 Matches, 4 Independent Moderators)
 
-- **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 runs remain a distinct future stage marked NOT RUN).
+- **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 smoke and reliability runs verified separately below).
 - **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_results.json)
 - **Source Commit**: `6f6d748b49d7a5337c4e67f270d8d6307fff0526` (clean checkout, `git_dirty: false`)
 - **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0 (`Linux 6.18.54.1-microsoft-standard-WSL2 x86_64`, 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz).
 - **Execution Command**: `./build/darkpool_load_tests_l6 ./build/darkpool_server --runs 3 --out docs/load_test_l6_results.json`
 - **Automated CTest Targets**:
   - `darkpool_load_l6_functional`: Runs full 4-match 256-player concurrent functional workload (**PASS**).
-  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation (exercised via controlled mock server), stalled capacity connection timeout failure propagation (exercised via controlled mock server), connection-establishment failure propagation, unreachable server binary failure handling, post-cleanup FD leak failure propagation, premature server exit during FD cleanup failure handling, dead server PID rejection, process exiting during settle polling classification, FD sampling failure while process remains alive classification, exactly-once failure aggregation validation across all outcome variants, and unwritable output path failure handling (**PASS**; 16/16 sub-tests pass).
+  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation (exercised via controlled mock server), stalled capacity connection timeout failure propagation (exercised via controlled mock server), connection-establishment failure propagation, unreachable server binary failure handling, post-cleanup FD leak failure propagation, premature server exit during FD cleanup failure handling, dead server PID rejection, process exiting during settle polling classification, FD sampling failure while process remains alive classification, sustained status classification boundary validation, sustained injected-failure nonzero exit propagation, persistent-server short sustained cycle execution, exactly-once failure aggregation validation across all outcome variants, and unwritable output path failure handling (**PASS**; 19/19 sub-tests pass).
+  - `darkpool_load_l6_sustained_short`: Fast automated sustained cycle integration test executing 5 cycles (20 matches) on a persistent server process with zero failures and settled descriptor verification (**PASS**).
 
 ### Concurrency and Topology Contract
 - **Concurrent Matches**: 4 independent matches hosted simultaneously on one server process with measured overlapping lifetimes.
@@ -243,7 +246,30 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 1. **Measurement Boundary**: Request latency is measured via monotonic clock (`std::chrono::steady_clock`) from frame write initiation until complete correlated response frame deserialization and validation. Excludes harness coordination pauses.
 2. **Concurrency Scope**: Tests 256 simultaneous player clients across 4 matches with burst concurrency in Round 2 and 4 independent moderator connections.
 3. **FD Settle Dynamics**: Immediate post-close FD count captures the transient state before the server epoll loop drains pending connection closes (epoll batch size 16); bounded polling confirms all 260 client sockets are closed and the process settles at 8 open descriptors within 10 ms, fully satisfying the baseline + 2 tolerance threshold (baseline = 9 descriptors, settled = 8 descriptors; note these are distinct counts, not equal counts).
-4. **Sustained / Soak Testing**: Functional capacity benchmark. Sustained multi-match soak testing (e.g. 10m/30m repeated 4-match cycles) remains a separate, distinct testing stage marked **NOT RUN**.
+4. **Sustained / Soak Testing**: Functional capacity benchmark is complemented by single measured runs for L6 sustained workloads: 10-minute smoke test (1,945 cycles, 7,780 matches, 0 failures) and 30-minute reliability test (6,328 cycles, 25,312 matches, 0 failures) on a persistent server process. Multi-run soak repetitions (e.g., three 30m runs) were not executed.
+
+### L6 Sustained Workload Stages (10-Minute Smoke & 30-Minute Reliability)
+
+- **10-Minute Repeated-Cycle Smoke Test (`--smoke-10m`)**: **PASS** (single measured run on persistent server).
+  - **Source Commit**: `9fdffebbe56458f1a32ef4dd0b4360cf99c38b74` (`git_dirty: false`)
+  - **Actual Duration**: 600.14s (600,145 ms; target: 600s, zero shortfall).
+  - **Completed Cycles & Matches**: 1,945 cycles (7,780 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
+  - **Request Volume**: 4,232,320 requests (4,208,980 successful operations, 23,340 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 7,052.2 req/s (denominator: actual elapsed duration in seconds).
+  - **Round-Trip Latency**: Sequential p50 = 0.08 ms, p95 = 0.22 ms, p99 = 0.35 ms; Concurrent Burst p50 = 11.16 ms, p95 = 18.59 ms, p99 = 32.23 ms; Total p50 = 0.10 ms, p95 = 13.30 ms, p99 = 19.53 ms, mean = 2.86 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Initial RSS = 3,576 kB, Peak RSS = 4,292 kB, End RSS = 4,272 kB, Server CPU = 287,710.0 ms, Open FDs = 8 settled (100% of 1,945 cycles settled within `baseline + 2` tolerance).
+  - **Report File**: [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json).
+
+- **30-Minute Repeated-Cycle Reliability Test (`--reliability-30m`)**: **PASS** (single measured run on persistent server).
+  - **Source Commit**: `9fdffebbe56458f1a32ef4dd0b4360cf99c38b74` (`git_dirty: false`)
+  - **Actual Duration**: 1800.14s (1,800,142 ms; target: 1800s, zero shortfall).
+  - **Completed Cycles & Matches**: 6,328 cycles (25,312 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
+  - **Request Volume**: 13,769,728 requests (13,693,792 successful operations, 75,936 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 7,649.2 req/s (denominator: actual elapsed duration in seconds).
+  - **Round-Trip Latency**: Sequential p50 = 0.08 ms, p95 = 0.22 ms, p99 = 0.34 ms; Concurrent Burst p50 = 11.05 ms, p95 = 16.28 ms, p99 = 25.85 ms; Total p50 = 0.09 ms, p95 = 12.89 ms, p99 = 16.88 ms, mean = 2.77 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Initial RSS = 3,520 kB, Peak RSS = 4,452 kB, End RSS = 4,452 kB, Server CPU = 902,250.0 ms, Open FDs = 8 settled (100% of 6,328 cycles settled within `baseline + 2` tolerance).
+  - **Leak / Degradation Analysis**: Flat memory (+160 kB peak RSS increase across >9.5M additional requests from smoke to 30m reliability; settled FDs strictly at 8 descriptors across all 6,328 cycles) confirms no memory leaks, file-descriptor leaks, or event-loop degradation on the persistent server process.
+  - **Report File**: [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json).
 
 ## Proposed mixed64-v1 p95 workload — approval required
 
