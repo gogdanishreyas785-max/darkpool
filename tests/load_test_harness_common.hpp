@@ -57,6 +57,8 @@ constexpr std::size_t kExpectedL6TotalPlayers = 256;
 struct FailureCounts {
   std::size_t transport_failures{0};
   std::size_t correctness_failures{0};
+  std::size_t timeouts{0};
+  std::size_t unexpected_disconnects{0};
   std::string last_failure_reason;
 
   [[nodiscard]] std::size_t total() const noexcept {
@@ -129,6 +131,7 @@ struct TestFaultConfig {
   bool inject_semantic_failure{false};
   bool inject_capacity_accepted{false};
   bool inject_capacity_stalled{false};
+  bool inject_connect_failure{false};
   bool inject_fd_leak{false};
 };
 
@@ -335,29 +338,39 @@ inline ResponseValidator expect_operation_rejected() {
   };
 }
 
-inline bool send_all(int fd, const char* data, std::size_t size) {
+inline bool send_all(int fd, const char* data, std::size_t size, int* out_errno = nullptr) {
   std::size_t offset = 0;
   while (offset < size) {
     const auto sent = send(fd, data + offset, size - offset, MSG_NOSIGNAL);
     if (sent < 0) {
       if (errno == EINTR) continue;
+      if (out_errno) *out_errno = errno;
       return false;
     }
-    if (sent == 0) return false;
+    if (sent == 0) {
+      if (out_errno) *out_errno = ECONNRESET;
+      return false;
+    }
     offset += static_cast<std::size_t>(sent);
   }
   return true;
 }
 
-inline bool receive_exact(int fd, char* data, std::size_t size) {
+inline bool receive_exact(int fd, char* data, std::size_t size, int* out_errno = nullptr, bool* out_is_eof = nullptr) {
   std::size_t offset = 0;
+  if (out_is_eof) *out_is_eof = false;
   while (offset < size) {
     const auto received = recv(fd, data + offset, size - offset, 0);
     if (received < 0) {
       if (errno == EINTR) continue;
+      if (out_errno) *out_errno = errno;
       return false;
     }
-    if (received == 0) return false;
+    if (received == 0) {
+      if (out_is_eof) *out_is_eof = true;
+      if (out_errno) *out_errno = 0;
+      return false;
+    }
     offset += static_cast<std::size_t>(received);
   }
   return true;
@@ -376,23 +389,41 @@ inline std::optional<json> timed_request(
   // Monotonic clock starts immediately before writing request frame to socket
   const auto start_time = std::chrono::steady_clock::now();
 
-  if (!send_all(fd, outgoing.data(), outgoing.size())) {
+  int send_err = 0;
+  if (!send_all(fd, outgoing.data(), outgoing.size(), &send_err)) {
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    failures.last_failure_reason = "send_all failed for " + req_type;
+    if (send_err == EAGAIN || send_err == EWOULDBLOCK) {
+      failures.timeouts++;
+      failures.last_failure_reason = "send_all timed out for " + req_type;
+    } else {
+      failures.unexpected_disconnects++;
+      failures.last_failure_reason = "send_all failed (disconnect/error " + std::to_string(send_err) + ") for " + req_type;
+    }
     out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
 
   char header[4];
-  if (!receive_exact(fd, header, sizeof(header))) {
+  int recv_err = 0;
+  bool is_eof = false;
+  if (!receive_exact(fd, header, sizeof(header), &recv_err, &is_eof)) {
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    failures.last_failure_reason = "receive header failed for " + req_type;
+    if (is_eof) {
+      failures.unexpected_disconnects++;
+      failures.last_failure_reason = "unexpected disconnect (EOF) reading header for " + req_type;
+    } else if (recv_err == EAGAIN || recv_err == EWOULDBLOCK) {
+      failures.timeouts++;
+      failures.last_failure_reason = "receive header timed out for " + req_type;
+    } else {
+      failures.unexpected_disconnects++;
+      failures.last_failure_reason = "receive header failed (" + std::to_string(recv_err) + ") for " + req_type;
+    }
     out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
@@ -414,12 +445,23 @@ inline std::optional<json> timed_request(
 
   std::string bytes(header, sizeof(header));
   bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
-  if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) {
+  recv_err = 0;
+  is_eof = false;
+  if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length), &recv_err, &is_eof)) {
     const auto end_time = std::chrono::steady_clock::now();
     const auto us = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
     failures.transport_failures++;
-    failures.last_failure_reason = "receive payload bytes failed for " + req_type;
+    if (is_eof) {
+      failures.unexpected_disconnects++;
+      failures.last_failure_reason = "unexpected disconnect (EOF) reading payload for " + req_type;
+    } else if (recv_err == EAGAIN || recv_err == EWOULDBLOCK) {
+      failures.timeouts++;
+      failures.last_failure_reason = "receive payload timed out for " + req_type;
+    } else {
+      failures.unexpected_disconnects++;
+      failures.last_failure_reason = "receive payload failed (" + std::to_string(recv_err) + ") for " + req_type;
+    }
     out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
     return std::nullopt;
   }
