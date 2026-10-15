@@ -170,12 +170,12 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 - **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 runs remain a distinct future stage marked NOT RUN).
 - **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_results.json)
-- **Source Commit**: `24c1d25f893cc0c1e1cc584db51da4dcb2e138ff` (clean checkout, `git_dirty: false`)
+- **Source Commit**: `6f6d748b49d7a5337c4e67f270d8d6307fff0526` (clean checkout, `git_dirty: false`)
 - **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0 (`Linux 6.18.54.1-microsoft-standard-WSL2 x86_64`, 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz).
 - **Execution Command**: `./build/darkpool_load_tests_l6 ./build/darkpool_server --runs 3 --out docs/load_test_l6_results.json`
 - **Automated CTest Targets**:
   - `darkpool_load_l6_functional`: Runs full 4-match 256-player concurrent functional workload (**PASS**).
-  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation (exercised via controlled mock server), stalled capacity connection timeout failure propagation (exercised via controlled mock server), connection-establishment failure propagation, unreachable server binary failure handling, post-cleanup FD leak failure propagation, premature server exit during FD cleanup failure handling, dead server PID rejection, exactly-once failure aggregation validation, and unwritable output path failure handling (**PASS**; 14/14 sub-tests pass).
+  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation (exercised via controlled mock server), stalled capacity connection timeout failure propagation (exercised via controlled mock server), connection-establishment failure propagation, unreachable server binary failure handling, post-cleanup FD leak failure propagation, premature server exit during FD cleanup failure handling, dead server PID rejection, process exiting during settle polling classification, FD sampling failure while process remains alive classification, exactly-once failure aggregation validation across all outcome variants, and unwritable output path failure handling (**PASS**; 16/16 sub-tests pass).
 
 ### Concurrency and Topology Contract
 - **Concurrent Matches**: 4 independent matches hosted simultaneously on one server process with measured overlapping lifetimes.
@@ -190,7 +190,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
     - Attempting a 5th moderator connection beyond 4 is deterministically rejected at connection handshake via prompt EOF (`recv == 0` from server `close()`) or explicit rejection frame; connection timeouts (`EAGAIN`/`EWOULDBLOCK`) and stalled sockets fail the test (standalone capacity assertion, not timed application request metric).
     - Attempting a 65th player in a match is deterministically rejected at the coordinator level, with explicit connect verification before join verification (tracked as a timed request expected rejection).
     - Attempting a 261st connection beyond 260 is deterministically rejected via prompt EOF or error frame; sockets remaining open without closure or response fail the test (standalone capacity assertion, not timed application request metric).
-- **Concurrency & Overlap Evidence**: Per-match lifecycle timestamps (`lifecycle_start_ms` and `lifecycle_end_ms`) are recorded. Overlap is derived mathematically (`max(start) < min(end)`); all 4 matches overlap across all runs (e.g., 162 ms, 200 ms, and 168 ms measured overlap).
+- **Concurrency & Overlap Evidence**: Per-match lifecycle timestamps (`lifecycle_start_ms` and `lifecycle_end_ms`) are recorded. Overlap is derived mathematically (`max(start) < min(end)`); all 4 matches overlap across all runs (e.g., 495 ms, 616 ms, and 415 ms measured overlap).
 
 ### Workload and Phase Execution
 - **Role Distribution Per Match**: Exactly 8 Insiders, 4 Investigators, 52 Employees per match (verified via server join responses).
@@ -223,21 +223,21 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - Unexpected disconnects: 0 (instrumented from socket events)
   - Timeouts: 0 (instrumented from socket events)
 - **Elapsed Run Duration & Throughput**:
-  - Run 1: 196 ms (11,102.0 req/s, 162 ms measured overlap)
-  - Run 2: 237 ms (9,181.4 req/s, 200 ms measured overlap)
-  - Run 3: 202 ms (10,772.3 req/s, 168 ms measured overlap)
-  - Mean Run Duration: 211.7 ms | Mean Throughput: 10,351.9 req/s.
+  - Run 1: 587 ms (3,707.0 req/s, 495 ms measured overlap)
+  - Run 2: 682 ms (3,190.6 req/s, 616 ms measured overlap)
+  - Run 3: 535 ms (4,067.3 req/s, 415 ms measured overlap)
+  - Mean Run Duration: 601.3 ms | Mean Throughput: 3,655.0 req/s.
 - **Latency Percentiles (3-Run Pooled Across 6,528 Requests)**:
-  - **Sequential Phase (Rounds 1 & 3)**: p50 = 0.060 ms, p95 = 0.115 ms, p99 = 0.198 ms, mean = 0.071 ms.
-  - **Concurrent Burst Phase (Round 2, 256 Simultaneous Client Threads)**: p50 = 8.247 ms, p95 = 11.241 ms, p99 = 11.942 ms, mean = 8.277 ms.
-  - **Total Overall**: p50 = 0.065 ms, p95 = 10.310 ms, p99 = 11.315 ms, mean = 2.002 ms.
+  - **Sequential Phase (Rounds 1 & 3)**: p50 = 0.137 ms, p95 = 0.325 ms, p99 = 1.047 ms, mean = 0.185 ms.
+  - **Concurrent Burst Phase (Round 2, 256 Simultaneous Client Threads)**: p50 = 14.391 ms, p95 = 22.307 ms, p99 = 29.324 ms, mean = 14.123 ms.
+  - **Total Overall**: p50 = 0.159 ms, p95 = 19.543 ms, p99 = 22.565 ms, mean = 3.464 ms.
 - **Resource Measurements & Settle Dynamics**:
   - Baseline Open FDs: 9 (sampled at zero client load).
   - Peak Open FDs: 268 (sampled with all 260 client connections active: 4 moderators + 256 players).
-  - Immediate Post-Close Open FDs: 95 – 105 (sampled immediately following concurrent client close while epoll unregisters pending disconnects).
+  - Immediate Post-Close Open FDs: 76 – 171 (sampled immediately following concurrent client close while epoll unregisters pending disconnects).
   - Settled Post-Cleanup Open FDs: 8 (settled within 10 ms across all runs; acceptance criterion is `post_cleanup_fds <= baseline + 2` tolerance, i.e. <= 11 descriptors; the observed counts are distinct: baseline of 9 descriptors and settled count of 8 descriptors; `post_cleanup_settled: true`).
-  - Peak Server RSS: 4,240 kB (~4.2 MB across server daemon lifetime).
-  - Total Server CPU Time: 280.0 ms across 3 runs.
+  - Peak Server RSS: 4,236 kB (~4.2 MB across server daemon lifetime).
+  - Total Server CPU Time: 700.0 ms across 3 runs.
 
 ### Measurement Boundaries and Limitations
 1. **Measurement Boundary**: Request latency is measured via monotonic clock (`std::chrono::steady_clock`) from frame write initiation until complete correlated response frame deserialization and validation. Excludes harness coordination pauses.
