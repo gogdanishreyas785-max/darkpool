@@ -127,6 +127,9 @@ struct TestFaultConfig {
   bool inject_assertion_failure{false};
   bool inject_outcome_mismatch{false};
   bool inject_semantic_failure{false};
+  bool inject_capacity_accepted{false};
+  bool inject_capacity_stalled{false};
+  bool inject_fd_leak{false};
 };
 
 struct ValidationResult {
@@ -570,6 +573,49 @@ inline std::size_t sample_open_fds(pid_t pid) {
   }
   closedir(dir);
   return count;
+}
+
+struct FdCleanupReport {
+  std::size_t immediate_open_fds{0};
+  std::size_t settled_open_fds{0};
+  std::uint64_t settle_time_ms{0};
+  bool settled_within_tolerance{false};
+};
+
+inline FdCleanupReport sample_settled_open_fds(
+    pid_t pid,
+    std::size_t baseline_fds,
+    std::size_t allowed_tolerance = 2,
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+  FdCleanupReport rep{};
+  rep.immediate_open_fds = sample_open_fds(pid);
+  const auto start = std::chrono::steady_clock::now();
+  const std::size_t max_allowed = baseline_fds + allowed_tolerance;
+
+  std::size_t current = rep.immediate_open_fds;
+  while (true) {
+    if (current <= max_allowed) {
+      rep.settled_open_fds = current;
+      rep.settled_within_tolerance = true;
+      rep.settle_time_ms = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::milliseconds>(
+              std::chrono::steady_clock::now() - start).count());
+      return rep;
+    }
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    if (elapsed >= timeout) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    current = sample_open_fds(pid);
+  }
+
+  rep.settled_open_fds = current;
+  rep.settled_within_tolerance = (current <= max_allowed);
+  rep.settle_time_ms = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::steady_clock::now() - start).count());
+  return rep;
 }
 
 inline std::string detect_git_commit() {
