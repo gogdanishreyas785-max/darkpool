@@ -1535,6 +1535,15 @@ bool verify_failure_aggregation_exactly_once() {
 
     const bool ok5 = evaluate_capacity_outcome(CapacityRejectionOutcome::ConnectFailed, "test_conn_fail", f);
     if (ok5 || f.unexpected_disconnects != 1 || f.transport_failures != 2 || f.total() != 3) return false;
+
+    const bool ok6 = evaluate_capacity_outcome(CapacityRejectionOutcome::UnexpectedData, "test_data", f);
+    if (ok6 || f.correctness_failures != 2 || f.total() != 4) return false;
+
+    const bool ok7 = evaluate_capacity_outcome(CapacityRejectionOutcome::SendFailed, "test_send_fail", f);
+    if (ok7 || f.unexpected_disconnects != 2 || f.transport_failures != 3 || f.total() != 5) return false;
+
+    const bool ok8 = evaluate_capacity_outcome(CapacityRejectionOutcome::SocketReadError, "test_sock_err", f);
+    if (ok8 || f.unexpected_disconnects != 3 || f.transport_failures != 4 || f.total() != 6) return false;
   }
 
   // Test 2: Aggregation across matches and run-level failures produces exactly-once totals
@@ -1579,7 +1588,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "=================================================================\n";
 
   // Regression 1: Normal 4-match 256-player concurrent execution with 4 independent moderators
-  std::cout << "[L6 Regression 1/14] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
+  std::cout << "[L6 Regression 1/16] Verifying 4-match 256P concurrent workload (4 independent moderators)... " << std::flush;
   const auto run_res = execute_l6_concurrent_matches(server_path, 1, {});
   if (!run_res.run_passed || !run_res.all_matches_overlapped || run_res.moderator_clients != 4) {
     std::cout << "FAILED (run failed or matches did not overlap or mod count != 4)\n";
@@ -1589,7 +1598,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
             << run_res.overlap_duration_ms << " ms)\n";
 
   // Regression 2: Subprocess normal run exits 0
-  std::cout << "[L6 Regression 2/14] Verifying normal L6 subprocess exits 0... " << std::flush;
+  std::cout << "[L6 Regression 2/16] Verifying normal L6 subprocess exits 0... " << std::flush;
   const int code_norm = run_subprocess(harness_path, {"--server", server_path, "--functional", "--out", "/tmp/selftest_l6_norm.json"});
   if (code_norm != 0) {
     std::cout << "FAILED (expected exit 0, got " << code_norm << ")\n";
@@ -1598,7 +1607,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (exit code 0)\n";
 
   // Regression 3: Injected assertion failure subprocess exits nonzero
-  std::cout << "[L6 Regression 3/14] Verifying assertion failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 3/16] Verifying assertion failure subprocess exits nonzero... " << std::flush;
   const int code_assert = run_subprocess(harness_path, {"--server", server_path, "--inject-assertion-failure", "--out", "/tmp/selftest_l6_assert.json"});
   if (code_assert == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1607,7 +1616,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_assert << ")\n";
 
   // Regression 4: Injected outcome mismatch subprocess exits nonzero
-  std::cout << "[L6 Regression 4/14] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 4/16] Verifying outcome mismatch subprocess exits nonzero... " << std::flush;
   const int code_outcome = run_subprocess(harness_path, {"--server", server_path, "--inject-outcome-mismatch", "--out", "/tmp/selftest_l6_outcome.json"});
   if (code_outcome == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1616,7 +1625,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_outcome << ")\n";
 
   // Regression 5: Injected semantic failure subprocess exits nonzero
-  std::cout << "[L6 Regression 5/14] Verifying semantic failure subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 5/16] Verifying semantic failure subprocess exits nonzero... " << std::flush;
   const int code_semantic = run_subprocess(harness_path, {"--server", server_path, "--inject-semantic-failure", "--out", "/tmp/selftest_l6_semantic.json"});
   if (code_semantic == 0) {
     std::cout << "FAILED (expected nonzero exit code, got 0)\n";
@@ -1625,7 +1634,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_semantic << ")\n";
 
   // Regression 6: Injected capacity accepted subprocess exits nonzero
-  std::cout << "[L6 Regression 6/14] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 6/16] Verifying accepted over-capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
   const int code_cap_acc = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-accepted", "--out", "/tmp/selftest_l6_cap_acc.json"});
   if (code_cap_acc == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity is violated, got 0)\n";
@@ -1634,7 +1643,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_acc << ")\n";
 
   // Regression 7: Injected capacity stalled subprocess exits nonzero
-  std::cout << "[L6 Regression 7/14] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 7/16] Verifying stalled capacity connection subprocess (exercised via real mock server) exits nonzero... " << std::flush;
   const int code_cap_stall = run_subprocess(harness_path, {"--server", server_path, "--inject-capacity-stalled", "--out", "/tmp/selftest_l6_cap_stall.json"});
   if (code_cap_stall == 0) {
     std::cout << "FAILED (expected nonzero exit code when capacity stalls, got 0)\n";
@@ -1643,7 +1652,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_cap_stall << ")\n";
 
   // Regression 8: Injected connection-establishment failure subprocess exits nonzero
-  std::cout << "[L6 Regression 8/14] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 8/16] Verifying connection-establishment failure propagation subprocess exits nonzero... " << std::flush;
   const int code_conn_fail = run_subprocess(harness_path, {"--server", server_path, "--inject-connect-failure", "--out", "/tmp/selftest_l6_conn_fail.json"});
   if (code_conn_fail == 0) {
     std::cout << "FAILED (expected nonzero exit code when connection establishment fails, got 0)\n";
@@ -1652,7 +1661,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_conn_fail << ")\n";
 
   // Regression 9: Unreachable server binary connection failure exits nonzero
-  std::cout << "[L6 Regression 9/14] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 9/16] Verifying unreachable server binary connection failure exits nonzero... " << std::flush;
   const int code_unreach = run_subprocess(harness_path, {"--server", "/bin/false", "--functional", "--out", "/tmp/selftest_l6_unreach.json"});
   if (code_unreach == 0) {
     std::cout << "FAILED (expected nonzero exit code when server binary is unreachable, got 0)\n";
@@ -1661,7 +1670,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_unreach << ")\n";
 
   // Regression 10: Injected FD cleanup leak subprocess exits nonzero
-  std::cout << "[L6 Regression 10/14] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 10/16] Verifying FD cleanup leak subprocess exits nonzero... " << std::flush;
   const int code_fd_leak = run_subprocess(harness_path, {"--server", server_path, "--inject-fd-leak", "--out", "/tmp/selftest_l6_fd_leak.json"});
   if (code_fd_leak == 0) {
     std::cout << "FAILED (expected nonzero exit code when FDs leak, got 0)\n";
@@ -1670,7 +1679,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_fd_leak << ")\n";
 
   // Regression 11: Injected premature server exit during FD cleanup subprocess exits nonzero
-  std::cout << "[L6 Regression 11/14] Verifying premature server exit during FD cleanup exits nonzero... " << std::flush;
+  std::cout << "[L6 Regression 11/16] Verifying premature server exit during FD cleanup exits nonzero... " << std::flush;
   const int code_srv_exit = run_subprocess(harness_path, {"--server", server_path, "--inject-server-exit-cleanup", "--out", "/tmp/selftest_l6_srv_exit.json"});
   if (code_srv_exit == 0) {
     std::cout << "FAILED (expected nonzero exit code when server exits prematurely during FD cleanup, got 0)\n";
@@ -1679,7 +1688,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   std::cout << "PASSED (nonzero exit code: " << code_srv_exit << ")\n";
 
   // Regression 12: Direct check of sample_settled_open_fds with dead process
-  std::cout << "[L6 Regression 12/14] Verifying sample_settled_open_fds rejects dead PID without claiming cleanup... " << std::flush;
+  std::cout << "[L6 Regression 12/16] Verifying sample_settled_open_fds rejects dead PID without claiming cleanup... " << std::flush;
   {
     const pid_t dummy = fork();
     if (dummy == 0) {
@@ -1688,23 +1697,66 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
     int st = 0;
     waitpid(dummy, &st, 0);
     const auto dead_rep = sample_settled_open_fds(dummy, 9, 2, std::chrono::milliseconds(50));
-    if (dead_rep.settled_within_tolerance || !dead_rep.server_exited_prematurely) {
-      std::cout << "FAILED (dead process incorrectly reported as settled within tolerance!)\n";
+    if (dead_rep.settled_within_tolerance || !dead_rep.server_exited_prematurely || !dead_rep.sampling_failed) {
+      std::cout << "FAILED (dead process incorrectly reported as settled within tolerance or not premature exit!)\n";
       return false;
     }
   }
   std::cout << "PASSED (dead PID rejected with server_exited_prematurely=true, settled_within_tolerance=false)\n";
 
-  // Regression 13: Exactly-once failure aggregation validation
-  std::cout << "[L6 Regression 13/14] Verifying exactly-once failure aggregation logic... " << std::flush;
+  // Regression 13: Direct check of process exiting during settle polling
+  std::cout << "[L6 Regression 13/16] Verifying process exiting during settle polling classified as premature exit... " << std::flush;
+  {
+    int poll_count = 0;
+    auto mock_sampler = [&poll_count](pid_t) -> std::optional<std::size_t> {
+      ++poll_count;
+      if (poll_count == 1) return 100;
+      return std::nullopt;
+    };
+    auto mock_liveness = [&poll_count](pid_t) -> ProcessLiveness {
+      if (poll_count >= 2) return ProcessLiveness::Terminated;
+      return ProcessLiveness::Alive;
+    };
+    const auto exit_rep = sample_settled_open_fds(
+        12345, 9, 2, std::chrono::milliseconds(50), mock_sampler, mock_liveness);
+    if (!exit_rep.server_exited_prematurely || !exit_rep.sampling_failed || exit_rep.settled_within_tolerance) {
+      std::cout << "FAILED (process exiting during settle polling was not classified as premature exit!)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (exit during polling classified with server_exited_prematurely=true, sampling_failed=true)\n";
+
+  // Regression 14: Direct check of sampling failure while process remains alive
+  std::cout << "[L6 Regression 14/16] Verifying FD sampling failure while process remains alive classified as sampling failure (not exit)... " << std::flush;
+  {
+    int poll_count = 0;
+    auto mock_sampler_alive = [&poll_count](pid_t) -> std::optional<std::size_t> {
+      ++poll_count;
+      if (poll_count == 1) return 100;
+      return std::nullopt;
+    };
+    auto mock_liveness_alive = [](pid_t) -> ProcessLiveness {
+      return ProcessLiveness::Alive;
+    };
+    const auto samp_fail_rep = sample_settled_open_fds(
+        12345, 9, 2, std::chrono::milliseconds(50), mock_sampler_alive, mock_liveness_alive);
+    if (samp_fail_rep.server_exited_prematurely || !samp_fail_rep.sampling_failed || samp_fail_rep.settled_within_tolerance) {
+      std::cout << "FAILED (sampling failure while alive incorrectly reported exit or cleanup!)\n";
+      return false;
+    }
+  }
+  std::cout << "PASSED (sampling failure while alive classified with server_exited_prematurely=false, sampling_failed=true)\n";
+
+  // Regression 15: Exactly-once failure aggregation validation
+  std::cout << "[L6 Regression 15/16] Verifying exactly-once failure aggregation logic... " << std::flush;
   if (!verify_failure_aggregation_exactly_once()) {
     std::cout << "FAILED (failure aggregation logic failed assertions)\n";
     return false;
   }
   std::cout << "PASSED (exactly-once aggregation verified)\n";
 
-  // Regression 14: Subprocess with unwritable output path exits nonzero
-  std::cout << "[L6 Regression 14/14] Verifying unwritable report output path exits nonzero... " << std::flush;
+  // Regression 16: Subprocess with unwritable output path exits nonzero
+  std::cout << "[L6 Regression 16/16] Verifying unwritable report output path exits nonzero... " << std::flush;
   const int code_unwritable = run_subprocess(
       harness_path,
       {"--server", server_path, "--functional", "--out", "/dev/null/darkpool_invalid_l6_output.json"});
@@ -1714,7 +1766,7 @@ bool run_l6_regression_selftest(const std::string& harness_path, const std::stri
   }
   std::cout << "PASSED (nonzero exit code: " << code_unwritable << ")\n";
 
-  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (14/14).\n\n";
+  std::cout << "\nAll L6 256-player concurrent regression checks PASSED (16/16).\n\n";
   return true;
 }
 

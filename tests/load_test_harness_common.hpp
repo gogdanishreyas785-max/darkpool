@@ -606,18 +606,54 @@ inline double sample_cpu_time_ms(pid_t pid) {
   return 0.0;
 }
 
-inline bool is_process_alive(pid_t pid) {
-  if (pid <= 0) return false;
+enum class ProcessLiveness {
+  Alive,
+  Terminated,
+  Unknown
+};
+
+inline ProcessLiveness check_process_liveness(pid_t pid) {
+  if (pid <= 0) {
+    return ProcessLiveness::Terminated;
+  }
+
+  // 1. If it is a child process, waitpid with WNOHANG gives exact termination status
   int status = 0;
   const pid_t w = waitpid(pid, &status, WNOHANG);
   if (w == pid) {
-    return false;
+    if (WIFEXITED(status) || WIFSIGNALED(status)) {
+      return ProcessLiveness::Terminated;
+    }
+    return ProcessLiveness::Alive;
   }
-  return (kill(pid, 0) == 0);
+  if (w == 0) {
+    return ProcessLiveness::Alive;
+  }
+
+  // 2. If w == -1, check errno:
+  // If errno == ECHILD, pid is not a child of this process (or was already reaped).
+  // Fall back to kill(pid, 0).
+  if (kill(pid, 0) == 0) {
+    return ProcessLiveness::Alive;
+  }
+
+  if (errno == ESRCH) {
+    return ProcessLiveness::Terminated;
+  }
+  if (errno == EPERM) {
+    // Process exists, but caller lacks permission to signal it -> alive.
+    return ProcessLiveness::Alive;
+  }
+
+  return ProcessLiveness::Unknown;
+}
+
+inline bool is_process_alive(pid_t pid) {
+  return check_process_liveness(pid) == ProcessLiveness::Alive;
 }
 
 inline std::optional<std::size_t> sample_open_fds(pid_t pid) {
-  if (!is_process_alive(pid)) {
+  if (check_process_liveness(pid) == ProcessLiveness::Terminated) {
     return std::nullopt;
   }
   const std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
@@ -641,13 +677,32 @@ struct FdCleanupReport {
   std::string failure_reason;
 };
 
+using FdSamplerFn = std::function<std::optional<std::size_t>(pid_t)>;
+using ProcessLivenessFn = std::function<ProcessLiveness(pid_t)>;
+
 inline FdCleanupReport sample_settled_open_fds(
     pid_t pid,
     std::size_t baseline_fds,
     std::size_t allowed_tolerance = 2,
-    std::chrono::milliseconds timeout = std::chrono::milliseconds(2000)) {
+    std::chrono::milliseconds timeout = std::chrono::milliseconds(2000),
+    FdSamplerFn custom_sampler = nullptr,
+    ProcessLivenessFn custom_liveness = nullptr) {
+  auto get_liveness = [&custom_liveness](pid_t p) -> ProcessLiveness {
+    if (custom_liveness) {
+      return custom_liveness(p);
+    }
+    return check_process_liveness(p);
+  };
+
+  auto get_fds = [&custom_sampler](pid_t p) -> std::optional<std::size_t> {
+    if (custom_sampler) {
+      return custom_sampler(p);
+    }
+    return sample_open_fds(p);
+  };
+
   FdCleanupReport rep{};
-  if (!is_process_alive(pid)) {
+  if (get_liveness(pid) == ProcessLiveness::Terminated) {
     rep.server_exited_prematurely = true;
     rep.sampling_failed = true;
     rep.settled_within_tolerance = false;
@@ -655,11 +710,20 @@ inline FdCleanupReport sample_settled_open_fds(
     return rep;
   }
 
-  const auto initial_opt = sample_open_fds(pid);
+  const auto initial_opt = get_fds(pid);
   if (!initial_opt.has_value()) {
-    rep.sampling_failed = true;
-    rep.settled_within_tolerance = false;
-    rep.failure_reason = "Failed to sample immediate open FDs from /proc/" + std::to_string(pid) + "/fd";
+    const auto post_check = get_liveness(pid);
+    if (post_check == ProcessLiveness::Terminated) {
+      rep.server_exited_prematurely = true;
+      rep.sampling_failed = true;
+      rep.settled_within_tolerance = false;
+      rep.failure_reason = "Server process exited prematurely before immediate FD sampling";
+    } else {
+      rep.server_exited_prematurely = false;
+      rep.sampling_failed = true;
+      rep.settled_within_tolerance = false;
+      rep.failure_reason = "Failed to sample immediate open FDs from /proc/" + std::to_string(pid) + "/fd while process remains alive";
+    }
     return rep;
   }
   rep.immediate_open_fds = *initial_opt;
@@ -668,7 +732,7 @@ inline FdCleanupReport sample_settled_open_fds(
 
   std::size_t current = rep.immediate_open_fds;
   while (true) {
-    if (!is_process_alive(pid)) {
+    if (get_liveness(pid) == ProcessLiveness::Terminated) {
       rep.server_exited_prematurely = true;
       rep.sampling_failed = true;
       rep.settled_within_tolerance = false;
@@ -689,11 +753,20 @@ inline FdCleanupReport sample_settled_open_fds(
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    const auto current_opt = sample_open_fds(pid);
+    const auto current_opt = get_fds(pid);
     if (!current_opt.has_value()) {
-      rep.sampling_failed = true;
-      rep.settled_within_tolerance = false;
-      rep.failure_reason = "Failed to sample open FDs during settle polling for PID " + std::to_string(pid);
+      const auto recheck = get_liveness(pid);
+      if (recheck == ProcessLiveness::Terminated) {
+        rep.server_exited_prematurely = true;
+        rep.sampling_failed = true;
+        rep.settled_within_tolerance = false;
+        rep.failure_reason = "Server process terminated unexpectedly during FD settle polling";
+      } else {
+        rep.server_exited_prematurely = false;
+        rep.sampling_failed = true;
+        rep.settled_within_tolerance = false;
+        rep.failure_reason = "Failed to sample open FDs during settle polling for PID " + std::to_string(pid) + " while process remains alive";
+      }
       return rep;
     }
     current = *current_opt;
