@@ -170,12 +170,12 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 - **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 runs remain a distinct future stage marked NOT RUN).
 - **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_results.json)
-- **Source Commit**: `031bcf3b7bf46f014c3af4f5883fdcaa470e53d4` (clean checkout, `git_dirty: false`)
+- **Source Commit**: `47aaa0790013361a820d6b9d42626e8b7ef4c16f` (clean checkout, `git_dirty: false`)
 - **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0 (`Linux 6.18.54.1-microsoft-standard-WSL2 x86_64`, 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz).
 - **Execution Command**: `./build/darkpool_load_tests_l6 ./build/darkpool_server --runs 3 --out docs/load_test_l6_results.json`
 - **Automated CTest Targets**:
   - `darkpool_load_l6_functional`: Runs full 4-match 256-player concurrent functional workload (**PASS**).
-  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation, stalled capacity connection timeout failure propagation, post-cleanup FD leak failure propagation, and unwritable output path failure handling (**PASS**; 9/9 sub-tests pass).
+  - `darkpool_load_l6_regression`: Runs regression self-tests covering 4 independent moderators, 64/64 full match capacity, negative cross-moderator unauthorized command rejection, negative cross-match player access rejection, conclusive 5th moderator rejection (prompt EOF / explicit error), sibling match isolation, assertion failure propagation, outcome mismatch propagation, semantic failure propagation, over-capacity connection acceptance failure propagation (exercised via controlled mock server), stalled capacity connection timeout failure propagation (exercised via controlled mock server), connection-establishment failure propagation, unreachable server binary failure handling, post-cleanup FD leak failure propagation, and unwritable output path failure handling (**PASS**; 11/11 sub-tests pass).
 
 ### Concurrency and Topology Contract
 - **Concurrent Matches**: 4 independent matches hosted simultaneously on one server process with measured overlapping lifetimes.
@@ -187,10 +187,10 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - `src/server_main.cpp` enforces `constexpr std::size_t kMaxMatches = 4;`, `constexpr std::size_t kMaxModerators = kMaxMatches;` (4), and `constexpr std::size_t kMaxConnections = 256 + 4 = 260;`.
   - Enforces match ownership: each match is controlled exclusively by its own authenticated moderator session. A moderator attempting to issue commands on another moderator's match receives an unauthorized error.
   - Conclusive capacity enforcement:
-    - Attempting a 5th moderator connection beyond 4 is deterministically rejected at connection handshake via prompt EOF (`recv == 0` from server `close()`) or explicit rejection frame; connection timeouts (`EAGAIN`/`EWOULDBLOCK`) and stalled sockets fail the test.
-    - Attempting a 65th player in a match is deterministically rejected at the coordinator level, with explicit connect verification before join verification.
-    - Attempting a 261st connection beyond 260 is deterministically rejected via prompt EOF or error frame; sockets remaining open without closure or response fail the test.
-- **Concurrency & Overlap Evidence**: Per-match lifecycle timestamps (`lifecycle_start_ms` and `lifecycle_end_ms`) are recorded. Overlap is derived mathematically (`max(start) < min(end)`); all 4 matches overlap across all runs (e.g., 222 ms, 238 ms, and 286 ms measured overlap).
+    - Attempting a 5th moderator connection beyond 4 is deterministically rejected at connection handshake via prompt EOF (`recv == 0` from server `close()`) or explicit rejection frame; connection timeouts (`EAGAIN`/`EWOULDBLOCK`) and stalled sockets fail the test (standalone capacity assertion, not timed application request metric).
+    - Attempting a 65th player in a match is deterministically rejected at the coordinator level, with explicit connect verification before join verification (tracked as a timed request expected rejection).
+    - Attempting a 261st connection beyond 260 is deterministically rejected via prompt EOF or error frame; sockets remaining open without closure or response fail the test (standalone capacity assertion, not timed application request metric).
+- **Concurrency & Overlap Evidence**: Per-match lifecycle timestamps (`lifecycle_start_ms` and `lifecycle_end_ms`) are recorded. Overlap is derived mathematically (`max(start) < min(end)`); all 4 matches overlap across all runs (e.g., 211 ms, 152 ms, and 163 ms measured overlap).
 
 ### Workload and Phase Execution
 - **Role Distribution Per Match**: Exactly 8 Insiders, 4 Investigators, 52 Employees per match (verified via server join responses).
@@ -210,33 +210,39 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 - **Request Volume (3 Runs)**:
   - Total requests across all runs: 6,528 requests (2,176 requests per run).
   - Successful requests: 6,492 requests (100% of legal requests accepted).
-  - Expected negative rejections: 36 (12 per run: 4 employee hint rejections, 4 employee clue rejections, 1 cross-moderator unauthorized command rejection, 1 cross-match unauthorized vote rejection, 1 excess 65th player rejection, 1 excess 5th moderator rejection).
+  - Expected negative rejections in timed requests: 36 requests across 3 runs (12 per run):
+    - 4 employee insider hint rejections (1 per match in Round 1).
+    - 4 employee clue rejections (1 per match in Round 1).
+    - 2 cross-moderator unauthorized command rejections (Moderator 0 attempting to command Match 1, and Moderator 1 attempting to command Match 0).
+    - 1 cross-match unauthorized player vote rejection (Player in Match 0 attempting to vote in Match 1).
+    - 1 excess 65th player join rejection ("match is full" on Match 0).
+    *(Note: The separate 5th-moderator and 261st-connection capacity checks verify socket-level handshake rejection/closure and are tracked as connection capacity assertions rather than timed application request metrics).*
 - **Failures & Errors**:
   - Transport failures: 0
   - Correctness failures: 0
-  - Unexpected disconnects: 0
-  - Timeouts: 0
+  - Unexpected disconnects: 0 (instrumented from socket events)
+  - Timeouts: 0 (instrumented from socket events)
 - **Elapsed Run Duration & Throughput**:
-  - Run 1: 273 ms (7,970.7 req/s, 222 ms measured overlap)
-  - Run 2: 294 ms (7,401.4 req/s, 238 ms measured overlap)
-  - Run 3: 333 ms (6,534.5 req/s, 286 ms measured overlap)
-  - Mean Run Duration: 300.0 ms | Mean Throughput: 7,302.2 req/s.
+  - Run 1: 247 ms (8,809.7 req/s, 211 ms measured overlap)
+  - Run 2: 184 ms (11,826.1 req/s, 152 ms measured overlap)
+  - Run 3: 195 ms (11,159.0 req/s, 163 ms measured overlap)
+  - Mean Run Duration: 208.7 ms | Mean Throughput: 10,598.3 req/s.
 - **Latency Percentiles (3-Run Pooled Across 6,528 Requests)**:
-  - **Sequential Phase (Rounds 1 & 3)**: p50 = 0.086 ms, p95 = 0.212 ms, p99 = 0.348 ms, mean = 0.112 ms.
-  - **Concurrent Burst Phase (Round 2, 256 Simultaneous Client Threads)**: p50 = 11.484 ms, p95 = 13.977 ms, p99 = 14.876 ms, mean = 11.154 ms.
-  - **Total Overall**: p50 = 0.106 ms, p95 = 12.782 ms, p99 = 14.124 ms, mean = 2.710 ms.
+  - **Sequential Phase (Rounds 1 & 3)**: p50 = 0.062 ms, p95 = 0.111 ms, p99 = 0.191 ms, mean = 0.082 ms.
+  - **Concurrent Burst Phase (Round 2, 256 Simultaneous Client Threads)**: p50 = 7.574 ms, p95 = 9.877 ms, p99 = 10.531 ms, mean = 7.502 ms.
+  - **Total Overall**: p50 = 0.068 ms, p95 = 8.712 ms, p99 = 10.051 ms, mean = 1.828 ms.
 - **Resource Measurements & Settle Dynamics**:
   - Baseline Open FDs: 9 (sampled at zero client load).
   - Peak Open FDs: 268 (sampled with all 260 client connections active: 4 moderators + 256 players).
-  - Immediate Post-Close Open FDs: 105 – 146 (sampled immediately following concurrent client close while epoll unregisters pending disconnects).
-  - Settled Post-Cleanup Open FDs: 8 (settled within 10 ms across all runs, strictly returning to baseline within tolerance; `post_cleanup_settled: true`).
-  - Peak Server RSS: 4,240 kB (~4.2 MB across server daemon lifetime).
-  - Total Server CPU Time: 430.0 ms across 3 runs.
+  - Immediate Post-Close Open FDs: 100 – 118 (sampled immediately following concurrent client close while epoll unregisters pending disconnects).
+  - Settled Post-Cleanup Open FDs: 8 (settled within 10 ms across all runs; acceptance criterion is `post_cleanup_fds <= baseline + 2` tolerance, i.e. <= 11 descriptors; the observed counts are distinct: baseline of 9 descriptors and settled count of 8 descriptors; `post_cleanup_settled: true`).
+  - Peak Server RSS: 4,232 kB (~4.2 MB across server daemon lifetime).
+  - Total Server CPU Time: 320.0 ms across 3 runs.
 
 ### Measurement Boundaries and Limitations
 1. **Measurement Boundary**: Request latency is measured via monotonic clock (`std::chrono::steady_clock`) from frame write initiation until complete correlated response frame deserialization and validation. Excludes harness coordination pauses.
 2. **Concurrency Scope**: Tests 256 simultaneous player clients across 4 matches with burst concurrency in Round 2 and 4 independent moderator connections.
-3. **FD Settle Dynamics**: Immediate post-close FD count captures the transient state before the server epoll loop drains pending connection closes (epoll batch size 16); bounded polling confirms all 260 client sockets are closed and the process returns to its baseline of 8 open descriptors within 10 ms.
+3. **FD Settle Dynamics**: Immediate post-close FD count captures the transient state before the server epoll loop drains pending connection closes (epoll batch size 16); bounded polling confirms all 260 client sockets are closed and the process settles at 8 open descriptors within 10 ms, fully satisfying the baseline + 2 tolerance threshold (baseline = 9 descriptors, settled = 8 descriptors; note these are distinct counts, not equal counts).
 4. **Sustained / Soak Testing**: Functional capacity benchmark. Sustained multi-match soak testing (e.g. 10m/30m repeated 4-match cycles) remains a separate, distinct testing stage marked **NOT RUN**.
 
 ## Proposed mixed64-v1 p95 workload — approval required

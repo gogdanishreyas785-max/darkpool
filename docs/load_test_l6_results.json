@@ -22,30 +22,30 @@
     "all_runs_passed": true,
     "correctness_failures_all_runs": 0,
     "expected_rejections_all_runs": 36,
-    "max_peak_rss_kb": 4240,
-    "mean_run_duration_ms": 300.0,
-    "mean_throughput_rps": 7302.19701648273,
+    "max_peak_rss_kb": 4232,
+    "mean_run_duration_ms": 208.66666666666666,
+    "mean_throughput_rps": 10598.25930489546,
     "pooled_concurrent_latency": {
-      "mean_ms": 11.1541796875,
-      "p50_ms": 11.484,
-      "p95_ms": 13.977,
-      "p99_ms": 14.876
+      "mean_ms": 7.502095052083333,
+      "p50_ms": 7.574,
+      "p95_ms": 9.877,
+      "p99_ms": 10.531
     },
     "pooled_sequential_latency": {
-      "mean_ms": 0.11176802884615383,
-      "p50_ms": 0.086,
-      "p95_ms": 0.212,
-      "p99_ms": 0.348
+      "mean_ms": 0.08201181891025641,
+      "p50_ms": 0.062,
+      "p95_ms": 0.111,
+      "p99_ms": 0.191
     },
     "pooled_total_latency": {
-      "mean_ms": 2.7099825367647057,
-      "p50_ms": 0.106,
-      "p95_ms": 12.782,
-      "p99_ms": 14.124
+      "mean_ms": 1.827913756127451,
+      "p50_ms": 0.068,
+      "p95_ms": 8.712,
+      "p99_ms": 10.051
     },
     "successful_requests_all_runs": 6492,
     "timeouts_all_runs": 0,
-    "total_cpu_time_ms": 430.0,
+    "total_cpu_time_ms": 320.0,
     "total_requests_all_runs": 6528,
     "total_runs": 3,
     "transport_failures_all_runs": 0,
@@ -63,12 +63,12 @@
         "total_player_clients": 256
       },
       "concurrent_latency": {
-        "mean_ms": 11.101193359375,
-        "p50_ms": 11.828,
-        "p95_ms": 13.696,
-        "p99_ms": 13.977
+        "mean_ms": 7.677017578125,
+        "p50_ms": 7.76,
+        "p95_ms": 9.311,
+        "p99_ms": 9.521
       },
-      "duration_ms": 273,
+      "duration_ms": 247,
       "failures": {
         "correctness_failures": 0,
         "timeouts": 0,
@@ -78,17 +78,17 @@
       "matches": [
         {
           "concurrent_latency": {
-            "mean_ms": 11.37971875,
-            "p50_ms": 11.944,
-            "p95_ms": 13.746,
-            "p99_ms": 13.849
+            "mean_ms": 7.403921875,
+            "p50_ms": 7.757,
+            "p95_ms": 9.144,
+            "p99_ms": 9.533
           },
           "correctness_failures": 0,
           "expected_rejections": 5,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 231,
-          "lifecycle_start_ms": 6,
+          "lifecycle_end_ms": 215,
+          "lifecycle_start_ms": 2,
           "match_id": 1,
           "match_index": 1,
           "match_passed": true,
@@ -99,34 +99,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.12854545454545455,
-            "p50_ms": 0.105,
-            "p95_ms": 0.214,
-            "p99_ms": 0.481
+            "mean_ms": 0.0795622009569378,
+            "p50_ms": 0.066,
+            "p95_ms": 0.123,
+            "p99_ms": 0.431
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.76618315018315,
-            "p50_ms": 0.119,
-            "p95_ms": 12.98,
-            "p99_ms": 13.778
+            "mean_ms": 1.796628205128205,
+            "p50_ms": 0.072,
+            "p95_ms": 8.618,
+            "p99_ms": 9.4
           },
           "total_requests": 546,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 11.317015625,
-            "p50_ms": 11.911,
-            "p95_ms": 13.922,
-            "p99_ms": 14.038
+            "mean_ms": 7.65971875,
+            "p50_ms": 7.725,
+            "p95_ms": 8.872,
+            "p99_ms": 9.473
           },
           "correctness_failures": 0,
           "expected_rejections": 3,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 244,
-          "lifecycle_start_ms": 8,
+          "lifecycle_end_ms": 226,
+          "lifecycle_start_ms": 3,
           "match_id": 2,
           "match_index": 2,
           "match_passed": true,
@@ -137,34 +137,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.09723798076923078,
-            "p50_ms": 0.078,
-            "p95_ms": 0.176,
-            "p99_ms": 0.306
+            "mean_ms": 0.12556971153846153,
+            "p50_ms": 0.067,
+            "p95_ms": 0.117,
+            "p99_ms": 0.221
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.737185661764706,
-            "p50_ms": 0.096,
-            "p95_ms": 13.255,
-            "p99_ms": 13.928
+            "mean_ms": 1.8983106617647059,
+            "p50_ms": 0.076,
+            "p95_ms": 8.663,
+            "p99_ms": 8.928
           },
           "total_requests": 544,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 10.8550234375,
-            "p50_ms": 11.44,
-            "p95_ms": 13.274,
-            "p99_ms": 13.7
+            "mean_ms": 7.7772265625,
+            "p50_ms": 7.841,
+            "p95_ms": 9.223,
+            "p99_ms": 9.492
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 259,
-          "lifecycle_start_ms": 8,
+          "lifecycle_end_ms": 236,
+          "lifecycle_start_ms": 4,
           "match_id": 3,
           "match_index": 3,
           "match_passed": true,
@@ -175,34 +175,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.08910361445783133,
-            "p50_ms": 0.075,
-            "p95_ms": 0.153,
-            "p99_ms": 0.304
+            "mean_ms": 0.12450843373493976,
+            "p50_ms": 0.065,
+            "p95_ms": 0.105,
+            "p99_ms": 0.158
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.626926335174954,
-            "p50_ms": 0.08,
-            "p95_ms": 12.554,
-            "p99_ms": 13.313
+            "mean_ms": 1.92846408839779,
+            "p50_ms": 0.069,
+            "p95_ms": 8.663,
+            "p99_ms": 9.304
           },
           "total_requests": 543,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 10.853015625,
-            "p50_ms": 11.79,
-            "p95_ms": 13.368,
-            "p99_ms": 13.598
+            "mean_ms": 7.867203125,
+            "p50_ms": 7.785,
+            "p95_ms": 9.402,
+            "p99_ms": 9.531
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 272,
-          "lifecycle_start_ms": 8,
+          "lifecycle_end_ms": 246,
+          "lifecycle_start_ms": 4,
           "match_id": 4,
           "match_index": 4,
           "match_passed": true,
@@ -213,48 +213,48 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.08906506024096386,
-            "p50_ms": 0.076,
-            "p95_ms": 0.159,
-            "p99_ms": 0.26
+            "mean_ms": 0.09920722891566265,
+            "p50_ms": 0.067,
+            "p95_ms": 0.14,
+            "p99_ms": 0.211
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.6264235727440144,
-            "p50_ms": 0.082,
-            "p95_ms": 12.499,
-            "p99_ms": 13.393
+            "mean_ms": 1.9303370165745857,
+            "p50_ms": 0.074,
+            "p95_ms": 8.745,
+            "p99_ms": 9.402
           },
           "total_requests": 543,
           "transport_failures": 0
         }
       ],
-      "overlap_duration_ms": 222,
+      "overlap_duration_ms": 211,
       "resources": {
         "baseline_open_fds": 9,
         "cleanup_settle_time_ms": 10,
-        "cpu_time_ms": 130.0,
-        "immediate_post_cleanup_open_fds": 105,
+        "cpu_time_ms": 140.0,
+        "immediate_post_cleanup_open_fds": 100,
         "measurement_windows": "baseline_open_fds sampled at zero client load; peak_open_fds sampled with 260 active client sockets (4 moderators + 256 players) during Round 2 before any client closes; immediate_post_cleanup_open_fds sampled immediately after client close; post_cleanup_open_fds sampled after server event loop settles disconnects within bounded 2000ms deadline; peak_rss_kb and cpu_time_ms measured over entire server daemon process lifetime (server_pid).",
         "peak_open_fds": 268,
-        "peak_rss_kb": 4232,
+        "peak_rss_kb": 4196,
         "post_cleanup_open_fds": 8,
         "post_cleanup_settled": true
       },
       "run_index": 1,
       "run_passed": true,
       "sequential_latency": {
-        "mean_ms": 0.10103545673076923,
-        "p50_ms": 0.08,
-        "p95_ms": 0.178,
-        "p99_ms": 0.348
+        "mean_ms": 0.10717307692307693,
+        "p50_ms": 0.066,
+        "p95_ms": 0.122,
+        "p99_ms": 0.237
       },
-      "throughput_rps": 7970.69597069597,
+      "throughput_rps": 8809.716599190284,
       "total_latency": {
-        "mean_ms": 2.689307904411765,
-        "p50_ms": 0.095,
-        "p95_ms": 12.879,
-        "p99_ms": 13.726
+        "mean_ms": 1.8883129595588235,
+        "p50_ms": 0.072,
+        "p95_ms": 8.663,
+        "p99_ms": 9.391
       }
     },
     {
@@ -268,12 +268,12 @@
         "total_player_clients": 256
       },
       "concurrent_latency": {
-        "mean_ms": 11.976279296875,
-        "p50_ms": 12.208,
-        "p95_ms": 14.743,
-        "p99_ms": 14.908
+        "mean_ms": 7.102375,
+        "p50_ms": 7.011,
+        "p95_ms": 9.346,
+        "p99_ms": 9.533
       },
-      "duration_ms": 294,
+      "duration_ms": 184,
       "failures": {
         "correctness_failures": 0,
         "timeouts": 0,
@@ -283,17 +283,17 @@
       "matches": [
         {
           "concurrent_latency": {
-            "mean_ms": 12.0907421875,
-            "p50_ms": 12.123,
-            "p95_ms": 14.88,
-            "p99_ms": 14.916
+            "mean_ms": 6.8789296875,
+            "p50_ms": 6.8,
+            "p95_ms": 9.433,
+            "p99_ms": 9.534
           },
           "correctness_failures": 0,
           "expected_rejections": 5,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 247,
-          "lifecycle_start_ms": 6,
+          "lifecycle_end_ms": 152,
+          "lifecycle_start_ms": 1,
           "match_id": 1,
           "match_index": 1,
           "match_passed": true,
@@ -304,34 +304,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.15108612440191388,
-            "p50_ms": 0.101,
-            "p95_ms": 0.287,
-            "p99_ms": 0.418
+            "mean_ms": 0.0762153110047847,
+            "p50_ms": 0.06,
+            "p95_ms": 0.127,
+            "p99_ms": 0.283
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.9501263736263734,
-            "p50_ms": 0.139,
-            "p95_ms": 13.212,
-            "p99_ms": 14.898
+            "mean_ms": 1.6709908424908424,
+            "p50_ms": 0.066,
+            "p95_ms": 8.61,
+            "p99_ms": 9.435
           },
           "total_requests": 546,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 11.848234375,
-            "p50_ms": 12.164,
-            "p95_ms": 14.636,
-            "p99_ms": 14.906
+            "mean_ms": 7.280109375,
+            "p50_ms": 7.244,
+            "p95_ms": 9.337,
+            "p99_ms": 9.531
           },
           "correctness_failures": 0,
           "expected_rejections": 3,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 261,
-          "lifecycle_start_ms": 8,
+          "lifecycle_end_ms": 163,
+          "lifecycle_start_ms": 2,
           "match_id": 2,
           "match_index": 2,
           "match_passed": true,
@@ -342,34 +342,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.11375721153846154,
-            "p50_ms": 0.087,
-            "p95_ms": 0.221,
-            "p99_ms": 0.354
+            "mean_ms": 0.0656298076923077,
+            "p50_ms": 0.06,
+            "p95_ms": 0.107,
+            "p99_ms": 0.185
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.874810661764706,
-            "p50_ms": 0.117,
-            "p95_ms": 13.131,
-            "p99_ms": 14.773
+            "mean_ms": 1.7631544117647058,
+            "p50_ms": 0.063,
+            "p95_ms": 8.068,
+            "p99_ms": 9.358
           },
           "total_requests": 544,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 11.9803046875,
-            "p50_ms": 12.299,
-            "p95_ms": 14.584,
-            "p99_ms": 14.887
+            "mean_ms": 7.1688828125,
+            "p50_ms": 6.997,
+            "p95_ms": 9.309,
+            "p99_ms": 9.533
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 274,
-          "lifecycle_start_ms": 8,
+          "lifecycle_end_ms": 173,
+          "lifecycle_start_ms": 2,
           "match_id": 3,
           "match_index": 3,
           "match_passed": true,
@@ -380,34 +380,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.08949397590361445,
-            "p50_ms": 0.075,
-            "p95_ms": 0.156,
-            "p99_ms": 0.267
+            "mean_ms": 0.06731807228915664,
+            "p50_ms": 0.061,
+            "p95_ms": 0.101,
+            "p99_ms": 0.126
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.892484346224678,
-            "p50_ms": 0.082,
-            "p95_ms": 13.025,
-            "p99_ms": 14.691
+            "mean_ms": 1.741351749539595,
+            "p50_ms": 0.065,
+            "p95_ms": 8.438,
+            "p99_ms": 9.388
           },
           "total_requests": 543,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 11.9858359375,
-            "p50_ms": 12.258,
-            "p95_ms": 14.555,
-            "p99_ms": 14.887
+            "mean_ms": 7.081578125,
+            "p50_ms": 6.781,
+            "p95_ms": 9.139,
+            "p99_ms": 9.525
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 293,
-          "lifecycle_start_ms": 9,
+          "lifecycle_end_ms": 183,
+          "lifecycle_start_ms": 2,
           "match_id": 4,
           "match_index": 4,
           "match_passed": true,
@@ -418,48 +418,48 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.11300722891566264,
-            "p50_ms": 0.096,
-            "p95_ms": 0.219,
-            "p99_ms": 0.307
+            "mean_ms": 0.06858795180722892,
+            "p50_ms": 0.063,
+            "p95_ms": 0.101,
+            "p99_ms": 0.154
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.9117587476979745,
-            "p50_ms": 0.117,
-            "p95_ms": 13.305,
-            "p99_ms": 14.656
+            "mean_ms": 1.7217421731123388,
+            "p50_ms": 0.067,
+            "p95_ms": 8.407,
+            "p99_ms": 9.187
           },
           "total_requests": 543,
           "transport_failures": 0
         }
       ],
-      "overlap_duration_ms": 238,
+      "overlap_duration_ms": 150,
       "resources": {
         "baseline_open_fds": 9,
         "cleanup_settle_time_ms": 10,
-        "cpu_time_ms": 150.0,
-        "immediate_post_cleanup_open_fds": 146,
+        "cpu_time_ms": 90.0,
+        "immediate_post_cleanup_open_fds": 118,
         "measurement_windows": "baseline_open_fds sampled at zero client load; peak_open_fds sampled with 260 active client sockets (4 moderators + 256 players) during Round 2 before any client closes; immediate_post_cleanup_open_fds sampled immediately after client close; post_cleanup_open_fds sampled after server event loop settles disconnects within bounded 2000ms deadline; peak_rss_kb and cpu_time_ms measured over entire server daemon process lifetime (server_pid).",
         "peak_open_fds": 268,
-        "peak_rss_kb": 4240,
+        "peak_rss_kb": 4200,
         "post_cleanup_open_fds": 8,
         "post_cleanup_settled": true
       },
       "run_index": 2,
       "run_passed": true,
       "sequential_latency": {
-        "mean_ms": 0.11689603365384615,
-        "p50_ms": 0.086,
-        "p95_ms": 0.23,
-        "p99_ms": 0.343
+        "mean_ms": 0.06944771634615383,
+        "p50_ms": 0.061,
+        "p95_ms": 0.108,
+        "p99_ms": 0.189
       },
-      "throughput_rps": 7401.360544217688,
+      "throughput_rps": 11826.08695652174,
       "total_latency": {
-        "mean_ms": 2.907339154411765,
-        "p50_ms": 0.11,
-        "p95_ms": 13.181,
-        "p99_ms": 14.827
+        "mean_ms": 1.7242541360294117,
+        "p50_ms": 0.065,
+        "p95_ms": 8.383,
+        "p99_ms": 9.377
       }
     },
     {
@@ -473,12 +473,12 @@
         "total_player_clients": 256
       },
       "concurrent_latency": {
-        "mean_ms": 10.38506640625,
-        "p50_ms": 10.377,
-        "p95_ms": 13.053,
-        "p99_ms": 13.212
+        "mean_ms": 7.726892578125,
+        "p50_ms": 7.585,
+        "p95_ms": 10.508,
+        "p99_ms": 10.548
       },
-      "duration_ms": 333,
+      "duration_ms": 195,
       "failures": {
         "correctness_failures": 0,
         "timeouts": 0,
@@ -488,17 +488,17 @@
       "matches": [
         {
           "concurrent_latency": {
-            "mean_ms": 9.8714375,
-            "p50_ms": 10.209,
-            "p95_ms": 12.794,
-            "p99_ms": 13.067
+            "mean_ms": 7.6582109375,
+            "p50_ms": 7.595,
+            "p95_ms": 10.527,
+            "p99_ms": 10.543
           },
           "correctness_failures": 0,
           "expected_rejections": 5,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 293,
-          "lifecycle_start_ms": 5,
+          "lifecycle_end_ms": 165,
+          "lifecycle_start_ms": 1,
           "match_id": 1,
           "match_index": 1,
           "match_passed": true,
@@ -509,34 +509,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.1372177033492823,
-            "p50_ms": 0.101,
-            "p95_ms": 0.233,
-            "p99_ms": 0.501
+            "mean_ms": 0.07729665071770335,
+            "p50_ms": 0.064,
+            "p95_ms": 0.11,
+            "p99_ms": 0.259
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.4192326007326006,
-            "p50_ms": 0.125,
-            "p95_ms": 11.061,
-            "p99_ms": 12.935
+            "mean_ms": 1.854507326007326,
+            "p50_ms": 0.07,
+            "p95_ms": 10.001,
+            "p99_ms": 10.527
           },
           "total_requests": 546,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 10.536921875,
-            "p50_ms": 10.508,
-            "p95_ms": 13.033,
-            "p99_ms": 13.259
+            "mean_ms": 7.74415625,
+            "p50_ms": 7.615,
+            "p95_ms": 10.061,
+            "p99_ms": 10.446
           },
           "correctness_failures": 0,
           "expected_rejections": 3,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 305,
-          "lifecycle_start_ms": 6,
+          "lifecycle_end_ms": 175,
+          "lifecycle_start_ms": 2,
           "match_id": 2,
           "match_index": 2,
           "match_passed": true,
@@ -547,34 +547,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.11092067307692308,
-            "p50_ms": 0.084,
-            "p95_ms": 0.228,
-            "p99_ms": 0.301
+            "mean_ms": 0.06927884615384616,
+            "p50_ms": 0.062,
+            "p95_ms": 0.108,
+            "p99_ms": 0.144
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.5640974264705885,
-            "p50_ms": 0.112,
-            "p95_ms": 11.521,
-            "p99_ms": 13.053
+            "mean_ms": 1.8751323529411765,
+            "p50_ms": 0.068,
+            "p95_ms": 9.133,
+            "p99_ms": 10.134
           },
           "total_requests": 544,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 10.9520546875,
-            "p50_ms": 10.616,
-            "p95_ms": 13.181,
-            "p99_ms": 13.25
+            "mean_ms": 7.8912734375,
+            "p50_ms": 7.571,
+            "p95_ms": 10.531,
+            "p99_ms": 10.557
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 319,
-          "lifecycle_start_ms": 7,
+          "lifecycle_end_ms": 184,
+          "lifecycle_start_ms": 2,
           "match_id": 3,
           "match_index": 3,
           "match_passed": true,
@@ -585,34 +585,34 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.10290843373493977,
-            "p50_ms": 0.084,
-            "p95_ms": 0.193,
-            "p99_ms": 0.279
+            "mean_ms": 0.06523614457831325,
+            "p50_ms": 0.061,
+            "p95_ms": 0.09,
+            "p99_ms": 0.119
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.6603499079189685,
-            "p50_ms": 0.105,
-            "p95_ms": 12.673,
-            "p99_ms": 13.186
+            "mean_ms": 1.9100478821362799,
+            "p50_ms": 0.064,
+            "p95_ms": 8.905,
+            "p99_ms": 10.542
           },
           "total_requests": 543,
           "transport_failures": 0
         },
         {
           "concurrent_latency": {
-            "mean_ms": 10.1798515625,
-            "p50_ms": 10.377,
-            "p95_ms": 12.789,
-            "p99_ms": 12.924
+            "mean_ms": 7.6139296875,
+            "p50_ms": 7.485,
+            "p95_ms": 10.361,
+            "p99_ms": 10.54
           },
           "correctness_failures": 0,
           "expected_rejections": 2,
           "final_outcome": "InsiderWin",
           "final_phase": "Finished",
-          "lifecycle_end_ms": 333,
-          "lifecycle_start_ms": 7,
+          "lifecycle_end_ms": 195,
+          "lifecycle_start_ms": 2,
           "match_id": 4,
           "match_index": 4,
           "match_passed": true,
@@ -623,28 +623,28 @@
             "investigators": 4
           },
           "sequential_latency": {
-            "mean_ms": 0.11831566265060241,
-            "p50_ms": 0.101,
-            "p95_ms": 0.217,
-            "p99_ms": 0.449
+            "mean_ms": 0.06579036144578314,
+            "p50_ms": 0.06,
+            "p95_ms": 0.093,
+            "p99_ms": 0.146
           },
           "successful_requests": 541,
           "total_latency": {
-            "mean_ms": 2.4900957642725596,
-            "p50_ms": 0.123,
-            "p95_ms": 11.901,
-            "p99_ms": 12.807
+            "mean_ms": 1.8450939226519338,
+            "p50_ms": 0.062,
+            "p95_ms": 9.48,
+            "p99_ms": 10.389
           },
           "total_requests": 543,
           "transport_failures": 0
         }
       ],
-      "overlap_duration_ms": 286,
+      "overlap_duration_ms": 163,
       "resources": {
         "baseline_open_fds": 9,
         "cleanup_settle_time_ms": 10,
-        "cpu_time_ms": 150.0,
-        "immediate_post_cleanup_open_fds": 126,
+        "cpu_time_ms": 90.0,
+        "immediate_post_cleanup_open_fds": 101,
         "measurement_windows": "baseline_open_fds sampled at zero client load; peak_open_fds sampled with 260 active client sockets (4 moderators + 256 players) during Round 2 before any client closes; immediate_post_cleanup_open_fds sampled immediately after client close; post_cleanup_open_fds sampled after server event loop settles disconnects within bounded 2000ms deadline; peak_rss_kb and cpu_time_ms measured over entire server daemon process lifetime (server_pid).",
         "peak_open_fds": 268,
         "peak_rss_kb": 4232,
@@ -654,23 +654,23 @@
       "run_index": 3,
       "run_passed": true,
       "sequential_latency": {
-        "mean_ms": 0.11737259615384615,
-        "p50_ms": 0.096,
-        "p95_ms": 0.219,
-        "p99_ms": 0.357
+        "mean_ms": 0.06941466346153846,
+        "p50_ms": 0.061,
+        "p95_ms": 0.102,
+        "p99_ms": 0.169
       },
-      "throughput_rps": 6534.534534534534,
+      "throughput_rps": 11158.97435897436,
       "total_latency": {
-        "mean_ms": 2.5333005514705884,
-        "p50_ms": 0.114,
-        "p95_ms": 11.994,
-        "p99_ms": 13.081
+        "mean_ms": 1.8711741727941176,
+        "p50_ms": 0.066,
+        "p95_ms": 9.405,
+        "p99_ms": 10.515
       }
     }
   ],
-  "source_commit": "031bcf3b7bf46f014c3af4f5883fdcaa470e53d4",
+  "source_commit": "47aaa0790013361a820d6b9d42626e8b7ef4c16f",
   "stage_name": "four_match_256p_l6",
   "status": "PASS",
   "test_name": "darkpool_load_tests_l6_concurrent_capacity",
-  "timestamp": 1792031211
+  "timestamp": 1792034177
 }
