@@ -101,6 +101,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> gameplay)
   add_test(NAME darkpool_variable_gameplay_e2e_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> variable-gameplay)
+  add_test(NAME darkpool_min_player_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> min-player)
+  set_tests_properties(darkpool_min_player_tests PROPERTIES TIMEOUT 30)
   add_test(NAME darkpool_malformed_tcp_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> malformed)
   set_tests_properties(darkpool_malformed_tcp_tests PROPERTIES TIMEOUT 30)

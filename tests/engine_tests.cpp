@@ -371,6 +371,58 @@ void test_variable_rosters_and_supply() {
   CHECK(invalid_distribution);
 }
 
+void test_role_distribution_boundaries() {
+  // Explicitly verify N=2 (unsupported lower boundary: < kMinPlayerCount)
+  CHECK(!role_counts(2));
+  CHECK(!supply_plan(2));
+
+  // Explicitly verify N=3 (minimum supported boundary: 1 Insider, 1 Investigator, 1 Employee)
+  const auto c3 = role_counts(3);
+  CHECK(c3.has_value());
+  CHECK(c3->insiders == 1U);
+  CHECK(c3->investigators == 1U);
+  CHECK(c3->employees == 1U);
+
+  // Explicitly verify N=5 (baseline: 1 Insider, 1 Investigator, 3 Employees)
+  const auto c5 = role_counts(5);
+  CHECK(c5.has_value());
+  CHECK(c5->insiders == 1U);
+  CHECK(c5->investigators == 1U);
+  CHECK(c5->employees == 3U);
+
+  // Explicitly verify N=32 (L3: 4 Insiders, 2 Investigators, 26 Employees)
+  const auto c32 = role_counts(32);
+  CHECK(c32.has_value());
+  CHECK(c32->insiders == 4U);
+  CHECK(c32->investigators == 2U);
+  CHECK(c32->employees == 26U);
+
+  // Explicitly verify N=64 (L4/maximum: 8 Insiders, 4 Investigators, 52 Employees)
+  const auto c64 = role_counts(64);
+  CHECK(c64.has_value());
+  CHECK(c64->insiders == 8U);
+  CHECK(c64->investigators == 4U);
+  CHECK(c64->employees == 52U);
+
+  // Explicitly verify N=65 (unsupported upper boundary: > kMaxPlayerCount)
+  CHECK(!role_counts(65));
+  CHECK(!supply_plan(65));
+
+  // Verify formula invariance for all valid N in [3, 64]
+  for (std::size_t n = 3; n <= 64; ++n) {
+    const auto counts = role_counts(n);
+    CHECK(counts.has_value());
+    const auto expected_insiders = 1U + (n - 1U) / 8U;
+    const auto expected_investigators = 1U + (n - 1U) / 16U;
+    const auto expected_employees = n - expected_insiders - expected_investigators;
+    CHECK(counts->insiders == expected_insiders);
+    CHECK(counts->investigators == expected_investigators);
+    CHECK(counts->employees == expected_employees);
+    CHECK(counts->employees >= 1U);
+    CHECK(counts->insiders + counts->investigators + counts->employees == n);
+  }
+}
+
 void test_variable_market_conservation_and_determinism() {
   for (const auto count : {std::size_t{3}, std::size_t{16}, std::size_t{64}}) {
     Match first(scaled_roster(count));
@@ -919,6 +971,7 @@ void test_deterministic_replay() {
 int main() {
   test_state_fixture_invariants();
   test_initialization_and_supply();
+  test_role_distribution_boundaries();
   test_variable_rosters_and_supply();
   test_variable_market_conservation_and_determinism();
   test_normal_five_player_worked_example();
