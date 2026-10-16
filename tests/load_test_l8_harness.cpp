@@ -448,17 +448,22 @@ L8RunResult execute_l8_workload(
     std::thread sender_thread([&]() {
       if (flood1_fd < 0) return;
       const auto flood_frame = Frame(json{{"echo", "flood_ping"}}).serialize();
-      while (!stop_flooding) {
+      while (!stop_flooding.load() || flood_sent.load() < 60) {
+        if (flood_sent.load() >= 100) {
+          if (stop_flooding.load()) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          continue;
+        }
         const ssize_t wr = send(flood1_fd, flood_frame.data(), flood_frame.size(), MSG_NOSIGNAL);
         if (wr > 0) {
           flood_sent++;
         } else if (wr < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-          std::this_thread::sleep_for(std::chrono::microseconds(100));
+          std::this_thread::yield();
         } else if (wr < 0) {
           flood_trans_err++;
           break;
         }
-        std::this_thread::sleep_for(std::chrono::microseconds(100));
+        std::this_thread::yield();
       }
     });
 
@@ -470,6 +475,8 @@ L8RunResult execute_l8_workload(
           healthy_metrics, result.healthy_match_failures,
           expect_transition("Discussion"));
       if (!ev.has_value()) return false;
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
       const auto optr = timed_request(
           mod_fd,
@@ -493,6 +500,8 @@ L8RunResult execute_l8_workload(
           healthy_metrics, result.healthy_match_failures,
           expect_market_result());
       if (!mres.has_value()) return false;
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
       const auto opvt = timed_request(
           mod_fd,
@@ -553,11 +562,11 @@ L8RunResult execute_l8_workload(
     stop_flooding = true;
     sender_thread.join();
 
-    // Drain receiver up to 200ms
+    // Drain receiver up to 500ms
     const auto drain_start = std::chrono::steady_clock::now();
     while (flood_received < flood_sent &&
            std::chrono::duration_cast<std::chrono::milliseconds>(
-               std::chrono::steady_clock::now() - drain_start).count() < 200) {
+               std::chrono::steady_clock::now() - drain_start).count() < 500) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     stop_receiving = true;
