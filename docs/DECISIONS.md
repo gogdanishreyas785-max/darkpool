@@ -73,3 +73,28 @@ Still open after S1: protocol encoding/ACKs and duplicate policy; local authenti
 ## Variable-size follow-up status
 
 Approved: 3–64 active players per match; moderator excluded; five remains the default; role counts follow DEC-02 using safe integer arithmetic. Multiple Insiders form a team: health zero gives an immediate Insider-team win; eliminating one Insider does not end the match while another remains; eliminating the last Insider with positive health gives Employees the win; surviving round three with any Insider active gives the Insider team the win. Every Investigator gets an independent once-per-match private binary role clue with same-target retry idempotency. These are approved game rules. Four concurrent 64-player matches and a 256-player server remain unverified until end-to-end load and isolation testing.
+
+## Post-PR #26 implementation status and capacity follow-up
+
+Following the merge of PRs #24, #25, and #26, the implementation and verification status has advanced beyond the initial unverified design ceilings:
+
+1. **Initial capacity decisions versus measured evidence**:
+   - The initial S0 proposals (REQ-07, DEC-20) specified 64 players per match and four matches per process as theoretical resource ceilings.
+   - Subsequent L4 load testing (`docs/load_test_64p_results.json`) supplied measured single-match capacity evidence (64 players, sequential p95 = 0.17 ms, concurrent burst p95 = 0.58 ms) and sustained reliability (10-minute smoke and 30-minute soak without resource leaks).
+   - Subsequent L6 multi-match load testing (`docs/load_test_l6_results.json`) supplied measured four-match capacity evidence (4 concurrent matches × 64 players = 256 active players, concurrent burst p95 = 22.31 ms) and sustained reliability (10-minute smoke and 30-minute soak across 35,736 completed matches with zero transport or correctness failures).
+
+2. **Moderator topology and connection limit reconciliation**:
+   - The original S0 proposal (DEC-20) envisioned a single moderator connection across all matches (256 players + 1 moderator = 257 connections).
+   - To support independent moderator sessions and match ownership across multiple matches, the L6 implementation in `src/server_main.cpp` updated the configuration to four independent authenticated moderator connections: `kMaxMatches = 4`, `kMaxModerators = 4`, `kMaxPlayerConnections = 256`, and `kMaxConnections = 260`.
+   - Each match is independently owned and controlled by its dedicated moderator connection.
+
+3. **Scope of verification**:
+   - Historical statements that capacity and latency were "unverified" have been superseded **only** for the exact workloads, topologies, and environments measured and recorded in the repository artifacts (`docs/load_test_16p_results.json`, `docs/load_test_64p_results.json`, `docs/load_test_l1_results.json`, `docs/load_test_l3_results.json`, `docs/load_test_l5_results.json`, `docs/load_test_l6_results.json`, `docs/load_test_l7_results.json`, and `docs/load_test_l8_results.json`).
+   - These measurements were performed on a single-host Linux environment over nonblocking sockets. They do not constitute a blanket validation of all arbitrary deployment scenarios.
+
+4. **Private LAN TCP transport**:
+   - The server supports non-loopback TCP binding on an assigned RFC 1918 private IPv4 address via `--bind-address` (PR #26).
+   - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance remains deferred and `NOT RUN` (requiring two physical networked machines).
+
+5. **Transport security (TLS 1.3) status**:
+   - TLS 1.3, public-Internet deployment, certificate lifecycle, and production client identity remain deferred future work requiring explicit architectural design review (see `docs/s9-transport-security-design.md`).

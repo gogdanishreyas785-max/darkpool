@@ -23,11 +23,11 @@ Each Match owns membership, roles, phases, deadlines, company state, trades, clu
 
 ## Isolation and targets
 
-The approved per-match player range is 3–64, with five as the default; the moderator is outside that count. The coordinator permits at most four matches. The TCP process has explicit design caps of 256 player connections, one moderator connection, and 257 total connections. One moderator can own the four matches. These limits describe configured resource ceilings only; they do not establish that 64-player matches or four simultaneous matches meet performance or reliability targets.
+The approved per-match player range is 3–64, with five as the default; the moderator is outside that count. The server coordinator permits at most four matches (`kMaxMatches = 4`). The server configuration in `src/server_main.cpp` enforces explicit capacity ceilings: up to 256 player connections (`kMaxPlayerConnections = 256`) and four independent authenticated moderator connections (`kMaxModerators = 4`), allowing up to 260 total concurrent connections (`kMaxConnections = 260`). Each active match is independently owned and controlled by its dedicated moderator connection. Initial S0 proposals envisioned 1 moderator and 257 connections; this was superseded in the L6 multi-match implementation to enable independent moderator sessions per match.
 
 Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
 
-The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 players plus moderators). This is design support only. p95 acknowledgement ≤100 ms and 30-minute steady reliability are proposed acceptance thresholds, not achieved results; the 64-player/four-match capacity remains explicitly unverified until measured under a real load test.
+The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance remains untested (`NOT RUN`), and remote TLS 1.3 deployment remains deferred.
 
 ## Proposed repository layout
 
@@ -58,7 +58,7 @@ Create modules as implementation requires, not as empty placeholder code. CMake 
 ## Future transport & deferred roadmap
 
 Keep game and session interfaces transport-neutral. The following items remain deferred future milestones:
-- Remote internet play over TLS 1.3
+- Remote internet play over TLS 1.3 (see proposed architecture in `docs/s9-transport-security-design.md`)
 - Production client authentication and credential lifecycle
 - Dynamic TLS certificate issuance, rotation, and reloading
 - Operational monitoring, Prometheus metrics, and systemd supervision
