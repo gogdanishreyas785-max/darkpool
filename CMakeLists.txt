@@ -107,6 +107,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_unix_socket_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> unix)
   set_tests_properties(darkpool_unix_socket_tests PROPERTIES TIMEOUT 20)
+  add_test(NAME darkpool_lan_binding_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> lan-binding)
+  set_tests_properties(darkpool_lan_binding_tests PROPERTIES TIMEOUT 30)
 
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
   target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)

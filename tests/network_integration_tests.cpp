@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
@@ -1397,11 +1398,188 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
   }
 }
 
+int run_server_exit_code(const char* server_path, const std::vector<std::string>& args) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    const int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null >= 0) {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    std::vector<const char*> argv;
+    argv.push_back(server_path);
+    for (const auto& a : args) {
+      argv.push_back(a.c_str());
+    }
+    argv.push_back(nullptr);
+    execv(server_path, const_cast<char* const*>(argv.data()));
+    _exit(127);
+  }
+  int status = 0;
+  waitpid(child, &status, 0);
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status);
+  }
+  return -1;
+}
+
+pid_t spawn_server_proc(const char* server_path, const std::vector<std::string>& args) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    const int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null >= 0) {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    std::vector<const char*> argv;
+    argv.push_back(server_path);
+    for (const auto& a : args) {
+      argv.push_back(a.c_str());
+    }
+    argv.push_back(nullptr);
+    execv(server_path, const_cast<char* const*>(argv.data()));
+    _exit(127);
+  }
+  return child;
+}
+
+int connect_to_addr(const std::string& host, std::uint16_t port, int max_attempts = 80) {
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(port);
+      if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) > 0) {
+        if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+          return fd;
+        }
+      }
+      close(fd);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  return -1;
+}
+
+void test_lan_binding(const char* server_path) {
+  std::cout << "Testing LAN bind configuration, default loopback, and argument validation...\n";
+
+  // 1. Invalid bind address rejections (exit code 2)
+  CHECK(run_server_exit_code(server_path, {"--bind-address"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address="}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", ""}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "0.0.0.0"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address=0.0.0.0"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "8.8.8.8"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "224.0.0.1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "255.255.255.255"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "::1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "fe80::1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "invalid_host"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.1.999"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"-b", "8.8.8.8"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"-b=8.8.8.8"}) == 2);
+
+  // 2. Unassigned RFC1918 address fails startup with exit code 1
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.254.254", "--no-unix"}) == 1);
+
+  // 3. Default loopback binding (no --bind-address specified)
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 4. Explicit loopback binding with --bind-address
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--bind-address", "127.0.0.1", "--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 5. Option order and flag formats (--bind-address=, -b, and reversed order)
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--port", std::to_string(p), "--bind-address=127.0.0.1", "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 6. Test binding to an assigned non-loopback private IPv4 interface if one exists
+  std::string found_lan_ip;
+  struct ifaddrs *ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) == 0) {
+    for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+      if (ifa->ifa_addr == nullptr) continue;
+      if (ifa->ifa_addr->sa_family == AF_INET) {
+        char host[INET_ADDRSTRLEN];
+        auto *sa = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &(sa->sin_addr), host, sizeof(host)) != nullptr) {
+          const std::string ip(host);
+          const uint32_t host_ip = ntohl(sa->sin_addr.s_addr);
+          const bool is_loopback = ((host_ip >> 24U) == 127U);
+          const bool is_10_net = ((host_ip >> 24U) == 10U);
+          const bool is_172_net = (host_ip >= 0xAC100000U && host_ip <= 0xAC1FFFFFU);
+          const bool is_192_net = ((host_ip >> 16U) == 0xC0A8U);
+          if (!is_loopback && (is_10_net || is_172_net || is_192_net)) {
+            found_lan_ip = ip;
+            break;
+          }
+        }
+      }
+    }
+    freeifaddrs(ifaddr);
+  }
+
+  if (!found_lan_ip.empty()) {
+    std::cout << "  Found active private RFC1918 interface: " << found_lan_ip << ", testing live binding...\n";
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--bind-address", found_lan_ip, "--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr(found_lan_ip, p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+    std::cout << "  Live LAN binding and protocol handshake verified on " << found_lan_ip << ":" << p << "\n";
+  } else {
+    std::cout << "  [SKIPPED] No non-loopback private IPv4 interface found in environment for live LAN bind test\n";
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|unix|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|unix|lan-binding|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
@@ -1416,6 +1594,8 @@ int main(int argc, char** argv) {
     test_idle_unassigned_timeout(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "unix") {
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "lan-binding") {
+    test_lan_binding(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
     test_server_capacity_and_echo(argv[1]);
     test_idle_unassigned_timeout(argv[1]);
@@ -1423,6 +1603,7 @@ int main(int argc, char** argv) {
     test_complete_three_round_match(argv[1], 5U);
     test_complete_three_round_match(argv[1], 8U);
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
+    test_lan_binding(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }
