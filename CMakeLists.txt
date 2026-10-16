@@ -141,7 +141,60 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(darkpool_load_64p_regression PROPERTIES TIMEOUT 60)
   add_test(NAME darkpool_load_64p_semantic_regression
     COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --test-semantic-response)
-  set_tests_properties(darkpool_load_64p_semantic_regression PROPERTIES TIMEOUT 60)
+  add_executable(darkpool_load_tests_l5 tests/load_test_l5_harness.cpp)
+  target_link_libraries(darkpool_load_tests_l5 PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_l5)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_l5 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_l5_functional
+    COMMAND darkpool_load_tests_l5 $<TARGET_FILE:darkpool_server> --functional)
+  set_tests_properties(darkpool_load_l5_functional PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_l5_regression
+    COMMAND darkpool_load_tests_l5 $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_l5_regression PROPERTIES TIMEOUT 60)
+
+  add_executable(darkpool_load_tests_l6 tests/load_test_l6_harness.cpp)
+  target_link_libraries(darkpool_load_tests_l6 PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_l6)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_l6 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_l6_functional
+    COMMAND darkpool_load_tests_l6 $<TARGET_FILE:darkpool_server> --functional)
+  set_tests_properties(darkpool_load_l6_functional PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_l6_regression
+    COMMAND darkpool_load_tests_l6 $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_l6_regression PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_l6_sustained_short
+    COMMAND darkpool_load_tests_l6 $<TARGET_FILE:darkpool_server> --test-sustained-short)
+  set_tests_properties(darkpool_load_l6_sustained_short PROPERTIES TIMEOUT 60)
+
+  add_executable(darkpool_load_tests_l7 tests/load_test_l7_harness.cpp)
+  target_link_libraries(darkpool_load_tests_l7 PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_l7)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_l7 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_l7_functional
+    COMMAND darkpool_load_tests_l7 $<TARGET_FILE:darkpool_server> --functional)
+  set_tests_properties(darkpool_load_l7_functional PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_l7_regression
+    COMMAND darkpool_load_tests_l7 $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_l7_regression PROPERTIES TIMEOUT 60)
+
+  add_executable(darkpool_load_tests_l8 tests/load_test_l8_harness.cpp)
+  target_link_libraries(darkpool_load_tests_l8 PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_l8)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_l8 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_l8_functional
+    COMMAND darkpool_load_tests_l8 $<TARGET_FILE:darkpool_server> --functional)
+  set_tests_properties(darkpool_load_l8_functional PROPERTIES TIMEOUT 60)
+  add_test(NAME darkpool_load_l8_regression
+    COMMAND darkpool_load_tests_l8 $<TARGET_FILE:darkpool_server> --selftest)
+  set_tests_properties(darkpool_load_l8_regression PROPERTIES TIMEOUT 60)
 
   option(DARKPOOL_ENABLE_SUSTAINED_TESTS "Enable 10-minute and 30-minute sustained load tests in CTest" OFF)
   if(DARKPOOL_ENABLE_SUSTAINED_TESTS)
@@ -151,6 +204,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME darkpool_load_64p_reliability_30m
       COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --reliability-30m)
     set_tests_properties(darkpool_load_64p_reliability_30m PROPERTIES TIMEOUT 2000 LABELS "Sustained")
+    add_test(NAME darkpool_load_l6_smoke_10m
+      COMMAND darkpool_load_tests_l6 $<TARGET_FILE:darkpool_server> --smoke-10m)
+    set_tests_properties(darkpool_load_l6_smoke_10m PROPERTIES TIMEOUT 700 LABELS "Sustained;L6")
+    add_test(NAME darkpool_load_l6_reliability_30m
+      COMMAND darkpool_load_tests_l6 $<TARGET_FILE:darkpool_server> --reliability-30m)
+    set_tests_properties(darkpool_load_l6_reliability_30m PROPERTIES TIMEOUT 2000 LABELS "Sustained;L6")
   endif()
 else()
   message(STATUS "TCP/UNIX server and CLI client require Linux; engine and framing tests remain available")

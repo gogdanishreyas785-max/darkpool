@@ -1,0 +1,121 @@
+{
+  "actual_duration_ms": 600194,
+  "actual_duration_s": 600.194,
+  "completed_cycles": 2661,
+  "completed_matches": 10644,
+  "concurrency_topology": {
+    "concurrent_matches": 4,
+    "connection_cap": 260,
+    "moderator_clients": 4,
+    "persistent_server": true,
+    "players_per_match": 64,
+    "total_connected_clients": 260,
+    "total_player_clients": 256
+  },
+  "concurrent_latency": {
+    "max_ms": 122.881,
+    "mean_ms": 8.810624491350762,
+    "min_ms": 0.023,
+    "p50_ms": 8.684,
+    "p95_ms": 12.803,
+    "p99_ms": 16.615
+  },
+  "correctness_failures": 0,
+  "cycle_diagnostics": {
+    "all_cycles_overlapped": true,
+    "completed_cycles": 2661,
+    "completed_matches": 10644,
+    "match_limit_retries": 0,
+    "total_cycles_attempted": 2661,
+    "all_cycles_fd_cleanup_passed": true,
+    "evidence_records_count": 2661
+  },
+  "diagnostic_details": "Workload completed successfully across 2661 cycles (10644 matches) with 0 transport and 0 correctness failures",
+  "environment": "Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0",
+  "expected_rejections": 31932,
+  "failure_reason": "",
+  "failures": {
+    "correctness_failures": 0,
+    "timeouts": 0,
+    "transport_failures": 0,
+    "unexpected_disconnects": 0
+  },
+  "git_dirty": false,
+  "match_limit_retries": 0,
+  "requests": {
+    "correctness_failures": 0,
+    "expected_rejections": 31932,
+    "successful_requests": 5758404,
+    "total_requests": 5790336,
+    "transport_failures": 0
+  },
+  "resources": {
+    "all_cycles_fd_cleanup_passed": true,
+    "baseline_open_fds": 9,
+    "baseline_open_fds_sample_ok": true,
+    "cpu_time_ms": 308810.0,
+    "current_rss_sample_count": 2661,
+    "end_current_rss_kb": 4276,
+    "end_current_rss_sample_ok": true,
+    "end_rss_kb": 4276,
+    "immediate_post_cleanup_open_fds": 153,
+    "initial_current_rss_kb": 3580,
+    "initial_current_rss_sample_ok": true,
+    "initial_rss_kb": 3580,
+    "peak_open_fds": 268,
+    "peak_rss_kb": 4296,
+    "peak_rss_sample_ok": true,
+    "resource_sampling_ok": true,
+    "settled_post_cleanup_fds": 8,
+    "rss_summary": {
+      "sample_count": 2661,
+      "min_kb": 4212,
+      "max_kb": 4296,
+      "mean_kb": 4263.7,
+      "median_kb": 4264,
+      "first_50_mean_kb": 4255.8,
+      "last_50_mean_kb": 4267.0,
+      "series_derivation": "Derived from cycle_evidence[].post_cleanup_current_rss_kb across all completed cycles"
+    }
+  },
+  "sequential_latency": {
+    "max_ms": 45.901,
+    "mean_ms": 0.08363104529818172,
+    "min_ms": 0.013,
+    "p50_ms": 0.073,
+    "p95_ms": 0.144,
+    "p99_ms": 0.241
+  },
+  "source_commit": "a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec",
+  "stage_name": "smoke_10m",
+  "status": "PASS",
+  "successful_requests": 5758404,
+  "target_duration_s": 600,
+  "test_name": "darkpool_load_tests_l6_sustained",
+  "throughput": {
+    "denominator": "Actual elapsed duration in seconds (actual_duration_ms / 1000.0)",
+    "requests_per_second": 9647.440660852992
+  },
+  "timestamp": 1792113054,
+  "total_latency": {
+    "max_ms": 122.881,
+    "mean_ms": 2.1370412678987885,
+    "measurement_definition": "Monotonic steady_clock round-trip duration measured from request frame write to correlated response parse; excludes inter-phase pauses.",
+    "min_ms": 0.013,
+    "p50_ms": 0.078,
+    "p95_ms": 10.316,
+    "p99_ms": 13.116
+  },
+  "total_requests": 5790336,
+  "transport_failures": 0,
+  "workload_seed": 42,
+  "evidence_file": {
+    "relative_path": "docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl",
+    "format": "JSONL (one independently parseable JSON object per cycle)",
+    "schema_version": "1.0",
+    "expected_records": 2661,
+    "sha256": "cd5adfe41bddee922215b1ff1072b221a692c9c671af5f9580b1d35f5c1aafb3",
+    "source_commit": "a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec",
+    "git_dirty": false
+  }
+}

@@ -1,0 +1,305 @@
+{
+  "aggregate_latency": {
+    "concurrent_p50_ms": 2.553,
+    "concurrent_p95_ms": 5.427,
+    "concurrent_p99_ms": 5.97,
+    "sequential_p50_ms": 0.123,
+    "sequential_p95_ms": 0.273,
+    "sequential_p99_ms": 0.438,
+    "total_mean_ms": 0.6973636884306987,
+    "total_p50_ms": 0.154,
+    "total_p95_ms": 3.917,
+    "total_p99_ms": 5.482
+  },
+  "concurrency_topology": {
+    "concurrent_matches": 2,
+    "moderator_clients": 2,
+    "players_per_match": 32,
+    "role_distribution": {
+      "employees": 26,
+      "insiders": 4,
+      "investigators": 2
+    },
+    "total_connected_clients": 66,
+    "total_player_clients": 64
+  },
+  "correctness_failures": 0,
+  "environment": "Linux x86_64; GCC",
+  "expected_rejections": 39,
+  "git_dirty": false,
+  "runs": [
+    {
+      "baseline_open_fds": 8,
+      "baseline_open_fds_sample_ok": true,
+      "cleanup_failure_reason": "",
+      "cleanup_settle_time_ms": 10,
+      "duration_ms": 184,
+      "immediate_post_cleanup_open_fds": 67,
+      "immediate_post_cleanup_sample_ok": true,
+      "matches": [
+        {
+          "elapsed_ms": 173,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 2.552265625,
+            "p50_ms": 2.678,
+            "p95_ms": 4.511,
+            "p99_ms": 4.63
+          },
+          "latency_total": {
+            "mean_ms": 0.6601126279863481,
+            "p50_ms": 0.157,
+            "p95_ms": 4.045,
+            "p99_ms": 4.548
+          },
+          "match_id": 1,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 8,
+            "successful": 285,
+            "total": 293,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        },
+        {
+          "elapsed_ms": 173,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 2.426234375,
+            "p50_ms": 1.489,
+            "p95_ms": 4.444,
+            "p99_ms": 4.553
+          },
+          "latency_total": {
+            "mean_ms": 0.6687854671280277,
+            "p50_ms": 0.185,
+            "p95_ms": 4.22,
+            "p99_ms": 4.529
+          },
+          "match_id": 2,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 5,
+            "successful": 284,
+            "total": 289,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        }
+      ],
+      "overlap_duration_ms": 173,
+      "peak_conn_current_rss_kb": 3792,
+      "peak_conn_current_rss_sample_ok": true,
+      "peak_open_fds": 74,
+      "peak_open_fds_sample_ok": true,
+      "peak_rss_kb": 3880,
+      "peak_rss_sample_ok": true,
+      "post_cleanup_current_rss_kb": 3880,
+      "post_cleanup_current_rss_sample_ok": true,
+      "post_cleanup_open_fds": 8,
+      "post_cleanup_sample_ok": true,
+      "post_cleanup_settled": true,
+      "run_index": 1,
+      "run_passed": true,
+      "starvation_verified": true,
+      "throughput_rps": 3163.0434782608695
+    },
+    {
+      "baseline_open_fds": 8,
+      "baseline_open_fds_sample_ok": true,
+      "cleanup_failure_reason": "",
+      "cleanup_settle_time_ms": 10,
+      "duration_ms": 96,
+      "immediate_post_cleanup_open_fds": 25,
+      "immediate_post_cleanup_sample_ok": true,
+      "matches": [
+        {
+          "elapsed_ms": 82,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 2.1026875,
+            "p50_ms": 2.34,
+            "p95_ms": 2.877,
+            "p99_ms": 2.966
+          },
+          "latency_total": {
+            "mean_ms": 0.5552798634812286,
+            "p50_ms": 0.131,
+            "p95_ms": 2.584,
+            "p99_ms": 2.906
+          },
+          "match_id": 3,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 8,
+            "successful": 285,
+            "total": 293,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        },
+        {
+          "elapsed_ms": 82,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 2.11546875,
+            "p50_ms": 2.308,
+            "p95_ms": 3.027,
+            "p99_ms": 3.043
+          },
+          "latency_total": {
+            "mean_ms": 0.5614602076124567,
+            "p50_ms": 0.118,
+            "p95_ms": 2.769,
+            "p99_ms": 3.04
+          },
+          "match_id": 4,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 5,
+            "successful": 284,
+            "total": 289,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        }
+      ],
+      "overlap_duration_ms": 82,
+      "peak_conn_current_rss_kb": 3880,
+      "peak_conn_current_rss_sample_ok": true,
+      "peak_open_fds": 74,
+      "peak_open_fds_sample_ok": true,
+      "peak_rss_kb": 3888,
+      "peak_rss_sample_ok": true,
+      "post_cleanup_current_rss_kb": 3888,
+      "post_cleanup_current_rss_sample_ok": true,
+      "post_cleanup_open_fds": 8,
+      "post_cleanup_sample_ok": true,
+      "post_cleanup_settled": true,
+      "run_index": 2,
+      "run_passed": true,
+      "starvation_verified": true,
+      "throughput_rps": 6062.5
+    },
+    {
+      "baseline_open_fds": 8,
+      "baseline_open_fds_sample_ok": true,
+      "cleanup_failure_reason": "",
+      "cleanup_settle_time_ms": 10,
+      "duration_ms": 167,
+      "immediate_post_cleanup_open_fds": 25,
+      "immediate_post_cleanup_sample_ok": true,
+      "matches": [
+        {
+          "elapsed_ms": 156,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 3.408703125,
+            "p50_ms": 3.295,
+            "p95_ms": 5.944,
+            "p99_ms": 6.05
+          },
+          "latency_total": {
+            "mean_ms": 0.8675460750853242,
+            "p50_ms": 0.185,
+            "p95_ms": 4.93,
+            "p99_ms": 5.97
+          },
+          "match_id": 5,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 8,
+            "successful": 285,
+            "total": 293,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        },
+        {
+          "elapsed_ms": 156,
+          "final_outcome": "InsiderWin",
+          "final_phase": "Finished",
+          "latency_concurrent": {
+            "mean_ms": 3.3383125,
+            "p50_ms": 3.357,
+            "p95_ms": 5.865,
+            "p99_ms": 6.0
+          },
+          "latency_total": {
+            "mean_ms": 0.8711245674740485,
+            "p50_ms": 0.186,
+            "p95_ms": 4.894,
+            "p99_ms": 5.927
+          },
+          "match_id": 6,
+          "match_passed": true,
+          "requests": {
+            "correctness_failures": 0,
+            "expected_rejections": 5,
+            "successful": 284,
+            "total": 289,
+            "transport_failures": 0
+          },
+          "roles": {
+            "employees": 26,
+            "insiders": 4,
+            "investigators": 2
+          }
+        }
+      ],
+      "overlap_duration_ms": 156,
+      "peak_conn_current_rss_kb": 3888,
+      "peak_conn_current_rss_sample_ok": true,
+      "peak_open_fds": 74,
+      "peak_open_fds_sample_ok": true,
+      "peak_rss_kb": 3888,
+      "peak_rss_sample_ok": true,
+      "post_cleanup_current_rss_kb": 3888,
+      "post_cleanup_current_rss_sample_ok": true,
+      "post_cleanup_open_fds": 8,
+      "post_cleanup_sample_ok": true,
+      "post_cleanup_settled": true,
+      "run_index": 3,
+      "run_passed": true,
+      "starvation_verified": true,
+      "throughput_rps": 3485.0299401197603
+    }
+  ],
+  "source_commit": "bfe240cee5ffaf23c9a92c29e5f06fb11f133e11",
+  "status": "PASS",
+  "successful_requests": 1707,
+  "test_name": "darkpool_load_tests_l5",
+  "total_requests": 1746,
+  "transport_failures": 0
+}

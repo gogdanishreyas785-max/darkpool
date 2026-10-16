@@ -245,6 +245,16 @@ void test_server_capacity_and_echo(const char* server_path) {
 
   if (!peers.empty()) { (void)close(peers.back()); peers.pop_back(); }
   std::this_thread::sleep_for(std::chrono::milliseconds(30));
+  std::vector<int> extra_moderators;
+  for (int m = 1; m < 4; ++m) {
+    const int mod_fd = connect_to(port);
+    CHECK(mod_fd >= 0);
+    if (mod_fd >= 0) {
+      const auto reply = request_json(mod_fd, json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token"}});
+      CHECK(reply && (*reply)["type"] == "connect" && (*reply)["role"] == "moderator");
+      extra_moderators.push_back(mod_fd);
+    }
+  }
   duplicate_moderator = connect_to(port);
   CHECK(duplicate_moderator >= 0);
   if (duplicate_moderator >= 0) {
@@ -252,6 +262,7 @@ void test_server_capacity_and_echo(const char* server_path) {
     CHECK(send_all(duplicate_moderator, hello.data(), hello.size(), false));
     CHECK(rejected_by_server(duplicate_moderator));
   }
+  for (const auto fd : extra_moderators) (void)close(fd);
 
   const int replacement = connect_to(port);
   CHECK(replacement >= 0);
@@ -635,7 +646,17 @@ void test_moderator_authentication(const char* server_path) {
       const auto created = request_json(valid_mod_fd, json{{"type", "create_match"}});
       CHECK(created && (*created)["type"] == "match_created");
 
-      // 3G: Duplicate moderator with valid credentials rejected (slot limit 1)
+      // 3G: Duplicate moderator beyond 4 slots with valid credentials rejected (slot limit 4)
+      std::vector<int> extra_mod_fds;
+      for (int m = 1; m < 4; ++m) {
+        const int mod_fd = connect_to(port);
+        CHECK(mod_fd >= 0);
+        if (mod_fd >= 0) {
+          const auto reply = request_json(mod_fd, json{{"type", "connect"}, {"role", "moderator"}, {"token", expected_token}});
+          CHECK(reply && (*reply)["type"] == "connect" && (*reply)["role"] == "moderator");
+          extra_mod_fds.push_back(mod_fd);
+        }
+      }
       const int dup_mod_fd = connect_to(port);
       CHECK(dup_mod_fd >= 0);
       if (dup_mod_fd >= 0) {
@@ -643,6 +664,7 @@ void test_moderator_authentication(const char* server_path) {
         CHECK(send_all(dup_mod_fd, dup_payload.data(), dup_payload.size(), false));
         CHECK(rejected_by_server(dup_mod_fd));
       }
+      for (const auto fd : extra_mod_fds) (void)close(fd);
 
       // Disconnect original moderator
       (void)close(valid_mod_fd);
