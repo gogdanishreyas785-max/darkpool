@@ -482,56 +482,73 @@ Phase lengths, workload mix/jitter, ACK semantics, and repeat count are proposal
 
 ## S9 Transport Security Verification & Benchmarks
 
-The S9 transport security milestone implements server-authenticated TLS 1.3 transport over dedicated TCP port 4783 using OpenSSL 3.x. Verification encompasses 16 automated integration and security-negative test scenarios, as well as a dedicated 3-run performance benchmark measuring 5-player, 64-player, and 256-player concurrent workloads over TLS 1.3.
+The S9 transport security milestone implements server-authenticated TLS 1.3 transport over dedicated TCP port 4783 using OpenSSL 3.x. Verification encompasses 24 automated integration and security-negative test scenarios, as well as a dedicated 3-run performance benchmark measuring 5-player, 64-player, and 256-player concurrent workloads across Plaintext TCP (port 4782) and TLS 1.3 (port 4783), compared against the historical UNIX domain socket baseline.
 
 ### S9 Automated Functional & Security Test Suite (`darkpool_tls_integration_tests`)
 
-All 16 required test scenarios are registered with CTest and pass deterministically:
+All 24 test scenarios are registered with CTest and pass deterministically:
 
 | ID | Scenario Description | Expected Outcome | Result |
 |:---|:---|:---|:---:|
 | S9-01 | Valid TLS 1.3 handshake with trusted local CA and matching IP SAN | Handshake completes, frames exchanged | PASS |
-| S9-02 | Valid TLS 1.3 handshake in leaf fingerprint-pinning mode | SHA-256 pin matches, frames exchanged | PASS |
+| S9-02 | Valid TLS 1.3 handshake in leaf fingerprint-pinning mode (self-signed leaf) | SHA-256 pin matches, frames exchanged | PASS |
 | S9-03 | Rejection of untrusted CA root | Client handshake fails closed (`X509_V_ERR_DEPTH_ZERO_SELF_SIGNED_CERT`) | PASS |
 | S9-04 | Rejection of incorrect SHA-256 leaf fingerprint | Pin mismatch triggers fatal close | PASS |
 | S9-05 | Rejection of mismatched IP SAN (e.g., connected 127.0.0.1, cert has 10.0.0.1) | Name/SAN validation failure aborts connection | PASS |
-| S9-06 | Rejection of expired or not-yet-valid certificate | Handshake fails closed on certificate validity period | PASS |
+| S9-06 | Rejection of expired certificate | Handshake fails closed on certificate validity period | PASS |
 | S9-07 | Rejection of TLS 1.2 and earlier protocols | Server enforces TLS 1.3 minimum version | PASS |
 | S9-08 | Rejection of plaintext traffic sent to TLS listener | Handshake parse failure, connection terminated, no fallback | PASS |
 | S9-09 | Handshake stall timeout (5-second monotonic deadline) | Stalled socket evicted by epoll reactor within deadline | PASS |
 | S9-10 | Fragmented TLS records and coalesced application frames | Decoder handles byte streams and multi-frame boundaries | PASS |
-| S9-11 | Slow-reader and output queue bounds | 64 KiB queue overflow safely disconnects sluggish peer | PASS |
-| S9-12 | Flood rate limiting over TLS (20 req/s, burst 40) | Over-burst rejected, zero state mutation, sibling match isolated | PASS |
+| S9-11 | Slow-reader and output queue bounds | Output queue driven past 64 KiB boundary, slow client evicted, resources cleaned up, healthy sibling match succeeds | PASS |
+| S9-12 | Flood rate limiting over TLS (20 req/s, burst 40) | Over-burst rejected, zero state mutation on authoritative state, sibling match isolated | PASS |
 | S9-13 | Secret redaction in server and client diagnostics | Moderator token, passwords, private keys never logged | PASS |
-| S9-14 | Complete match gameplay over TLS (5 players, all phases) | Role assignment, hints, trading, clues, voting to finished outcome | PASS |
-| S9-15 | Multiple TLS clients and concurrent match isolation | Cross-match boundary enforcement across parallel TLS matches | PASS |
-| S9-16 | Disconnect and shutdown resource cleanup | Sockets and SSL sessions released, descriptors settle to baseline | PASS |
+| S9-14 | Complete match gameplay over TLS (5 players, all phases) | Moderator auth, player joins, private roles, Investigator clue, trading, voting, transitions to Finished | PASS |
+| S9-15 | Multiple TLS clients and concurrent match isolation | Cross-match authorization probes rejected, private state strictly isolated | PASS |
+| S9-16 | Disconnect and shutdown resource cleanup | Monitored server PID FDs settle to baseline within deadline; parent test process cleans up | PASS |
+| S9-17 | Valid TLS 1.3 in fingerprint mode with CA-signed leaf | CA-issued leaf accepted when pinned SHA-256 matches without requiring CA root in trust store | PASS |
+| S9-18 | Rejection of not-yet-valid certificate | Handshake fails closed when current time is prior to cert notBefore | PASS |
+| S9-19 | Rejection of invalid server certificate usage / EKU | Certificate lacking serverAuth purpose (`X509_PURPOSE_SSL_SERVER`) is rejected | PASS |
+| S9-20 | Certificate rotation and fingerprint pin update | Old pin fails closed upon certificate rotation; updating pin succeeds immediately | PASS |
+| S9-21 | Strict private key file permissions | 0600 succeeds; group/world readable keys (0644) fail closed with actionable error | PASS |
+| S9-22 | Mutually exclusive CLI verification options | Supplying both `--ca-cert` and `--server-fingerprint` is rejected with exit code 2 | PASS |
+| S9-23 | Truncated / unexpected TLS termination | Abrupt TCP close without TLS close_notify alert is treated as error; reactor remains responsive | PASS |
+| S9-24 | Reactor state machine cross-direction readiness & KeyUpdate | Cross-direction WANT_READ / WANT_WRITE handled without busy spin; TLS 1.3 KeyUpdate handled cleanly | PASS |
 
 ### S9 TLS 1.3 Performance Benchmark Results (`docs/load_test_tls_results.json`)
 
-Performance measurements were conducted using the dedicated `darkpool_load_tests_tls` benchmark harness across 3 repeatable runs per configuration on Linux WSL2 (6.18.54.1-microsoft-standard-WSL2, 11th Gen Intel Core i5-1155G7, GCC 11.4.0, Release build):
+Performance measurements were conducted using the corrected `darkpool_load_tests_tls` benchmark harness across 3 repeatable runs per configuration on Linux WSL2 (6.18.54.1-microsoft-standard-WSL2, 11th Gen Intel Core i5-1155G7, GCC 11.4.0, Release build).
 
-| Topology | Configuration | Runs | Mean Duration | p50 Latency | p95 Latency | Peak VmRSS | Failures | Status |
+To isolate TLS cryptographic and protocol overhead from TCP transport differences, measurements benchmarked both **Plaintext loopback TCP (port 4782)** and **TLS 1.3 over TCP (port 4783)** under identical application workloads, while preserving the historical local UNIX-domain socket results as a distinct third reference:
+
+| Configuration | Transport | Runs | Mean Duration | p50 ACK Latency | p95 ACK Latency | Peak VmRSS | Server Settled FDs | Status |
 |:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| 5-Player Match | 1 Moderator + 5 Players | 3 | 324.0 ms | 0.48 ms | 44.78 ms | 9,524 kB | 0 | PASS |
-| 64-Player Match | 1 Moderator + 64 Players | 3 | 3,398.0 ms | 0.56 ms | 44.62 ms | 11,000 kB | 0 | PASS |
-| 256-Player Concurrent | 4 Matches × 64 Players (260 clients) | 3 | 3,430.0 ms | 0.25 ms | 43.75 ms | 16,192 kB | 0 | PASS |
+| **5-Player Match** | Plaintext TCP (4782) | 3 | 8.3 ms | 0.07 ms | 0.39 ms | 9,560 kB | 6 | PASS |
+| | TLS 1.3 TCP (4783) | 3 | 30.7 ms | 0.10 ms | 0.44 ms | 9,584 kB | 6 | PASS |
+| | UNIX Domain (Ref) | 3 | 40.0 ms | 0.34 ms | 0.65 ms | 4,008 kB | 8 | PASS |
+| **64-Player Match** | Plaintext TCP (4782) | 3 | 46.7 ms | 0.06 ms | 0.11 ms | 10,720 kB | 6 | PASS |
+| | TLS 1.3 TCP (4783) | 3 | 260.0 ms | 0.12 ms | 0.35 ms | 11,212 kB | 6-7 | PASS |
+| | UNIX Domain (Ref) | 3 | 75.0 ms | 0.13 ms | 0.58 ms | 3,872 kB | 8 | PASS |
+| **256-Player Concurrent** | Plaintext TCP (4782) | 3 | 104.3 ms | 0.13 ms | 0.24 ms | 16,380 kB | 6 | PASS |
+| | TLS 1.3 TCP (4783) | 3 | 1,038.7 ms | 0.30 ms | 4.47 ms | 16,564 kB | 6 | PASS |
+| | UNIX Domain (Ref) | 3 | 601.3 ms | 0.16 ms | 19.54 ms | 4,236 kB | 8 | PASS |
 
-#### Comparison with Unencrypted Baseline
+#### Investigation of Transport Overhead, TCP_NODELAY, and Descriptor Lifecycle
 
-| Metric | 5-Player Baseline (UNIX) | 5-Player TLS 1.3 (TCP 4783) | 64-Player Baseline (UNIX) | 64-Player TLS 1.3 (TCP 4783) | 256-Player Baseline (UNIX) | 256-Player TLS 1.3 (TCP 4783) |
-|:---|:---:|:---:|:---:|:---:|:---:|:---:|
-| **p50 Latency** | 0.34 ms | 0.48 ms (+41%) | 0.13 ms | 0.56 ms (+330%) | 0.16 ms | 0.25 ms (+56%) |
-| **p95 Latency** | 0.65 ms | 44.78 ms | 0.58 ms | 44.62 ms | 19.54 ms | 43.75 ms |
-| **Match Duration** | 40.0 ms | 324.0 ms | 75.0 ms | 3,398.0 ms | 601.3 ms | 3,430.0 ms |
-| **Peak VmRSS** | 4,008 kB | 9,524 kB | 3,872 kB | 11,000 kB | 4,236 kB | 16,192 kB |
-| **Correctness Failures** | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Transport Failures** | 0 | 0 | 0 | 0 | 0 | 0 |
+1. **TCP_NODELAY and Latency Floor Resolution**:
+   - Initial measurements without `TCP_NODELAY` exhibited high p95 latencies clustering tightly around 44–45 ms across all configurations due to Linux delayed ACK timers (40 ms) interacting with Nagle's algorithm on small control frames.
+   - Enabling `TCP_NODELAY` (`IPPROTO_TCP, TCP_NODELAY`) on both client and server TCP stream sockets eliminated this artificial floor.
+   - Resulting p95 command acknowledgment latencies dropped from ~45 ms down to **0.35–0.44 ms** for 5P and 64P matches, and **4.47 ms** for 256P concurrent matches—well under the 100 ms requirement.
 
-*Observations*:
-- Cryptographic record encryption/decryption, nonblocking handshake negotiation, and SSL state management introduce expected CPU and memory overhead compared to zero-copy local UNIX domain sockets. Peak RSS increases from ~4.2 MB to ~16.2 MB across 260 concurrent TLS sessions (~46 kB per active TLS session context and buffers), remaining comfortably within embedded host memory limits.
-- Command acknowledgment p50 remains sub-millisecond (0.25–0.56 ms). p95 command acknowledgment remains under 45 ms across all player counts, comfortably within the ≤100 ms target.
-- Correctness and transport failures remain 0 across all runs.
+2. **Accurate Isolation of TLS Overhead**:
+   - Comparing TLS 1.3 TCP directly against Plaintext TCP isolates cryptographic operations (AES-256-GCM cipher suite negotiation, per-record MAC and AEAD encryption/decryption) and TLS 1.3 handshake exchange from TCP kernel stack dynamics.
+   - TLS handshake adds ~20 ms across 5-player matches and ~934 ms across 260 concurrent client handshakes in 256-player matches, while per-command p50 latency overhead is negligible (+0.03 ms for 5P, +0.06 ms for 64P, +0.17 ms for 256P).
+   - UNIX-domain socket performance serves as a reference for single-host IPC, but does not represent TCP transport dynamics.
+
+3. **Descriptor Lifecycle and Telemetry Verification**:
+   - Investigation of earlier telemetry reporting increasing descriptor counts (221, 481, 741) identified a socket descriptor leak in `tests/load_test_tls_harness.cpp` (`TlsClient::connect()`) where an initial socket was created before a retry loop and overwritten without closing.
+   - Sockets now use `SOCK_CLOEXEC` exclusively, all non-standard inherited descriptors (> 2) are closed upon child process launch, and server process open descriptors are sampled by directly inspecting `/proc/<server_pid>/fd`.
+   - Verified that server child open descriptors settle back to baseline of **6** (within documented tolerance) across all runs and parent harness descriptors cleanly return to baseline.
 
 ### Physical Two-Computer LAN Acceptance Status
 
