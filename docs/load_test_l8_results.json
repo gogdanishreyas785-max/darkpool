@@ -1,6 +1,6 @@
 {
   "all_runs_passed": true,
-  "duration_ms": 201,
+  "duration_ms": 241,
   "environment": {
     "compiler": "GCC",
     "machine": "x86_64",
@@ -12,18 +12,18 @@
   "flood_isolation_workload": {
     "flood_malformed_responses": 0,
     "flood_requests_accepted": 40,
-    "flood_requests_rate_limited": 17,
-    "flood_requests_sent": 57,
-    "flood_responses_received": 57,
+    "flood_requests_rate_limited": 60,
+    "flood_requests_sent": 100,
+    "flood_responses_received": 100,
     "flood_transport_errors": 0,
     "healthy_match_id": 2,
     "healthy_match_latency": {
-      "max_ms": 0.651,
-      "mean_ms": 0.2718983050847457,
-      "min_ms": 0.101,
-      "p50_ms": 0.248,
-      "p95_ms": 0.422,
-      "p99_ms": 0.651
+      "max_ms": 1.22,
+      "mean_ms": 0.3440169491525424,
+      "min_ms": 0.122,
+      "p50_ms": 0.319,
+      "p95_ms": 0.495,
+      "p99_ms": 1.22
     },
     "healthy_match_outcome": "InsiderWin",
     "healthy_match_phase": "Finished",
@@ -61,24 +61,24 @@
   "resource_telemetry": {
     "baseline_open_fds": 8,
     "baseline_open_fds_sample_ok": true,
-    "baseline_rss_kb": 3624,
+    "baseline_rss_kb": 3612,
     "cleanup_failure_reason": "",
     "cleanup_settle_time_ms": 10,
-    "immediate_post_cleanup_open_fds": 15,
+    "immediate_post_cleanup_open_fds": 14,
     "immediate_post_cleanup_sample_ok": true,
     "peak_open_fds": 19,
     "peak_open_fds_sample_ok": true,
-    "peak_rss_kb": 3908,
+    "peak_rss_kb": 3948,
     "peak_rss_sample_ok": true,
     "post_cleanup_open_fds": 8,
-    "post_cleanup_rss_kb": 3908,
+    "post_cleanup_rss_kb": 3948,
     "post_cleanup_rss_sample_ok": true,
     "post_cleanup_sample_ok": true,
     "post_cleanup_settled": true
   },
   "runs": [
     {
-      "duration_ms": 204,
+      "duration_ms": 237,
       "environment": {
         "compiler": "GCC",
         "machine": "x86_64",
@@ -90,18 +90,18 @@
       "flood_isolation_workload": {
         "flood_malformed_responses": 0,
         "flood_requests_accepted": 40,
-        "flood_requests_rate_limited": 17,
-        "flood_requests_sent": 57,
-        "flood_responses_received": 57,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
         "flood_transport_errors": 0,
         "healthy_match_id": 2,
         "healthy_match_latency": {
-          "max_ms": 1.959,
-          "mean_ms": 0.31369491525423726,
-          "min_ms": 0.11,
-          "p50_ms": 0.287,
-          "p95_ms": 0.472,
-          "p99_ms": 1.959
+          "max_ms": 0.963,
+          "mean_ms": 0.3055762711864407,
+          "min_ms": 0.135,
+          "p50_ms": 0.268,
+          "p95_ms": 0.846,
+          "p99_ms": 0.963
         },
         "healthy_match_outcome": "InsiderWin",
         "healthy_match_phase": "Finished",
@@ -138,28 +138,28 @@
       "resource_telemetry": {
         "baseline_open_fds": 8,
         "baseline_open_fds_sample_ok": true,
-        "baseline_rss_kb": 3620,
+        "baseline_rss_kb": 3592,
         "cleanup_failure_reason": "",
         "cleanup_settle_time_ms": 10,
-        "immediate_post_cleanup_open_fds": 19,
+        "immediate_post_cleanup_open_fds": 16,
         "immediate_post_cleanup_sample_ok": true,
         "peak_open_fds": 19,
         "peak_open_fds_sample_ok": true,
-        "peak_rss_kb": 3920,
+        "peak_rss_kb": 3924,
         "peak_rss_sample_ok": true,
         "post_cleanup_open_fds": 8,
-        "post_cleanup_rss_kb": 3920,
+        "post_cleanup_rss_kb": 3924,
         "post_cleanup_rss_sample_ok": true,
         "post_cleanup_sample_ok": true,
         "post_cleanup_settled": true
       },
-      "source_commit": "dc225f00101d098f13fba148381705d467be176d",
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
       "status": "PASS",
       "test_name": "darkpool_load_tests_l8",
-      "timestamp_utc": "2026-10-16T04:23:12Z"
+      "timestamp_utc": "2026-10-16T04:38:48Z"
     },
     {
-      "duration_ms": 208,
+      "duration_ms": 237,
       "environment": {
         "compiler": "GCC",
         "machine": "x86_64",
@@ -171,18 +171,18 @@
       "flood_isolation_workload": {
         "flood_malformed_responses": 0,
         "flood_requests_accepted": 40,
-        "flood_requests_rate_limited": 20,
-        "flood_requests_sent": 60,
-        "flood_responses_received": 60,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
         "flood_transport_errors": 0,
         "healthy_match_id": 2,
         "healthy_match_latency": {
-          "max_ms": 0.542,
-          "mean_ms": 0.326,
-          "min_ms": 0.137,
-          "p50_ms": 0.336,
-          "p95_ms": 0.48,
-          "p99_ms": 0.542
+          "max_ms": 0.652,
+          "mean_ms": 0.3029322033898305,
+          "min_ms": 0.172,
+          "p50_ms": 0.299,
+          "p95_ms": 0.499,
+          "p99_ms": 0.652
         },
         "healthy_match_outcome": "InsiderWin",
         "healthy_match_phase": "Finished",
@@ -226,21 +226,21 @@
         "immediate_post_cleanup_sample_ok": true,
         "peak_open_fds": 19,
         "peak_open_fds_sample_ok": true,
-        "peak_rss_kb": 3912,
+        "peak_rss_kb": 3948,
         "peak_rss_sample_ok": true,
         "post_cleanup_open_fds": 8,
-        "post_cleanup_rss_kb": 3912,
+        "post_cleanup_rss_kb": 3948,
         "post_cleanup_rss_sample_ok": true,
         "post_cleanup_sample_ok": true,
         "post_cleanup_settled": true
       },
-      "source_commit": "dc225f00101d098f13fba148381705d467be176d",
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
       "status": "PASS",
       "test_name": "darkpool_load_tests_l8",
-      "timestamp_utc": "2026-10-16T04:23:12Z"
+      "timestamp_utc": "2026-10-16T04:38:48Z"
     },
     {
-      "duration_ms": 201,
+      "duration_ms": 241,
       "environment": {
         "compiler": "GCC",
         "machine": "x86_64",
@@ -252,18 +252,18 @@
       "flood_isolation_workload": {
         "flood_malformed_responses": 0,
         "flood_requests_accepted": 40,
-        "flood_requests_rate_limited": 17,
-        "flood_requests_sent": 57,
-        "flood_responses_received": 57,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
         "flood_transport_errors": 0,
         "healthy_match_id": 2,
         "healthy_match_latency": {
-          "max_ms": 0.651,
-          "mean_ms": 0.2718983050847457,
-          "min_ms": 0.101,
-          "p50_ms": 0.248,
-          "p95_ms": 0.422,
-          "p99_ms": 0.651
+          "max_ms": 1.22,
+          "mean_ms": 0.3440169491525424,
+          "min_ms": 0.122,
+          "p50_ms": 0.319,
+          "p95_ms": 0.495,
+          "p99_ms": 1.22
         },
         "healthy_match_outcome": "InsiderWin",
         "healthy_match_phase": "Finished",
@@ -300,29 +300,29 @@
       "resource_telemetry": {
         "baseline_open_fds": 8,
         "baseline_open_fds_sample_ok": true,
-        "baseline_rss_kb": 3624,
+        "baseline_rss_kb": 3612,
         "cleanup_failure_reason": "",
         "cleanup_settle_time_ms": 10,
-        "immediate_post_cleanup_open_fds": 15,
+        "immediate_post_cleanup_open_fds": 14,
         "immediate_post_cleanup_sample_ok": true,
         "peak_open_fds": 19,
         "peak_open_fds_sample_ok": true,
-        "peak_rss_kb": 3908,
+        "peak_rss_kb": 3948,
         "peak_rss_sample_ok": true,
         "post_cleanup_open_fds": 8,
-        "post_cleanup_rss_kb": 3908,
+        "post_cleanup_rss_kb": 3948,
         "post_cleanup_rss_sample_ok": true,
         "post_cleanup_sample_ok": true,
         "post_cleanup_settled": true
       },
-      "source_commit": "dc225f00101d098f13fba148381705d467be176d",
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
       "status": "PASS",
       "test_name": "darkpool_load_tests_l8",
-      "timestamp_utc": "2026-10-16T04:23:12Z"
+      "timestamp_utc": "2026-10-16T04:38:48Z"
     }
   ],
-  "source_commit": "dc225f00101d098f13fba148381705d467be176d",
+  "source_commit": "50888910e0b3874622e30da264c138be08337d64",
   "status": "PASS",
   "test_name": "darkpool_load_tests_l8",
-  "timestamp_utc": "2026-10-16T04:23:12Z"
+  "timestamp_utc": "2026-10-16T04:38:48Z"
 }

@@ -447,10 +447,10 @@ python tools/validate_l6_sustained_evidence.py
    - **Oversized Frames**: In accordance with the 4 KiB frame limit, payloads exceeding 4,096 bytes (tested with 4,097 bytes) are rejected and the connection is closed without server crash or hang.
    - **Malformed JSON**: Syntactically invalid payloads (truncated or corrupt JSON bytes) are handled safely by terminating the offending connection.
 4. **Concurrent Flood Isolation**:
-   A high-rate concurrent flood (decoupled non-blocking sender blasting 57–68 requests and a concurrent draining receiver parsing responses with `FrameStream`) is executed concurrently with an active sibling match.
-   - **Flood Traffic Metrics**: 57–68 requests sent, exactly 40 accepted (initial burst), 17–28 rate-limited responses observed with `rate limit exceeded`, 0 transport errors, 0 malformed responses.
+   A high-rate concurrent flood (decoupled non-blocking sender blasting 100 requests across healthy match overlap and a concurrent draining receiver parsing responses with `FrameStream`) is executed concurrently with an active sibling match.
+   - **Flood Traffic Metrics**: 100 requests sent, exactly 40 accepted (initial burst), 60 rate-limited responses observed with `rate limit exceeded`, 0 transport errors, 0 malformed responses.
    - **Sibling Match Integrity**: Healthy sibling match progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures).
-   - **Sibling Client Latency**: min = 0.08 ms, p50 = 0.24 ms, p95 = 0.42–0.48 ms, max = 0.62 ms.
+   - **Sibling Client Latency**: min = 0.08 ms, p50 = 0.25 ms, p95 = 0.49–0.85 ms, max = 0.95 ms.
 5. **Resource and Descriptor Cleanup**:
    Open file descriptors settle to baseline 8 descriptors within 10–11 ms (`post_cleanup_settled == true`). VmRSS remains bounded at 3,912 kB with zero leaks.
 6. **Deterministic Regression Suite**:
