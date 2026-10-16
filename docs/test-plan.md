@@ -55,12 +55,12 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total: 1,671 successful operations + 12 expected protocol rejections, 100% pass; 0 transport/correctness failures). Sequential: p50=0.10 ms, p95=0.17 ms, p99=0.65 ms. Concurrent burst: p50=0.13 ms, p95=0.58 ms, p99=1.32 ms. Verified winner: `InsiderWin`. |
 | L4-Smoke | 64 players, 10-min sustained | **PASS** | 10-minute sustained repeated-match workload (600.04s, 13,271 matches, 7,365,405 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.09 ms, p99=0.14 ms, mean=0.06 ms. Throughput: 12,274.9 req/s. Peak RSS=3,928 kB, CPU=301.1s, FDs=8. Single measured run completed. |
 | L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
-| L5 | 2 × 32 concurrent matches | **PASS** | Three repeatable 2-match 32-player runs over UNIX sockets with 2 independent moderators (1,758 requests total: 1,719 successful operations, 39 expected rejections, 100% pass; 0 transport/correctness failures). Concurrency overlap and multi-match anti-starvation verified across all runs. Sequential: p50=0.12 ms, p95=0.22 ms, p99=0.60 ms. Concurrent burst: p50=3.15 ms, p95=6.21 ms, p99=7.02 ms. Verified winner: `InsiderWin` for both matches. |
+| L5 | 2 × 32 concurrent matches | **PASS** | Three repeatable 2-match 32-player runs over UNIX sockets with 2 independent moderators (1,746 requests total: 1,707 successful operations, 39 expected rejections, 100% pass; 0 transport/correctness failures). Concurrency overlap and multi-match anti-starvation verified across all runs. Sequential: p50=0.12 ms, p95=0.27 ms, p99=0.44 ms. Concurrent burst: p50=2.55 ms, p95=5.43 ms, p99=5.97 ms. Settled FDs: 8 (baseline 8, post_cleanup_settled=true). Verified winner: `InsiderWin` for both matches. |
 | L6-Functional | 4 × 64 (256 players / 4 matches) | **PASS** | Three repeatable 4-match runs over UNIX sockets with 4 independent moderators (6,528 requests total, 100% pass; 0 transport/correctness failures). Sequential: p50=0.14 ms, p95=0.33 ms, p99=1.05 ms. Concurrent burst: p50=14.39 ms, p95=22.31 ms, p99=29.32 ms. Verified winner: `InsiderWin`. |
 | L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.19s, 2,661 cycles, 10,644 matches, 5,790,336 requests: 5,758,404 successful operations, 31,932 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=10.32 ms, p99=13.12 ms, mean=2.14 ms. Throughput: 9,647.4 req/s. Initial VmRSS=3,580 kB, End VmRSS=4,276 kB, Peak VmHWM=4,296 kB, CPU=308.8s, Settled FDs=8 (100% of 2,661 cycles settled within baseline + 2 tolerance). Single measured run completed. |
 | L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.11s, 8,934 cycles, 35,736 matches, 19,440,384 requests: 19,333,176 successful operations, 107,208 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=9.44 ms, p99=11.39 ms, mean=2.00 ms. Throughput: 10,799.5 req/s. Initial VmRSS=3,520 kB, End VmRSS=4,216 kB, Peak VmHWM=4,400 kB, CPU=973.5s, Settled FDs=8. Post-cleanup VmRSS series bounded in 4,144–4,248 kB envelope (mean 4,200 kB) across all 8,934 cycles. Single measured run completed. |
-| L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
-| L8 | Malformed/flood traffic | NOT RUN | Malformed isolation verified functionally; high-rate flood unmeasured. |
+| L7 | Slow/disconnected clients | **PASS** | 64 KiB output queue bound with persistent overflow disconnect verified under concurrent multi-match load (76,080 bytes sent over 20 frames without reading triggers eviction at ~105 ms). Healthy sibling match completes all 3 rounds to `InsiderWin` with 100% success (latency p95=0.51 ms). Zero resource leaks (settled FDs 8 vs baseline 8). |
+| L8 | Malformed/flood traffic | **PASS** | Token bucket rate limiting (20 req/s, burst 40) strictly enforced without game state mutation (40 accepted, 41st rejected with error, token refill recovery verified). 4 KiB framing boundary (4,097 bytes) and malformed JSON closed safely. Concurrent flood isolation preserves sibling match responsiveness (p95=0.40 ms) and outcome (`InsiderWin`). Zero leaks (settled FDs 8 vs baseline 8). |
 
 ### Measured 16-Player Real-Server Load Test Results (L2)
 
@@ -147,12 +147,13 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   # Standalone 3-run 2-match 32-player load harness execution over UNIX sockets
   ./build/darkpool_load_tests_l5 ./build/darkpool_server --runs 3 --out docs/load_test_l5_results.json
 
-  # Automated deterministic regression and anti-starvation selftest suite (10 test cases)
+  # Automated deterministic regression and anti-starvation selftest suite (14 test cases)
   ./build/darkpool_load_tests_l5 ./build/darkpool_server --selftest
 
   # Automated CTest suite execution
   ctest --test-dir build --output-on-failure -R '^darkpool_load_l5_'
   ```
+- **Source Commit**: `bfe240cee5ffaf23c9a92c29e5f06fb11f133e11` (clean checkout, `git_dirty: false`)
 - **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
 - **Transport**: UNIX-Domain Socket (`SOCK_STREAM`) with non-blocking server epoll loop and bounded client timeouts.
 - **Timing & ACK Boundary**:
@@ -161,17 +162,18 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   Real protocol clients driving 2 concurrent matches (Match 1 and Match 2) driven simultaneously by 2 independent authenticated moderators and 64 players (32 per match), for a total of 66 connected clients over UNIX sockets.
   - **Role Distribution (N=32 per match)**: Strictly asserted as exactly 4 Insiders, 2 Investigators, and 26 Employees per match (8 Insiders, 4 Investigators, 52 Employees total across both matches).
   - **Sibling Match Isolation Policies**: Verified that a moderator cannot issue commands to a sibling match (`connection is not a member of target match`), cross-match player votes/actions are strictly rejected (`connection is not a member of target match`), premature starts before 32 players join are rejected (`all configured players must join before start`), and excess 33rd player joins are rejected (`match is full`).
-  - **Anti-Starvation & Concurrency Overlap**: Match 1 and Match 2 run simultaneously with full lifecycle overlap (overlap durations: 227 ms, 184 ms, 209 ms). Neither match starves, stalls, or blocks the progress of the other; both matches progress independently through all 3 rounds to completion with zero timeouts and zero unexpected disconnects (`starvation_verified: true`).
+  - **Anti-Starvation & Concurrency Overlap**: Match 1 and Match 2 run simultaneously with full lifecycle overlap (overlap durations: 173 ms, 82 ms, 156 ms). Neither match starves, stalls, or blocks the progress of the other; both matches progress independently through all 3 rounds to completion with zero timeouts and zero unexpected disconnects (`starvation_verified: true`).
   - **Concurrent Burst Phase (Round 2)**: 64 simultaneous client threads (32 per match) submitting legal trades (`HOLD`) and votes (`null` - abstain) simultaneously.
   - **Guaranteed Outcome Verification**: In this deterministic workload, health remains > 0 and all players abstain, guaranteeing `phase == "Finished"` and `outcome == "InsiderWin"` for both concurrent matches.
-  - **Socket & Resource Cleanup**: Verified that all 66 client connections close and server file descriptors settle to baseline open FDs (8 settled vs 8 baseline, bounded within `baseline + 2`).
+  - **Mandatory Resource Validation**: Mandatory sampling requires valid baseline, peak, immediate post-cleanup, and settled FD measurements, alongside peak and post-cleanup RSS samples. Settled status strictly enforces `post_cleanup_settled == true` (not just numeric open FDs), with no fabricated default fallbacks (such as `value_or(9)`). FDs settled cleanly at 8 open descriptors (baseline 8, bounded within `baseline + 2`).
+  - **Request Count Reconciliation**: Across all three runs, the aggregate request total is exactly 1,746 requests, comprising 1,707 successful operations and 39 expected negative protocol rejections (582 requests per run: 569 successful operations + 13 expected rejections). 0 transport failures and 0 correctness failures.
 
 | Run | Matches × Players | Total Clients | Duration | Overlap | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Total Latency (p50 / p95 / p99) | Failures | Settled FDs (Base) | Starvation Verified | Verified Winners |
 |---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Run 1 | 2 × 32 | 66 | 238 ms | 227 ms | 0.12 / 0.23 / 0.59 ms | 3.12 / 6.07 / 7.02 ms | 0.13 / 3.99 / 6.22 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
-| Run 2 | 2 × 32 | 66 | 195 ms | 184 ms | 0.12 / 0.22 / 0.60 ms | 3.15 / 6.21 / 7.02 ms | 0.13 / 4.03 / 6.23 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
-| Run 3 | 2 × 32 | 66 | 220 ms | 209 ms | 0.12 / 0.22 / 0.60 ms | 3.17 / 6.32 / 7.02 ms | 0.13 / 4.06 / 6.24 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
-| **Aggregate** | **2 × 32** | **66** | **653 ms** | **620 ms total** | **0.12 / 0.22 / 0.60 ms** | **3.15 / 6.21 / 7.02 ms** | **0.13 / 4.03 / 6.23 ms** | **0 / 0 (100% Pass)** | **8 (8)** | **YES (100%)** | **`InsiderWin` (Both)** |
+| Run 1 | 2 × 32 | 66 | 184 ms | 173 ms | 0.12 / 0.28 / 0.44 ms | 2.58 / 5.43 / 5.97 ms | 0.15 / 4.14 / 4.54 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| Run 2 | 2 × 32 | 66 | 96 ms | 82 ms | 0.12 / 0.27 / 0.44 ms | 2.55 / 5.43 / 5.97 ms | 0.15 / 2.61 / 3.01 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| Run 3 | 2 × 32 | 66 | 167 ms | 156 ms | 0.12 / 0.27 / 0.44 ms | 2.55 / 5.43 / 5.97 ms | 0.15 / 4.88 / 5.86 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| **Aggregate** | **2 × 32** | **66** | **447 ms** | **411 ms total** | **0.12 / 0.27 / 0.44 ms** | **2.55 / 5.43 / 5.97 ms** | **0.15 / 3.92 / 5.48 ms** | **0 / 0 (100% Pass)** | **8 (8)** | **YES (100%)** | **`InsiderWin` (Both)** |
 
 *Machine-readable report stored in: [`docs/load_test_l5_results.json`](load_test_l5_results.json)*
 
@@ -330,6 +332,73 @@ An independent validator tool is provided in [`tools/validate_l6_sustained_evide
 # Run validator against repository evidence
 python tools/validate_l6_sustained_evidence.py
 ```
+
+## L7: Slow and Disconnected Clients Under Load
+
+- **Status**: **PASS** (reproducible functional benchmark and deterministic regression suite).
+- **Approved Policy Reference**: [docs/DECISIONS.md](DECISIONS.md) DEC-11 (64 KiB per-connection output queue limit; disconnect on persistent overflow).
+- **Dedicated Machine-Readable Report**: [`docs/load_test_l7_results.json`](load_test_l7_results.json)
+- **Source Commit**: `bfe240cee5ffaf23c9a92c29e5f06fb11f133e11` (clean checkout, `git_dirty: false`)
+- **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0.
+- **Test Commands**:
+  ```bash
+  # Standalone L7 load harness execution
+  ./build/darkpool_load_tests_l7 ./build/darkpool_server --out docs/load_test_l7_results.json
+
+  # Automated deterministic regression selftest suite (6 test cases)
+  ./build/darkpool_load_tests_l7 ./build/darkpool_server --selftest
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_l7_'
+  ```
+
+### Workload, Measurement Boundary, and Isolation Verification
+1. **Measurement Boundary & Send Path**:
+   To ensure the userspace 64 KiB output queue limit governs client eviction deterministically rather than relying on unbounded OS kernel buffering, the server bounds the client socket send buffer (`SO_SNDBUF = 16384`). The test exercises the real server send path: client connections receive real JSON protocol responses.
+2. **Slow Client Eviction on Persistent Overflow**:
+   A test client connects to Match 1 and stops reading incoming socket data while response-generating commands are directed to it. The server pushes 20 responses totaling 76,080 bytes. As pending unread bytes exceed the approved 64 KiB queue boundary, the server epoll write loop flags persistent overflow and evicts the slow client (`overflow_evicted: true` at ~105 ms).
+3. **Healthy Sibling Match Progress and Responsiveness**:
+   Concurrently with the slow client flood/eviction in Match 1, an independent sibling match (Match 2) executes a full 8-player game with an independent moderator through all 3 rounds to completion (`phase: Finished`, `outcome: InsiderWin`). All 71 operations succeed (0 transport failures, 0 correctness failures).
+   - Healthy Client Latency: min = 0.13 ms, p50 = 0.27 ms, p95 = 0.51 ms, p99 = 0.79 ms, max = 0.79 ms (well within provisional ≤100 ms guidance).
+4. **Descriptor and Resource Cleanup**:
+   After client eviction and completion of the sibling match, descriptors settle to baseline open FDs within 10 ms (baseline = 8, settled = 8; `post_cleanup_settled == true`). VmRSS remains bounded at 3,884 kB with zero memory or descriptor leaks.
+5. **Deterministic Regression Suite**:
+   `darkpool_load_l7_regression` executes 6 automated regression test cases validating queue capacity unit checks, end-to-end eviction, sibling match isolation, injected slow-client tolerance failure propagation, injected cleanup leaks, and missing resource sample detection (6/6 PASS).
+
+## L8: Malformed Traffic and Request Flood Protection
+
+- **Status**: **PASS** (reproducible functional benchmark and deterministic regression suite).
+- **Approved Policy Reference**: [docs/DECISIONS.md](DECISIONS.md) DEC-11 (token bucket rate limiter at 20 req/s with burst capacity 40; 4 KiB frame payload limit; 64 KiB output queue).
+- **Dedicated Machine-Readable Report**: [`docs/load_test_l8_results.json`](load_test_l8_results.json)
+- **Source Commit**: `bfe240cee5ffaf23c9a92c29e5f06fb11f133e11` (clean checkout, `git_dirty: false`)
+- **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0.
+- **Test Commands**:
+  ```bash
+  # Standalone L8 load harness execution
+  ./build/darkpool_load_tests_l8 ./build/darkpool_server --out docs/load_test_l8_results.json
+
+  # Automated deterministic regression selftest suite (6 test cases)
+  ./build/darkpool_load_tests_l8 ./build/darkpool_server --selftest
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_l8_'
+  ```
+
+### Workload, Security Boundaries, and State Mutation Safety
+1. **Deterministic Rate Limiting**:
+   The server enforces a per-connection token bucket rate limiter configured at 20 requests/second with a burst capacity of 40 tokens. Under deterministic testing, exactly 40 back-to-back requests are accepted. The 41st back-to-back request is rejected with `{"type": "error", "error": "rate limit exceeded"}`.
+2. **State Mutation Prevention & Connection Usability**:
+   Rate-limited requests are rejected directly in the connection framing handler before dispatch to the match coordinator. The harness verifies that rejected commands cause zero game-state mutation (match remains in `Lobby` phase with 0 players). The connection remains open and usable: following token refill, subsequent valid requests succeed without requiring reconnection.
+3. **Malformed Framing and Protocol Defenses**:
+   - **Oversized Frames**: In accordance with the 4 KiB frame limit, payloads exceeding 4,096 bytes (tested with 4,097 bytes) are rejected and the connection is closed without server crash or hang.
+   - **Malformed JSON**: Syntactically invalid payloads (truncated or corrupt JSON bytes) are handled safely by terminating the offending connection.
+4. **Concurrent Flood Isolation**:
+   A rapid request flood on Match 1 is executed concurrently with an active 8-player sibling match (Match 2). Healthy Match 2 progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures).
+   - Healthy Client Latency: min = 0.10 ms, p50 = 0.25 ms, p95 = 0.40 ms, p99 = 0.48 ms, max = 0.48 ms.
+5. **Resource and Descriptor Cleanup**:
+   Open file descriptors settle to baseline 8 descriptors within 10 ms (`post_cleanup_settled == true`). VmRSS remains bounded at 3,936 kB with zero leaks.
+6. **Deterministic Regression Suite**:
+   `darkpool_load_l8_regression` executes 6 automated regression test cases validating burst/rejection/refill boundaries, state mutation prevention, flood isolation, cleanup leaks, and missing resource sample propagation (6/6 PASS).
 
 ## Proposed mixed64-v1 p95 workload — approval required
 

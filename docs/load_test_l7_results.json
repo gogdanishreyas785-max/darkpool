@@ -1,0 +1,67 @@
+{
+  "duration_ms": 125,
+  "environment": {
+    "compiler": "GCC",
+    "machine": "x86_64",
+    "os": "Linux",
+    "release": "6.18.54.1-microsoft-standard-WSL2",
+    "sysname": "Linux"
+  },
+  "failure_reason": "",
+  "git_dirty": false,
+  "healthy_sibling_match": {
+    "final_outcome": "InsiderWin",
+    "final_phase": "Finished",
+    "latency": {
+      "max_ms": 0.785,
+      "mean_ms": 0.29280281690140847,
+      "min_ms": 0.129,
+      "p50_ms": 0.268,
+      "p95_ms": 0.514,
+      "p99_ms": 0.785
+    },
+    "match_id": 2,
+    "requests": {
+      "correctness_failures": 0,
+      "expected_rejections": 0,
+      "successful": 71,
+      "total": 71,
+      "transport_failures": 0
+    },
+    "status": "PASS"
+  },
+  "policy": {
+    "approved_decision": "DEC-11",
+    "max_queued_bytes_limit": 65536,
+    "overflow_behavior": "disconnect on persistent queue overflow"
+  },
+  "resource_telemetry": {
+    "baseline_open_fds": 8,
+    "baseline_open_fds_sample_ok": true,
+    "baseline_rss_kb": 3644,
+    "cleanup_failure_reason": "",
+    "cleanup_settle_time_ms": 10,
+    "immediate_post_cleanup_open_fds": 12,
+    "immediate_post_cleanup_sample_ok": true,
+    "peak_open_fds": 20,
+    "peak_open_fds_sample_ok": true,
+    "peak_rss_kb": 3884,
+    "peak_rss_sample_ok": true,
+    "post_cleanup_open_fds": 8,
+    "post_cleanup_rss_kb": 3884,
+    "post_cleanup_rss_sample_ok": true,
+    "post_cleanup_sample_ok": true,
+    "post_cleanup_settled": true
+  },
+  "slow_client_telemetry": {
+    "bytes_sent": 76080,
+    "connected": true,
+    "eviction_ms": 105,
+    "frames_sent": 20,
+    "overflow_evicted": true
+  },
+  "source_commit": "bfe240cee5ffaf23c9a92c29e5f06fb11f133e11",
+  "status": "PASS",
+  "test_name": "darkpool_load_tests_l7",
+  "timestamp_utc": "2026-10-16T03:23:36Z"
+}
