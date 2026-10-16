@@ -3,10 +3,7 @@ name: S1 Ubuntu build and tests
 on:
   push:
     branches:
-      - s1/deterministic-engine
-      - s2/stage1-tcp-json
-      - s2/playable-cli
-      - s2/moderator-auth
+      - '**'
   pull_request:
     branches:
       - main
