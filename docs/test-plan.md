@@ -258,8 +258,8 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Throughput**: 9,647.4 req/s (denominator: actual elapsed duration in seconds).
   - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.14 ms, p99 = 0.24 ms; Concurrent Burst p50 = 8.68 ms, p95 = 12.80 ms, p99 = 16.61 ms; Total p50 = 0.08 ms, p95 = 10.32 ms, p99 = 13.12 ms, mean = 2.14 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Initial Current RSS (`VmRSS`) = 3,580 kB, End Current RSS (`VmRSS`) = 4,276 kB, Peak Process High-Water Mark (`VmHWM`) = 4,296 kB, Server CPU = 308,810.0 ms, Open FDs = 8 settled (100% of 2,661 cycles settled within `baseline + 2` tolerance).
-  - **Telemetry & Evidence**: Full cycle-level records serialized to report, including per-cycle `VmRSS` series (mean 4,263.7 kB; median 4,264 kB; range 4,212–4,296 kB) and explicit FD cleanup records across all 2,661 cycles.
-  - **Report File**: [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json).
+  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records, SHA-256: `cd5adfe41bddee922215b1ff1072b221a692c9c671af5f9580b1d35f5c1aafb3`). Per-cycle `VmRSS` series: mean 4,263.7 kB; median 4,264 kB; range 4,212–4,296 kB; explicit FD cleanup records verified across all 2,661 cycles.
+  - **Summary Report**: [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json).
 
 - **30-Minute Repeated-Cycle Reliability Test (`--reliability-30m`)**: **PASS** (single measured run on persistent server).
   - **Source Commit**: `a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec` (`git_dirty: false`)
@@ -270,7 +270,31 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.12 ms, p99 = 0.18 ms; Concurrent Burst p50 = 8.29 ms, p95 = 11.21 ms, p99 = 13.31 ms; Total p50 = 0.08 ms, p95 = 9.44 ms, p99 = 11.39 ms, mean = 2.00 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Initial Current RSS (`VmRSS`) = 3,520 kB, End Current RSS (`VmRSS`) = 4,216 kB, Peak Process High-Water Mark (`VmHWM`) = 4,400 kB, Server CPU = 973,450.0 ms, Open FDs = 8 settled (100% of 8,934 cycles settled within `baseline + 2` tolerance).
   - **Memory & Resource Telemetry Analysis**: Rather than inferring memory stability by subtracting high-water marks from separate runs, the harness captures the actual per-cycle post-cleanup `VmRSS` trajectory. Across all 8,934 cycles (>19.4M requests over 30 minutes on a persistent server), post-cleanup `VmRSS` remained bounded in a narrow 4,144–4,248 kB envelope (mean 4,199.9 kB, median 4,200.0 kB; the first 50 cycles averaged 4,193.1 kB and the final 50 cycles averaged 4,202.4 kB). The process peak high-water mark (`VmHWM`) reached 4,400 kB during peak 260-connection burst load. Settled file descriptors stabilized at 8 descriptors (within baseline 9 + 2 tolerance) across 100% of completed cycles with zero descriptor leakage. While no finite workload can prove the absence of every theoretically conceivable memory leak, these observed current-RSS trajectory and descriptor-settling series demonstrate bounded steady-state memory and resource behavior under sustained multi-match load.
-  - **Report File**: [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json).
+  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records, SHA-256: `5262f9b97d226e336d313534efa12477af01c331beaba2e294e26bcc8b4c8ffc`).
+  - **Summary Report**: [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json).
+
+*Note: The 10-minute and 30-minute sustained results are single measured benchmark runs on a persistent server process, not repeated multi-run statistical trials.*
+
+### Evidence Layout and Automated Validation
+
+To maintain repository readability and prevent bloated diffs while ensuring complete cycle-level auditability, sustained benchmark telemetry is organized into two tiers:
+1. **Human-Readable Summary Reports**:
+   - [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json)
+   - [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json)
+   Contain aggregate run metrics, timing percentiles, derived RSS summary statistics (sample count, min, max, mean, median, first/last 50-cycle means), source provenance, and SHA-256 checksums of the detailed evidence files.
+2. **Complete Cycle-Level Evidence**:
+   - [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records)
+   - [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records)
+   Stored as one complete JSON record per line, preserving every cycle's open FD counts (peak, immediate post-close, settled), settle times, post-cleanup `VmRSS` and `VmHWM` samples, per-cycle request reconciliation, and failure reasons.
+
+#### Running the Evidence Validator
+
+An independent validator tool is provided in [`tools/validate_l6_sustained_evidence.py`](file:///c:/darkpool-antigravity/darkpool/tools/validate_l6_sustained_evidence.py). It parses both summary reports and full cycle evidence files, failing with a non-zero exit code if checksums mismatch, record counts disagree, cycle sequences are non-sequential, required resource samples are missing, FD cleanup thresholds (`settled <= baseline + 2`) are violated, or request counts fail to reconcile:
+
+```bash
+# Run validator against repository evidence
+python tools/validate_l6_sustained_evidence.py
+```
 
 ## Proposed mixed64-v1 p95 workload — approval required
 
