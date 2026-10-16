@@ -57,6 +57,10 @@ struct TestFaultConfig {
   bool inject_semantic_failure{false};
   bool inject_fd_leak{false};
   bool inject_starvation{false};
+  bool inject_missing_fd_sample{false};
+  bool inject_missing_rss_sample{false};
+  bool inject_cleanup_failure{false};
+  bool inject_counter_mismatch{false};
 };
 
 struct L5MatchRecord {
@@ -102,8 +106,10 @@ struct L5RunResult {
   PhaseMetrics aggregate_total;
   FailureCounts failures;
   std::uint64_t peak_rss_kb{0};
+  bool peak_rss_sample_ok{false};
   double cpu_time_ms{0.0};
   std::size_t baseline_open_fds{0};
+  bool baseline_open_fds_sample_ok{false};
   std::size_t peak_open_fds{0};
   bool peak_open_fds_sample_ok{false};
   std::size_t immediate_post_cleanup_open_fds{0};
@@ -125,12 +131,21 @@ L5RunResult execute_l5_single_cycle(
     const std::string& socket_path,
     const std::string& mod_token,
     int run_index,
-    std::size_t baseline_open_fds,
+    std::optional<std::size_t> baseline_open_fds_opt,
     const TestFaultConfig& fault_cfg = {}) {
   L5RunResult result;
   result.run_index = run_index;
   result.matches.resize(kExpectedL5Matches);
-  result.baseline_open_fds = baseline_open_fds;
+
+  if (!baseline_open_fds_opt.has_value()) {
+    result.baseline_open_fds_sample_ok = false;
+    result.failures.transport_failures++;
+    result.failures.last_failure_reason = "Missing baseline open FDs measurement";
+    std::cerr << "[L5 Run " << run_index << "] RESOURCE ERROR: Failed to sample baseline open FDs\n";
+  } else {
+    result.baseline_open_fds = *baseline_open_fds_opt;
+    result.baseline_open_fds_sample_ok = true;
+  }
 
   std::vector<int> all_mod_fds;
   std::vector<int> all_player_fds;
@@ -752,22 +767,23 @@ L5RunResult execute_l5_single_cycle(
   cleanup_all();
   guard.active = false;
 
-  const std::size_t max_allowed_settled_fds = baseline_open_fds + 2;
+  const std::size_t max_allowed_settled_fds = result.baseline_open_fds + 2;
   const auto fd_report = sample_settled_open_fds(
       server_pid,
-      baseline_open_fds,
+      result.baseline_open_fds,
       /*allowed_tolerance=*/2,
       /*timeout=*/std::chrono::milliseconds(2000));
 
   result.immediate_post_cleanup_open_fds = fd_report.immediate_open_fds;
   result.immediate_post_cleanup_sample_ok = !fd_report.sampling_failed;
   result.post_cleanup_open_fds = fd_report.settled_open_fds;
+  result.post_cleanup_sample_ok = !fd_report.sampling_failed;
   result.cleanup_settle_time_ms = fd_report.settle_time_ms;
   result.post_cleanup_settled = fd_report.settled_within_tolerance;
   result.cleanup_failure_reason = fd_report.failure_reason;
 
   if (fault_cfg.inject_fd_leak) {
-    result.post_cleanup_open_fds = baseline_open_fds + 5;
+    result.post_cleanup_open_fds = result.baseline_open_fds + 5;
     result.post_cleanup_settled = false;
     result.cleanup_failure_reason = "Injected FD leak for test validation";
   }
@@ -776,10 +792,25 @@ L5RunResult execute_l5_single_cycle(
   if (post_rss.has_value()) {
     result.post_cleanup_current_rss_kb = post_rss;
     result.post_cleanup_current_rss_sample_ok = true;
+  } else {
+    result.post_cleanup_current_rss_sample_ok = false;
   }
   const auto peak_rss = sample_peak_rss_kb(server_pid);
   if (peak_rss.has_value()) {
     result.peak_rss_kb = *peak_rss;
+    result.peak_rss_sample_ok = true;
+  } else {
+    result.peak_rss_sample_ok = false;
+  }
+
+  if (fault_cfg.inject_missing_fd_sample) {
+    result.peak_open_fds_sample_ok = false;
+  }
+  if (fault_cfg.inject_missing_rss_sample) {
+    result.peak_rss_sample_ok = false;
+  }
+  if (fault_cfg.inject_cleanup_failure) {
+    result.post_cleanup_settled = false;
   }
 
   // 10. Aggregate Request Metrics and Outcome Status
@@ -814,6 +845,10 @@ L5RunResult execute_l5_single_cycle(
   result.aggregate_concurrent = compute_metrics_from_list(agg_conc);
   result.aggregate_total = compute_metrics_from_list(all_run_metrics);
 
+  if (fault_cfg.inject_counter_mismatch) {
+    result.aggregate_total.total_requests += 100;
+  }
+
   const auto run_end = std::chrono::steady_clock::now();
   result.duration_ms = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(run_end - run_start).count());
@@ -823,23 +858,51 @@ L5RunResult execute_l5_single_cycle(
                             static_cast<double>(result.duration_ms);
   }
 
-  const bool fd_ok = (result.post_cleanup_open_fds <= max_allowed_settled_fds);
+  const bool fd_ok = result.post_cleanup_settled &&
+                     result.post_cleanup_sample_ok &&
+                     result.baseline_open_fds_sample_ok &&
+                     (result.post_cleanup_open_fds <= max_allowed_settled_fds);
+
+  const bool samples_ok = result.baseline_open_fds_sample_ok &&
+                          result.peak_open_fds_sample_ok &&
+                          result.immediate_post_cleanup_sample_ok &&
+                          result.post_cleanup_sample_ok &&
+                          result.peak_conn_current_rss_sample_ok &&
+                          result.post_cleanup_current_rss_sample_ok &&
+                          result.peak_rss_sample_ok;
+
+  std::size_t sum_match_reqs = 0;
+  for (const auto& m_rec : result.matches) {
+    sum_match_reqs += m_rec.total.total_requests;
+  }
+  const bool counters_reconciled = (result.aggregate_total.total_requests == sum_match_reqs) &&
+      (result.aggregate_total.total_requests == result.aggregate_total.successful_requests +
+                                               result.aggregate_total.expected_rejections +
+                                               result.aggregate_total.transport_failures +
+                                               result.aggregate_total.correctness_failures);
+
   result.run_passed = (result.failures.total() == 0 &&
                        both_matches_progressed &&
                        result.starvation_verified &&
                        fd_ok &&
-                       !fault_cfg.inject_assertion_failure);
+                       samples_ok &&
+                       counters_reconciled &&
+                       !fault_cfg.inject_assertion_failure &&
+                       !fault_cfg.inject_missing_fd_sample &&
+                       !fault_cfg.inject_missing_rss_sample &&
+                       !fault_cfg.inject_cleanup_failure &&
+                       !fault_cfg.inject_counter_mismatch);
 
   return result;
 }
 
-inline std::size_t sample_baseline_fds_probed(pid_t server_pid, const std::string& socket_path) {
+inline std::optional<std::size_t> sample_baseline_fds_probed(pid_t server_pid, const std::string& socket_path) {
   const int probe_fd = connect_unix(socket_path);
   if (probe_fd >= 0) {
     (void)close(probe_fd);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
-  return sample_open_fds(server_pid).value_or(9);
+  return sample_open_fds(server_pid);
 }
 
 struct SubprocessSelfTestDef {
@@ -1033,6 +1096,58 @@ int run_l5_selftest_suite(const std::string& server_bin, const std::string& sock
          return excess.has_value() ? 0 : 1;
        },
        true},
+
+      {"Injected missing FD sample terminates nonzero",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kDefaultModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         TestFaultConfig cfg;
+         cfg.inject_missing_fd_sample = true;
+         const auto r = execute_l5_single_cycle(pid, sock, kDefaultModeratorToken, 1, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
+      {"Injected missing RSS sample terminates nonzero",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kDefaultModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         TestFaultConfig cfg;
+         cfg.inject_missing_rss_sample = true;
+         const auto r = execute_l5_single_cycle(pid, sock, kDefaultModeratorToken, 1, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
+      {"Injected cleanup unsettled flag terminates nonzero",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kDefaultModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         TestFaultConfig cfg;
+         cfg.inject_cleanup_failure = true;
+         const auto r = execute_l5_single_cycle(pid, sock, kDefaultModeratorToken, 1, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
+      {"Injected request counter mismatch terminates nonzero",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kDefaultModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         TestFaultConfig cfg;
+         cfg.inject_counter_mismatch = true;
+         const auto r = execute_l5_single_cycle(pid, sock, kDefaultModeratorToken, 1, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
   };
 
   std::size_t passed = 0;
@@ -1093,10 +1208,22 @@ json serialize_l5_results(const std::vector<L5RunResult>& runs, const std::strin
     rj["duration_ms"] = r.duration_ms;
     rj["overlap_duration_ms"] = r.overlap_duration_ms;
     rj["peak_open_fds"] = r.peak_open_fds;
+    rj["peak_open_fds_sample_ok"] = r.peak_open_fds_sample_ok;
     rj["baseline_open_fds"] = r.baseline_open_fds;
+    rj["baseline_open_fds_sample_ok"] = r.baseline_open_fds_sample_ok;
+    rj["immediate_post_cleanup_open_fds"] = r.immediate_post_cleanup_open_fds;
+    rj["immediate_post_cleanup_sample_ok"] = r.immediate_post_cleanup_sample_ok;
     rj["post_cleanup_open_fds"] = r.post_cleanup_open_fds;
+    rj["post_cleanup_sample_ok"] = r.post_cleanup_sample_ok;
+    rj["post_cleanup_settled"] = r.post_cleanup_settled;
     rj["cleanup_settle_time_ms"] = r.cleanup_settle_time_ms;
+    rj["cleanup_failure_reason"] = r.cleanup_failure_reason;
+    rj["peak_conn_current_rss_kb"] = r.peak_conn_current_rss_kb.value_or(0);
+    rj["peak_conn_current_rss_sample_ok"] = r.peak_conn_current_rss_sample_ok;
+    rj["post_cleanup_current_rss_kb"] = r.post_cleanup_current_rss_kb.value_or(0);
+    rj["post_cleanup_current_rss_sample_ok"] = r.post_cleanup_current_rss_sample_ok;
     rj["peak_rss_kb"] = r.peak_rss_kb;
+    rj["peak_rss_sample_ok"] = r.peak_rss_sample_ok;
     rj["throughput_rps"] = r.throughput_rps;
 
     json matches_arr = json::array();
@@ -1229,13 +1356,19 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
-  const auto baseline_fds = sample_baseline_fds_probed(server_pid, socket_path);
+  const auto baseline_fds_opt = sample_baseline_fds_probed(server_pid, socket_path);
+  if (!baseline_fds_opt.has_value()) {
+    std::cerr << "error: failed to sample baseline open file descriptors\n";
+    stop_server_unix(server_pid, socket_path);
+    return 1;
+  }
+  const auto baseline_fds = *baseline_fds_opt;
   std::vector<L5RunResult> run_results;
   bool all_runs_passed = true;
 
   for (int r = 1; r <= num_runs; ++r) {
     std::cout << "\n--> Executing L5 Run " << r << "/" << num_runs << "...\n";
-    const auto res = execute_l5_single_cycle(server_pid, socket_path, kDefaultModeratorToken, r, baseline_fds);
+    const auto res = execute_l5_single_cycle(server_pid, socket_path, kDefaultModeratorToken, r, baseline_fds_opt);
     run_results.push_back(res);
 
     std::cout << "    Status               : " << (res.run_passed ? "PASS" : "FAIL") << '\n';
@@ -1262,13 +1395,13 @@ int main(int argc, char* argv[]) {
       std::cout << "\nWrote L5 machine-readable evidence to: " << out_path << '\n';
     } else {
       std::cerr << "\nERROR: Could not write output report to: " << out_path << '\n';
+      return 1;
     }
   }
 
   std::cout << "\n=================================================================\n";
   std::cout << " L5 BENCHMARK " << (all_runs_passed ? "PASSED (100% OK)" : "FAILED") << '\n';
   std::cout << "=================================================================\n";
-
   return all_runs_passed ? 0 : 1;
 }
 

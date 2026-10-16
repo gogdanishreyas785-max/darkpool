@@ -47,9 +47,30 @@ constexpr auto kHandshakeTimeout = std::chrono::seconds(5);
 constexpr int kEpollTimeoutMs = 100;
 
 enum class ClientKind { Unassigned, Player, Moderator };
+
+struct TokenBucketRateLimiter {
+  static constexpr double kRate = 20.0;     // 20 requests per second (DEC-11)
+  static constexpr double kBurst = 40.0;    // burst capacity 40 (DEC-11)
+  double tokens{kBurst};
+  std::chrono::steady_clock::time_point last_refill{std::chrono::steady_clock::now()};
+
+  bool try_acquire() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration<double>(now - last_refill).count();
+    last_refill = now;
+    tokens = std::min(kBurst, tokens + elapsed * kRate);
+    if (tokens >= 1.0) {
+      tokens -= 1.0;
+      return true;
+    }
+    return false;
+  }
+};
+
 struct Connection {
   FrameDecoder decoder;
   OutputQueue output;
+  TokenBucketRateLimiter rate_limiter;
   ClientKind kind{ClientKind::Unassigned};
   bool peer_closed{false};
   std::chrono::steady_clock::time_point connected_at{
@@ -270,6 +291,13 @@ bool process_frame(int epoll_fd, int fd, Connection &connection,
     return false;
   }
 
+  // Rate limiting enforcement per connection (DEC-11: 20 req/s, burst capacity 40)
+  if (!connection.rate_limiter.try_acquire()) {
+    return enqueue_echo(
+        epoll_fd, fd, connection,
+        Frame(json{{"type", "error"}, {"error", "rate limit exceeded"}}));
+  }
+
   const auto response =
       coordinator.handle(static_cast<std::uint64_t>(fd), frame.payload());
   return enqueue_echo(epoll_fd, fd, connection,
@@ -349,6 +377,8 @@ void accept_clients(int listener, int epoll_fd,
       (void)close(client);
       continue;
     }
+    int sndbuf = 16384;
+    (void)setsockopt(client, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
     epoll_event client_event{};
     client_event.events = static_cast<std::uint32_t>(EPOLLIN) |
                           static_cast<std::uint32_t>(EPOLLRDHUP);
