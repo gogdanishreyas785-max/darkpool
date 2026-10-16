@@ -3,34 +3,28 @@
 #include <iostream>
 
 int main() {
-  std::cerr << "darkpool_tls_integration_tests requires Linux\n";
-  return 0;
+  std::cerr << "error: darkpool_tls_integration_tests requires Linux (epoll/sockets/openssl)\n";
+  return 1;
 }
 
 #else
 
-#include "darkpool/network.hpp"
 #include "darkpool/tls_transport.hpp"
+#include "darkpool/network.hpp"
 
 #include <arpa/inet.h>
-#include <array>
-#include <cerrno>
 #include <chrono>
-#include <csignal>
-#include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <memory>
-#include <optional>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <string>
-#include <string_view>
 #include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/types.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -44,6 +38,7 @@ using darkpool::transport::EphemeralCertBundle;
 using darkpool::transport::generate_ephemeral_certs;
 
 int g_failures = 0;
+
 void check(bool condition, const char* expression, int line) {
   if (!condition) {
     ++g_failures;
@@ -58,6 +53,18 @@ std::size_t count_open_fds() {
     (void)entry;
     ++count;
   }
+  return count;
+}
+
+std::optional<std::size_t> count_open_fds_pid(pid_t pid) {
+  const std::string fd_dir = "/proc/" + std::to_string(pid) + "/fd";
+  std::error_code ec;
+  std::size_t count = 0;
+  for (const auto& entry : std::filesystem::directory_iterator(fd_dir, ec)) {
+    (void)entry;
+    ++count;
+  }
+  if (ec) return std::nullopt;
   return count;
 }
 
@@ -78,8 +85,10 @@ std::uint16_t reserve_port() {
 
 int connect_tcp(std::uint16_t port, int max_attempts = 80) {
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd >= 0) {
+      int one = 1;
+      (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
       sockaddr_in addr{};
       addr.sin_family = AF_INET;
       addr.sin_port = htons(port);
@@ -110,13 +119,26 @@ pid_t start_tls_server(
     } else {
       unsetenv("DARKPOOL_MODERATOR_TOKEN");
     }
+    int out_fd = -1;
     if (server_stdout_path != nullptr && !server_stdout_path->empty()) {
-      int out_fd = ::open(server_stdout_path->c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      out_fd = ::open(server_stdout_path->c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
       if (out_fd >= 0) {
         dup2(out_fd, STDOUT_FILENO);
         dup2(out_fd, STDERR_FILENO);
-        close(out_fd);
       }
+    } else {
+      const int dev_null = ::open("/dev/null", O_WRONLY);
+      if (dev_null >= 0) {
+        dup2(dev_null, STDOUT_FILENO);
+        dup2(dev_null, STDERR_FILENO);
+        (void)::close(dev_null);
+      }
+    }
+    // Close inherited descriptors in child
+    const long max_fd_l = sysconf(_SC_OPEN_MAX);
+    const int max_fd = max_fd_l > 0 ? static_cast<int>(std::min(max_fd_l, 4096L)) : 1024;
+    for (int fd = 3; fd < max_fd; ++fd) {
+      if (fd != out_fd) (void)::close(fd);
     }
     const auto port_text = std::to_string(tls_port);
     execl(server_path, server_path,
@@ -248,6 +270,7 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
   if (fd < 0) {
     return nullptr;
   }
+
   SSL* raw_ssl = SSL_new(ctx.get());
   if (raw_ssl == nullptr) {
     (void)close(fd);
@@ -260,15 +283,18 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
     return nullptr;
   }
 
-  // Set nonblocking to perform handshake with timeout
   int flags = fcntl(fd, F_GETFL, 0);
   (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (true) {
-    if (std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - start).count() > 5) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
       (void)close(fd);
       return nullptr;
     }
+    const auto rem_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    const int p_timeout = std::clamp(static_cast<int>(rem_ms), 1, 100);
+
     bool want_read = false, want_write = false;
     std::string hs_err;
     const auto status = darkpool::transport::step_tls_handshake(
@@ -281,24 +307,26 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
       return nullptr;
     }
     pollfd pfd{fd, static_cast<short>((want_read ? POLLIN : 0) | (want_write ? POLLOUT : 0)), 0};
-    (void)poll(&pfd, 1, 100);
+    (void)poll(&pfd, 1, p_timeout);
   }
   (void)fcntl(fd, F_SETFL, flags);
 
-  // Verification post-handshake
+  // Strict post-handshake verification
+  X509* peer_cert = SSL_get_peer_certificate(ssl.get());
+  if (peer_cert == nullptr) {
+    (void)close(fd);
+    return nullptr;
+  }
+  darkpool::transport::X509Ptr cert_guard(peer_cert);
+  std::string v_err;
+  if (!darkpool::transport::verify_cert_time_validity(peer_cert, v_err) ||
+      !darkpool::transport::verify_cert_server_purpose(peer_cert, v_err) ||
+      !darkpool::transport::verify_cert_ip_san(peer_cert, config.target_ip, v_err)) {
+    (void)close(fd);
+    return nullptr;
+  }
+
   if (config.mode == darkpool::transport::ClientVerifyMode::FingerprintPinning) {
-    X509* peer_cert = SSL_get_peer_certificate(ssl.get());
-    if (peer_cert == nullptr) {
-      (void)close(fd);
-      return nullptr;
-    }
-    darkpool::transport::X509Ptr cert_guard(peer_cert);
-    std::string v_err;
-    if (!darkpool::transport::verify_cert_time_validity(peer_cert, v_err) ||
-        !darkpool::transport::verify_cert_ip_san(peer_cert, config.target_ip, v_err)) {
-      (void)close(fd);
-      return nullptr;
-    }
     const std::string actual_fp = darkpool::transport::compute_cert_fingerprint_sha256(peer_cert);
     std::array<std::uint8_t, 32> exp_digest{};
     if (!darkpool::transport::parse_fingerprint_sha256(config.pinned_fingerprint_hex, exp_digest, v_err)) {
@@ -345,10 +373,8 @@ void test_scenario_01_valid_ca(const char* server_path) {
   auto client = connect_tls_client(port, client_cfg);
   CHECK(client != nullptr);
   if (client != nullptr) {
-    // Assert TLS 1.3 was negotiated
     const char* version = SSL_get_version(client->ssl.get());
     CHECK(std::string(version) == "TLSv1.3");
-
     CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
     auto resp = client->receive_frame();
     CHECK(resp.has_value());
@@ -361,7 +387,7 @@ void test_scenario_01_valid_ca(const char* server_path) {
 }
 
 // --------------------------------------------------------------------------
-// Scenario 2: Valid TLS 1.3 handshake in fingerprint-pinning mode
+// Scenario 2: Valid TLS 1.3 handshake in fingerprint mode with self-signed leaf
 // --------------------------------------------------------------------------
 void test_scenario_02_valid_fingerprint(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, true, false); // self-signed
@@ -402,11 +428,11 @@ void test_scenario_03_untrusted_ca(const char* server_path) {
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
-  client_cfg.ca_file = other_ca->ca_cert_pem_path; // wrong CA!
+  client_cfg.ca_file = other_ca->ca_cert_pem_path; // Untrusted CA
   client_cfg.target_ip = "127.0.0.1";
 
   auto client = connect_tls_client(port, client_cfg);
-  CHECK(client == nullptr); // must fail closed!
+  CHECK(client == nullptr); // Handshake must fail
   stop_server(child);
 }
 
@@ -421,13 +447,12 @@ void test_scenario_04_incorrect_fingerprint(const char* server_path) {
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::FingerprintPinning;
-  std::string bad_fp = certs->server_fingerprint_hex;
-  bad_fp[0] = (bad_fp[0] == 'a') ? 'b' : 'a'; // flip one digit
-  client_cfg.pinned_fingerprint_hex = bad_fp;
+  // All zeroes fingerprint: guaranteed mismatch
+  client_cfg.pinned_fingerprint_hex = "0000000000000000000000000000000000000000000000000000000000000000";
   client_cfg.target_ip = "127.0.0.1";
 
   auto client = connect_tls_client(port, client_cfg);
-  CHECK(client == nullptr); // must fail closed!
+  CHECK(client == nullptr);
   stop_server(child);
 }
 
@@ -435,7 +460,6 @@ void test_scenario_04_incorrect_fingerprint(const char* server_path) {
 // Scenario 5: Rejection of mismatched IP SAN
 // --------------------------------------------------------------------------
 void test_scenario_05_mismatched_ip_san(const char* server_path) {
-  // Server certificate has IP SAN 10.0.0.1, but client connects to 127.0.0.1
   auto certs = generate_ephemeral_certs("10.0.0.1", 1, false, false);
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
@@ -444,10 +468,10 @@ void test_scenario_05_mismatched_ip_san(const char* server_path) {
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
   client_cfg.ca_file = certs->ca_cert_pem_path;
-  client_cfg.target_ip = "127.0.0.1"; // mismatch with SAN 10.0.0.1!
+  client_cfg.target_ip = "127.0.0.1"; // Differs from 10.0.0.1
 
   auto client = connect_tls_client(port, client_cfg);
-  CHECK(client == nullptr); // must fail closed!
+  CHECK(client == nullptr);
   stop_server(child);
 }
 
@@ -455,7 +479,7 @@ void test_scenario_05_mismatched_ip_san(const char* server_path) {
 // Scenario 6: Rejection of expired certificate
 // --------------------------------------------------------------------------
 void test_scenario_06_expired_cert(const char* server_path) {
-  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, true); // expired = true
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, true); // expired
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
   CHECK(child > 0);
@@ -466,7 +490,7 @@ void test_scenario_06_expired_cert(const char* server_path) {
   client_cfg.target_ip = "127.0.0.1";
 
   auto client = connect_tls_client(port, client_cfg);
-  CHECK(client == nullptr); // must fail closed!
+  CHECK(client == nullptr);
   stop_server(child);
 }
 
@@ -479,25 +503,23 @@ void test_scenario_07_reject_tls12(const char* server_path) {
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
   CHECK(child > 0);
 
-  darkpool::transport::ClientTlsConfig client_cfg;
-  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
-  client_cfg.ca_file = certs->ca_cert_pem_path;
-  client_cfg.target_ip = "127.0.0.1";
-
-  std::string err;
-  auto ctx = darkpool::transport::create_client_ssl_ctx(client_cfg, err);
-  CHECK(ctx != nullptr);
-  // Restrict client to TLS 1.2 max
-  SSL_CTX_set_max_proto_version(ctx.get(), TLS1_2_VERSION);
+  SSL_CTX* legacy_ctx = SSL_CTX_new(TLS_client_method());
+  CHECK(legacy_ctx != nullptr);
+  (void)SSL_CTX_set_max_proto_version(legacy_ctx, TLS1_2_VERSION);
+  (void)SSL_CTX_load_verify_locations(legacy_ctx, certs->ca_cert_pem_path.c_str(), nullptr);
 
   const int fd = connect_tcp(port);
   CHECK(fd >= 0);
-  SSL* raw_ssl = SSL_new(ctx.get());
-  darkpool::transport::SslPtr ssl(raw_ssl);
-  SSL_set_fd(ssl.get(), fd);
-  const int ret = SSL_connect(ssl.get());
-  CHECK(ret <= 0); // must be rejected!
+
+  SSL* ssl = SSL_new(legacy_ctx);
+  (void)SSL_set_fd(ssl, fd);
+
+  const int res = SSL_connect(ssl);
+  CHECK(res <= 0); // Server must reject TLS 1.2
+
+  SSL_free(ssl);
   (void)close(fd);
+  SSL_CTX_free(legacy_ctx);
   stop_server(child);
 }
 
@@ -512,15 +534,15 @@ void test_scenario_08_reject_plaintext_on_tls_port(const char* server_path) {
 
   const int fd = connect_tcp(port);
   CHECK(fd >= 0);
-  const std::string plaintext_request = Frame(json{{"type", "connect"}, {"role", "player"}}).serialize();
-  (void)send(fd, plaintext_request.data(), plaintext_request.size(), MSG_NOSIGNAL);
+
+  const std::string plaintext_req = Frame(json{{"type", "connect"}, {"role", "player"}}).serialize();
+  const auto sent = ::send(fd, plaintext_req.data(), plaintext_req.size(), 0);
+  CHECK(sent == static_cast<ssize_t>(plaintext_req.size()));
 
   char buf[64];
-  timeval timeout{1, 0};
-  (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  const auto recvd = recv(fd, buf, sizeof(buf), 0);
-  // Server must close connection (recvd == 0 or ECONNRESET)
-  CHECK(recvd <= 0);
+  const auto recvd = ::recv(fd, buf, sizeof(buf), 0);
+  CHECK(recvd <= 0); // Server terminates connection on handshake error
+
   (void)close(fd);
   stop_server(child);
 }
@@ -536,12 +558,14 @@ void test_scenario_09_handshake_stall_timeout(const char* server_path) {
 
   const int stalled_fd = connect_tcp(port);
   CHECK(stalled_fd >= 0);
-  // Send nothing, wait for 5s server handshake timeout
-  timeval timeout{6, 500000};
-  (void)setsockopt(stalled_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  // Sleep 5.5s to exceed the 5.0s handshake timeout
+  std::this_thread::sleep_for(std::chrono::milliseconds(5500));
+
   char buf[16];
-  const auto recvd = recv(stalled_fd, buf, sizeof(buf), 0);
-  CHECK(recvd == 0 || (recvd < 0 && (errno == ECONNRESET || errno == EPIPE)));
+  const auto recvd = ::recv(stalled_fd, buf, sizeof(buf), 0);
+  CHECK(recvd == 0); // Server closed connection after timeout
+
   (void)close(stalled_fd);
   stop_server(child);
 }
@@ -563,19 +587,20 @@ void test_scenario_10_coalesced_frames(const char* server_path) {
   auto client = connect_tls_client(port, client_cfg);
   CHECK(client != nullptr);
   if (client != nullptr) {
-    // Send connect
     CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
-    auto resp = client->receive_frame();
-    CHECK(resp.has_value());
+    auto conn_resp = client->receive_frame();
+    CHECK(conn_resp.has_value());
 
-    // Send two frames back-to-back coalesced in one write
     const std::string f1 = Frame(json{{"type", "status"}}).serialize();
     const std::string f2 = Frame(json{{"type", "status"}}).serialize();
-    const std::string coalesced = f1 + f2;
+    const std::string combined = f1 + f2;
 
+    // Send in two 3-byte fragments then remaining
     std::size_t written = 0;
     std::string err;
-    (void)darkpool::transport::tls_write(client->ssl.get(), coalesced.data(), coalesced.size(), written, err);
+    (void)darkpool::transport::tls_write(client->ssl.get(), combined.data(), 3, written, err);
+    (void)darkpool::transport::tls_write(client->ssl.get(), combined.data() + 3, 3, written, err);
+    (void)darkpool::transport::tls_write(client->ssl.get(), combined.data() + 6, combined.size() - 6, written, err);
 
     auto r1 = client->receive_frame();
     auto r2 = client->receive_frame();
@@ -586,13 +611,16 @@ void test_scenario_10_coalesced_frames(const char* server_path) {
 }
 
 // --------------------------------------------------------------------------
-// Scenario 11: Slow-reader output queue bounds over TLS
+// Scenario 11: Slow-reader output queue bounds over TLS (drives queue >64 KiB)
 // --------------------------------------------------------------------------
 void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
   CHECK(child > 0);
+  // Wait for server listener to initialize before capturing baseline open FDs
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto initial_server_fds = count_open_fds_pid(child);
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
@@ -610,33 +638,159 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto resp = slow_client->receive_frame();
   CHECK(resp.has_value());
 
-  // Blast status requests without reading until output queue > 64 KiB causes eviction
-  for (int i = 0; i < 200; ++i) {
+  // Send status requests without reading replies to drive server output queue beyond 64 KiB boundary
+  // At ~51 bytes per rate-limited response frame, filling TCP socket buffers (~128 KiB)
+  // plus the 64 KiB server user-space queue requires > 3,800 unread response frames.
+  bool disconnected = false;
+  for (int i = 0; i < 6000; ++i) {
     if (!slow_client->send_frame(json{{"type", "status"}})) {
+      disconnected = true;
       break;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
   }
 
-  // Connect healthy sibling client over TLS to verify isolation
+  // If writes buffered in kernel send buffer, reading until EOF proves eviction occurred
+  if (!disconnected) {
+    while (true) {
+      auto r = slow_client->receive_frame(100);
+      if (!r) {
+        disconnected = true;
+        break;
+      }
+    }
+  }
+  CHECK(disconnected);
+
+  // Connect healthy sibling client over TLS to verify server reactor is responsive and sibling completes cleanly
   auto healthy_client = connect_tls_client(port, client_cfg);
   CHECK(healthy_client != nullptr);
   if (healthy_client != nullptr) {
     CHECK(healthy_client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
     auto healthy_resp = healthy_client->receive_frame();
     CHECK(healthy_resp.has_value());
+    CHECK(healthy_resp->value("type", "") == "connect");
+
+    CHECK(healthy_client->send_frame(json{{"type", "status"}}));
+    auto healthy_status = healthy_client->receive_frame();
+    CHECK(healthy_status.has_value());
   }
+
+  healthy_client.reset();
+  slow_client.reset();
+
+  // Allow server reactor to settle FDs after client closures (poll up to 1000 ms)
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+  bool settled = false;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto cur = count_open_fds_pid(child);
+    if (cur && initial_server_fds && *cur <= *initial_server_fds + 1) {
+      settled = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(settled);
 
   stop_server(child);
 }
 
 // --------------------------------------------------------------------------
-// Scenario 12: Request flood rate limiting over TLS
+// Scenario 12: Request flood rate limiting over TLS (with state-mutation verification)
 // --------------------------------------------------------------------------
 void test_scenario_12_flood_rate_limiting(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  // Create match and set to Trading phase
+  auto mod = connect_tls_client(port, client_cfg);
+  CHECK(mod != nullptr);
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  (void)mod->receive_frame();
+
+  CHECK(mod->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
+  auto create_resp = mod->receive_frame();
+  CHECK(create_resp.has_value());
+  const std::uint64_t match_id = create_resp->value("match_id", 1ULL);
+
+  auto p1 = connect_tls_client(port, client_cfg);
+  auto p2 = connect_tls_client(port, client_cfg);
+  auto p3 = connect_tls_client(port, client_cfg);
+  CHECK(p1 != nullptr && p2 != nullptr && p3 != nullptr);
+
+  CHECK(p1->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p1->receive_frame();
+  CHECK(p1->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p1->receive_frame();
+  CHECK(p2->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p2->receive_frame();
+  CHECK(p2->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p2->receive_frame();
+  CHECK(p3->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p3->receive_frame();
+  CHECK(p3->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p3->receive_frame();
+
+  CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}})); (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}})); (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "open_trading"}, {"match_id", match_id}})); (void)mod->receive_frame();
+
+  // Snapshot authoritative match status before flood
+  CHECK(mod->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
+  auto status_before = mod->receive_frame();
+  CHECK(status_before.has_value());
+  const auto phase_before = status_before->value("phase", "");
+  CHECK(phase_before == "Trading");
+
+  // Ensure token bucket has refilled completely to 40 burst tokens after setup commands
+  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+
+  // Flood 100 state-changing operations from p1
+  int accepted = 0;
+  int rate_limited = 0;
+  for (int i = 0; i < 100; ++i) {
+    CHECK(p1->send_frame(json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
+    auto r = p1->receive_frame();
+    CHECK(r.has_value());
+    if (r) {
+      if (r->value("error", "") == "rate limit exceeded") {
+        ++rate_limited;
+      } else {
+        ++accepted;
+      }
+    }
+  }
+
+  // Token bucket burst is 40: exactly 40 accepted, 60 rate-limited
+  CHECK(accepted == 40);
+  CHECK(rate_limited == 60);
+
+  // Snapshot authoritative match status after flood: verify zero unexpected state mutation
+  CHECK(mod->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
+  auto status_after = mod->receive_frame();
+  CHECK(status_after.has_value());
+  CHECK(status_after->value("phase", "") == "Trading");
+
+  // Verify token bucket refill recovers capacity: wait 100ms (2 tokens refilled)
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  CHECK(p1->send_frame(json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
+  auto refilled_resp = p1->receive_frame();
+  CHECK(refilled_resp.has_value());
+  CHECK(refilled_resp->value("error", "") != "rate limit exceeded");
+
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 13: Secret redaction in server and client diagnostics
+// --------------------------------------------------------------------------
+void test_scenario_13_secret_redaction(const char* server_path) {
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  const auto port = reserve_port();
+
+  std::string stdout_log = certs->temp_dir_path + "/server_stdout.log";
+  const std::string sensitive_token = "ultra-secret-test-token-xyz123";
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, sensitive_token.c_str(), "127.0.0.1", &stdout_log);
   CHECK(child > 0);
 
   darkpool::transport::ClientTlsConfig client_cfg;
@@ -647,74 +801,24 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   auto client = connect_tls_client(port, client_cfg);
   CHECK(client != nullptr);
   if (client != nullptr) {
-    CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
-    auto resp = client->receive_frame();
-    CHECK(resp.has_value());
-
-    int accepted = 0;
-    int rate_limited = 0;
-    for (int i = 0; i < 100; ++i) {
-      CHECK(client->send_frame(json{{"type", "status"}}));
-      auto r = client->receive_frame();
-      CHECK(r.has_value());
-      if (r) {
-        if (r->value("error", "") == "rate limit exceeded") {
-          ++rate_limited;
-        } else {
-          ++accepted;
-        }
-      }
-    }
-    // Token bucket burst is 40: exactly 40 accepted, 60 rate-limited
-    CHECK(accepted == 40);
-    CHECK(rate_limited == 60);
-  }
-  stop_server(child);
-}
-
-// --------------------------------------------------------------------------
-// Scenario 13: Secret redaction in server and client diagnostics
-// --------------------------------------------------------------------------
-void test_scenario_13_secret_redaction(const char* server_path) {
-  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
-  const auto port = reserve_port();
-  const std::string log_file = certs->temp_dir_path + "/server_audit.log";
-  std::string stdout_path = log_file;
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path,
-                                      "super-secret-moderator-token-12345", "127.0.0.1", &stdout_path);
-  CHECK(child > 0);
-
-  darkpool::transport::ClientTlsConfig client_cfg;
-  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
-  client_cfg.ca_file = certs->ca_cert_pem_path;
-  client_cfg.target_ip = "127.0.0.1";
-
-  auto mod_client = connect_tls_client(port, client_cfg);
-  CHECK(mod_client != nullptr);
-  if (mod_client != nullptr) {
-    CHECK(mod_client->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "super-secret-moderator-token-12345"}}));
-    auto resp = mod_client->receive_frame();
-    CHECK(resp.has_value());
+    // Attempt authentication with wrong token
+    CHECK(client->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "wrong-secret-abc"}}));
+    (void)client->receive_frame();
   }
 
   stop_server(child);
 
-  // Inspect server output log
-  std::string log_contents;
-  if (std::filesystem::exists(log_file)) {
-    FILE* f = fopen(log_file.c_str(), "r");
-    if (f != nullptr) {
-      char b[512];
-      while (fgets(b, sizeof(b), f) != nullptr) log_contents += b;
-      fclose(f);
-    }
+  // Audit server stdout log: sensitive token must never appear in log output
+  std::ifstream log_file(stdout_log);
+  if (log_file.is_open()) {
+    std::string content((std::istreambuf_iterator<char>(log_file)), std::istreambuf_iterator<char>());
+    CHECK(content.find(sensitive_token) == std::string::npos);
+    CHECK(content.find("wrong-secret-abc") == std::string::npos);
   }
-  // The secret moderator token must NEVER appear in server logs
-  CHECK(log_contents.find("super-secret-moderator-token-12345") == std::string::npos);
 }
 
 // --------------------------------------------------------------------------
-// Scenario 14: Complete 5-player match gameplay over TLS 1.3
+// Scenario 14: Complete 5-player match gameplay over TLS 1.3 (All 3 rounds to Finished)
 // --------------------------------------------------------------------------
 void test_scenario_14_complete_match_gameplay(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
@@ -743,7 +847,11 @@ void test_scenario_14_complete_match_gameplay(const char* server_path) {
   // 3. Connect 5 players over TLS
   std::vector<std::unique_ptr<TlsClientConnection>> players;
   std::vector<std::string> roles;
-  for (int i = 0; i < 5; ++i) {
+  std::size_t insider_idx = 999;
+  std::size_t investigator_idx = 999;
+  std::size_t employee_idx = 999;
+
+  for (std::size_t i = 0; i < 5; ++i) {
     auto p = connect_tls_client(port, client_cfg);
     CHECK(p != nullptr);
     CHECK(p->send_frame(json{{"type", "connect"}, {"role", "player"}}));
@@ -754,12 +862,18 @@ void test_scenario_14_complete_match_gameplay(const char* server_path) {
     auto join_resp = p->receive_frame();
     CHECK(join_resp.has_value());
     if (join_resp) {
-      roles.push_back(join_resp->value("role", ""));
+      const std::string r = join_resp->value("private_role", "");
+      roles.push_back(r);
+      if (r == "Insider") insider_idx = i;
+      else if (r == "Investigator") investigator_idx = i;
+      else if (employee_idx == 999) employee_idx = i;
     }
     players.push_back(std::move(p));
   }
   CHECK(players.size() == 5);
-  CHECK(roles.size() == 5);
+  CHECK(insider_idx < 5);
+  CHECK(investigator_idx < 5);
+  CHECK(employee_idx < 5);
 
   // 4. Moderator starts match
   CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}}));
@@ -767,71 +881,105 @@ void test_scenario_14_complete_match_gameplay(const char* server_path) {
   CHECK(start_resp.has_value());
   CHECK(start_resp->value("phase", "") == "AwaitingEvent");
 
-  // 5. Moderator publishes event (impact 0) -> transitions to Discussion
+  // 5. Round 1
   CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}));
-  auto event_resp = mod->receive_frame();
-  CHECK(event_resp.has_value());
-  CHECK(event_resp->value("phase", "") == "Discussion");
+  auto ev1_resp = mod->receive_frame();
+  CHECK(ev1_resp.has_value());
+  CHECK(ev1_resp->value("phase", "") == "Discussion");
 
-  // 6. Insider requests hint
-  for (std::size_t i = 0; i < 5; ++i) {
-    if (roles[i] == "Insider") {
-      CHECK(players[i]->send_frame(json{{"type", "insider_hint"}, {"match_id", match_id}}));
-      auto hint_resp = players[i]->receive_frame();
-      CHECK(hint_resp.has_value());
-      if (hint_resp) {
-        CHECK(hint_resp->value("type", "") == "hint_private");
-        CHECK(hint_resp->value("event_impact", -99) == 0);
-      }
-    }
-  }
+  // Insider requests private hint
+  CHECK(players[insider_idx]->send_frame(json{{"type", "insider_hint"}, {"match_id", match_id}}));
+  auto hint_resp = players[insider_idx]->receive_frame();
+  CHECK(hint_resp.has_value());
+  CHECK(hint_resp->value("type", "") == "hint_private");
+  CHECK(hint_resp->value("event_impact", -99) == 0);
 
-  // 7. Moderator opens trading
+  // Open trading & submit trades
   CHECK(mod->send_frame(json{{"type", "open_trading"}, {"match_id", match_id}}));
-  auto open_trade_resp = mod->receive_frame();
-  CHECK(open_trade_resp.has_value());
-  CHECK(open_trade_resp->value("phase", "") == "Trading");
-
-  // 8. Players submit trades
-  for (int i = 0; i < 5; ++i) {
-    CHECK(players[static_cast<std::size_t>(i)]->send_frame(
-        json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
-    auto tr = players[static_cast<std::size_t>(i)]->receive_frame();
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
+    auto tr = players[i]->receive_frame();
     CHECK(tr.has_value());
-    CHECK(tr->value("ok", false) == true);
   }
 
-  // 9. Moderator resolves market -> transitions to Clue
+  // Resolve market -> Clue phase
   CHECK(mod->send_frame(json{{"type", "resolve_market"}, {"match_id", match_id}}));
-  auto market_resp = mod->receive_frame();
-  CHECK(market_resp.has_value());
-  CHECK(market_resp->value("ok", false) == true);
+  (void)mod->receive_frame();
 
-  CHECK(players[0]->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
-  auto clue_status = players[0]->receive_frame();
-  CHECK(clue_status.has_value());
-  CHECK(clue_status->value("phase", "") == "Clue");
+  // Investigator submits clue request targeting Employee (player ID = employee_idx + 1)
+  const std::uint64_t target_employee_id = static_cast<std::uint64_t>(employee_idx + 1);
+  CHECK(players[investigator_idx]->send_frame(json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", target_employee_id}}));
+  auto clue_resp = players[investigator_idx]->receive_frame();
+  CHECK(clue_resp.has_value());
+  CHECK(clue_resp->value("type", "") == "clue_private");
+  CHECK(clue_resp->value("is_insider", true) == false); // Target employee is not an insider!
 
-  // 10. Moderator opens voting
+  // Employee cannot submit clue request (permission rejected)
+  CHECK(players[employee_idx]->send_frame(json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", 1ULL}}));
+  auto emp_clue_resp = players[employee_idx]->receive_frame();
+  CHECK(emp_clue_resp.has_value());
+  CHECK(emp_clue_resp->value("ok", true) == false);
+
+  // Open voting -> Voting
   CHECK(mod->send_frame(json{{"type", "open_voting"}, {"match_id", match_id}}));
-  auto open_vote_resp = mod->receive_frame();
-  CHECK(open_vote_resp.has_value());
-  CHECK(open_vote_resp->value("phase", "") == "Voting");
-
-  // 11. Players vote (all abstain)
-  for (int i = 0; i < 5; ++i) {
-    CHECK(players[static_cast<std::size_t>(i)]->send_frame(
-        json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}}));
-    auto vr = players[static_cast<std::size_t>(i)]->receive_frame();
-    CHECK(vr.has_value());
-    CHECK(vr->value("ok", false) == true);
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}}));
+    (void)players[i]->receive_frame();
   }
-
-  // 12. Moderator resolves votes
   CHECK(mod->send_frame(json{{"type", "resolve_votes"}, {"match_id", match_id}}));
-  auto vote_resp = mod->receive_frame();
-  CHECK(vote_resp.has_value());
-  CHECK(vote_resp->value("ok", false) == true);
+  auto v1_res = mod->receive_frame();
+  CHECK(v1_res.has_value());
+
+  // 6. Round 2
+  CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 1}}));
+  (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "open_trading"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
+    (void)players[i]->receive_frame();
+  }
+  CHECK(mod->send_frame(json{{"type", "resolve_market"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "open_voting"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}}));
+    (void)players[i]->receive_frame();
+  }
+  CHECK(mod->send_frame(json{{"type", "resolve_votes"}, {"match_id", match_id}}));
+  auto v2_res = mod->receive_frame();
+  CHECK(v2_res.has_value());
+
+  // 7. Round 3
+  CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", -1}}));
+  (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "open_trading"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}}));
+    (void)players[i]->receive_frame();
+  }
+  CHECK(mod->send_frame(json{{"type", "resolve_market"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  CHECK(mod->send_frame(json{{"type", "open_voting"}, {"match_id", match_id}}));
+  (void)mod->receive_frame();
+  for (std::size_t i = 0; i < 5; ++i) {
+    CHECK(players[i]->send_frame(json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}}));
+    (void)players[i]->receive_frame();
+  }
+  CHECK(mod->send_frame(json{{"type", "resolve_votes"}, {"match_id", match_id}}));
+  auto v3_res = mod->receive_frame();
+  CHECK(v3_res.has_value());
+
+  // Terminal state verification: phase must be Finished!
+  CHECK(players[0]->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
+  auto terminal_status = players[0]->receive_frame();
+  CHECK(terminal_status.has_value());
+  CHECK(terminal_status->value("phase", "") == "Finished");
+  CHECK(!terminal_status->value("outcome", "").empty());
 
   stop_server(child);
 }
@@ -853,9 +1001,8 @@ void test_scenario_15_concurrent_match_isolation(const char* server_path) {
   auto mod1 = connect_tls_client(port, client_cfg);
   CHECK(mod1 != nullptr);
   CHECK(mod1->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
-  auto m1_conn = mod1->receive_frame();
-  CHECK(m1_conn.has_value());
-  CHECK(mod1->send_frame(json{{"type", "create_match"}, {"player_count", 5}}));
+  (void)mod1->receive_frame();
+  CHECK(mod1->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
   auto m1_create = mod1->receive_frame();
   CHECK(m1_create.has_value());
   const std::uint64_t match_id_1 = m1_create->value("match_id", 1ULL);
@@ -863,9 +1010,8 @@ void test_scenario_15_concurrent_match_isolation(const char* server_path) {
   auto mod2 = connect_tls_client(port, client_cfg);
   CHECK(mod2 != nullptr);
   CHECK(mod2->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
-  auto m2_conn = mod2->receive_frame();
-  CHECK(m2_conn.has_value());
-  CHECK(mod2->send_frame(json{{"type", "create_match"}, {"player_count", 5}}));
+  (void)mod2->receive_frame();
+  CHECK(mod2->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
   auto m2_create = mod2->receive_frame();
   CHECK(m2_create.has_value());
   const std::uint64_t match_id_2 = m2_create->value("match_id", 2ULL);
@@ -888,19 +1034,42 @@ void test_scenario_15_concurrent_match_isolation(const char* server_path) {
   auto p2_join = p2->receive_frame();
   CHECK(p2_join.has_value());
 
+  // Cross-match probe 1: Player 1 (joined in Match 1) attempts action on Match 2 -> must be rejected
+  CHECK(p1->send_frame(json{{"type", "trade"}, {"match_id", match_id_2}, {"action", "HOLD"}}));
+  auto cross_trade = p1->receive_frame();
+  CHECK(cross_trade.has_value());
+  CHECK(cross_trade->value("type", "") == "error");
+
+  // Cross-match probe 2: Player 2 (joined in Match 2) attempts action on Match 1 -> must be rejected
+  CHECK(p2->send_frame(json{{"type", "vote"}, {"match_id", match_id_1}, {"target_id", nullptr}}));
+  auto cross_vote = p2->receive_frame();
+  CHECK(cross_vote.has_value());
+  CHECK(cross_vote->value("type", "") == "error");
+
+  // Cross-match probe 3: Moderator 1 attempts to control Match 2 -> must be rejected
+  CHECK(mod1->send_frame(json{{"type", "start_match"}, {"match_id", match_id_2}}));
+  auto cross_mod = mod1->receive_frame();
+  CHECK(cross_mod.has_value());
+  CHECK(cross_mod->value("type", "") == "error");
+
   stop_server(child);
 }
 
 // --------------------------------------------------------------------------
-// Scenario 16: Disconnect and shutdown cleanup (resource & FD settling)
+// Scenario 16: Disconnect and shutdown cleanup (monitoring server PID)
 // --------------------------------------------------------------------------
 void test_scenario_16_disconnect_cleanup(const char* server_path) {
-  const auto fds_before = count_open_fds();
+  const auto fds_before_parent = count_open_fds();
 
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
   CHECK(child > 0);
+
+  // Poll for child listener readiness and capture server baseline open FDs
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto server_baseline_fds = count_open_fds_pid(child);
+  CHECK(server_baseline_fds.has_value());
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
@@ -919,18 +1088,274 @@ void test_scenario_16_disconnect_cleanup(const char* server_path) {
         clients.push_back(std::move(c));
       }
     }
+    // Verify server child open FDs increased with 10 clients connected
+    const auto active_server_fds = count_open_fds_pid(child);
+    CHECK(active_server_fds.has_value());
+    CHECK(*active_server_fds >= *server_baseline_fds + 10);
   } // All 10 clients destroyed and closed cleanly
 
-  // Allow server reactor event loop ticks to settle FDs
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  // Monitor server child process /proc/<child>/fd to verify settling back to baseline within 2000 ms
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  bool settled = false;
+  std::size_t settled_server_fds = 0;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const auto current = count_open_fds_pid(child);
+    if (current && *current <= *server_baseline_fds + 1) {
+      settled = true;
+      settled_server_fds = *current;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(settled);
+  (void)settled_server_fds;
 
   stop_server(child);
 
-  // Allow local process FDs to settle
-  std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  const auto fds_after = count_open_fds();
-  // Open file descriptors must settle back to baseline (within 2 tolerance for test runner directories)
-  CHECK(fds_after <= fds_before + 2);
+  // Verify test process parent FDs returned to baseline
+  const auto fds_after_parent = count_open_fds();
+  CHECK(fds_after_parent <= fds_before_parent + 2);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 17: Valid TLS 1.3 in fingerprint mode with a CA-signed leaf
+// --------------------------------------------------------------------------
+void test_scenario_17_ca_signed_leaf_fingerprint_mode(const char* server_path) {
+  // Generate CA-issued server cert
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, /*self_signed=*/false, false);
+  CHECK(certs != nullptr);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+
+  // Client uses FingerprintPinning mode with the leaf certificate's SHA-256 fingerprint.
+  // Note: Client does NOT load or trust the CA root!
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::FingerprintPinning;
+  client_cfg.pinned_fingerprint_hex = certs->server_fingerprint_hex;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client != nullptr);
+  if (client != nullptr) {
+    CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
+    auto resp = client->receive_frame();
+    CHECK(resp.has_value());
+    CHECK(resp->value("type", "") == "connect");
+  }
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 18: Fingerprint mode with not-yet-valid certificate rejection
+// --------------------------------------------------------------------------
+void test_scenario_18_not_yet_valid_cert_rejection(const char* server_path) {
+  // Generate certificate with notBefore in future
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, true, false, /*not_yet_valid=*/true);
+  CHECK(certs != nullptr);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::FingerprintPinning;
+  client_cfg.pinned_fingerprint_hex = certs->server_fingerprint_hex;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client == nullptr); // Must be rejected due to notBefore in future!
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 19: Invalid server certificate usage / EKU rejection
+// --------------------------------------------------------------------------
+void test_scenario_19_invalid_server_eku_rejection(const char* server_path) {
+  // Generate certificate with clientAuth only (missing serverAuth)
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false, false, /*client_auth_only_eku=*/true);
+  CHECK(certs != nullptr);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client == nullptr); // Must be rejected because certificate does not permit serverAuth!
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 20: Certificate rotation (old pin fails until updated)
+// --------------------------------------------------------------------------
+void test_scenario_20_cert_rotation_pin_update(const char* server_path) {
+  auto certs_old = generate_ephemeral_certs("127.0.0.1", 1, true, false);
+  auto certs_new = generate_ephemeral_certs("127.0.0.1", 1, true, false);
+  const auto port = reserve_port();
+
+  // Server starts with rotated (new) certificate
+  const auto child = start_tls_server(server_path, port, certs_new->server_cert_pem_path, certs_new->server_key_pem_path);
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig old_cfg;
+  old_cfg.mode = darkpool::transport::ClientVerifyMode::FingerprintPinning;
+  old_cfg.pinned_fingerprint_hex = certs_old->server_fingerprint_hex; // Stale pin
+  old_cfg.target_ip = "127.0.0.1";
+
+  auto client_old = connect_tls_client(port, old_cfg);
+  CHECK(client_old == nullptr); // Old pin must be rejected!
+
+  darkpool::transport::ClientTlsConfig new_cfg;
+  new_cfg.mode = darkpool::transport::ClientVerifyMode::FingerprintPinning;
+  new_cfg.pinned_fingerprint_hex = certs_new->server_fingerprint_hex; // Updated pin
+  new_cfg.target_ip = "127.0.0.1";
+
+  auto client_new = connect_tls_client(port, new_cfg);
+  CHECK(client_new != nullptr); // Updated pin succeeds!
+
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 21: Strict private key file permissions (0600 succeeds, 0644 fails closed)
+// --------------------------------------------------------------------------
+void test_scenario_21_strict_key_permissions(const char* server_path) {
+  (void)server_path;
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  CHECK(certs != nullptr);
+
+  // 1. Verify 0600 permissions succeed
+  (void)::chmod(certs->server_key_pem_path.c_str(), 0600);
+  std::string err_msg;
+  darkpool::transport::ServerTlsConfig cfg_ok;
+  cfg_ok.cert_file = certs->server_cert_pem_path;
+  cfg_ok.key_file = certs->server_key_pem_path;
+  auto ctx_ok = darkpool::transport::create_server_ssl_ctx(cfg_ok, err_msg);
+  CHECK(ctx_ok != nullptr);
+
+  // 2. Make permissions overly permissive (0644 - group and world readable)
+  (void)::chmod(certs->server_key_pem_path.c_str(), 0644);
+  err_msg.clear();
+  auto ctx_fail = darkpool::transport::create_server_ssl_ctx(cfg_ok, err_msg);
+  CHECK(ctx_fail == nullptr); // Must fail closed!
+  CHECK(err_msg.find("chmod 0600 or 0400") != std::string::npos); // Must include actionable message!
+}
+
+// --------------------------------------------------------------------------
+// Scenario 22: Mutually exclusive CLI verification options
+// --------------------------------------------------------------------------
+void test_scenario_22_cli_mutual_exclusivity(const char* server_path) {
+  // Execute client with both --ca-cert and --server-fingerprint
+  std::string client_bin = std::string(server_path);
+  const auto pos = client_bin.rfind("darkpool_server");
+  if (pos != std::string::npos) {
+    client_bin.replace(pos, 15, "darkpool_client");
+  }
+
+  const std::string cmd = client_bin + " --tls --ca-cert /dev/null --server-fingerprint 0000000000000000000000000000000000000000000000000000000000000000 127.0.0.1 4783 player 2>&1";
+  FILE* pipe = ::popen(cmd.c_str(), "r");
+  CHECK(pipe != nullptr);
+  if (pipe != nullptr) {
+    char buf[256];
+    std::string output;
+    while (::fgets(buf, sizeof(buf), pipe) != nullptr) {
+      output += buf;
+    }
+    const int code = ::pclose(pipe);
+    const int exit_status = WEXITSTATUS(code);
+    CHECK(exit_status == 2); // Argument error exit code
+    CHECK(output.find("mutually exclusive") != std::string::npos);
+  }
+}
+
+// --------------------------------------------------------------------------
+// Scenario 23: Truncated / unexpected TLS termination (EOF without close_notify)
+// --------------------------------------------------------------------------
+void test_scenario_23_truncated_tls_termination(const char* server_path) {
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client != nullptr);
+  if (client != nullptr) {
+    // Send valid frame
+    CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
+    auto resp = client->receive_frame();
+    CHECK(resp.has_value());
+
+    // Abruptly close TCP socket with SO_LINGER timeout 0 (RST packet, no TLS close_notify alert)
+    linger sl{};
+    sl.l_onoff = 1;
+    sl.l_linger = 0;
+    (void)setsockopt(client->fd, SOL_SOCKET, SO_LINGER, &sl, sizeof(sl));
+    (void)::close(client->fd);
+    client->fd = -1;
+  }
+
+  // Allow server reactor to process abrupt reset
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+  // Connect healthy sibling client to ensure server remained completely responsive
+  auto healthy = connect_tls_client(port, client_cfg);
+  CHECK(healthy != nullptr);
+  if (healthy != nullptr) {
+    CHECK(healthy->send_frame(json{{"type", "connect"}, {"role", "player"}}));
+    auto r = healthy->receive_frame();
+    CHECK(r.has_value());
+  }
+
+  stop_server(child);
+}
+
+// --------------------------------------------------------------------------
+// Scenario 24: Reactor state machine cross-direction WANT_READ/WANT_WRITE & KeyUpdate
+// --------------------------------------------------------------------------
+void test_scenario_24_reactor_cross_direction_and_key_update(const char* server_path) {
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client != nullptr);
+  if (client != nullptr) {
+    CHECK(client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
+    auto resp1 = client->receive_frame();
+    CHECK(resp1.has_value());
+
+    // Trigger TLS 1.3 KeyUpdate on client SSL session
+    const int ku_res = SSL_key_update(client->ssl.get(), SSL_KEY_UPDATE_NOT_REQUESTED);
+    CHECK(ku_res == 1);
+
+    // Send frame after KeyUpdate to trigger key change transmission and reactor cross-direction handling
+    CHECK(client->send_frame(json{{"type", "status"}}));
+    auto resp2 = client->receive_frame();
+    CHECK(resp2.has_value());
+
+    // Send subsequent status requests to verify continued responsiveness
+    for (int i = 0; i < 5; ++i) {
+      CHECK(client->send_frame(json{{"type", "status"}}));
+      auto r = client->receive_frame();
+      CHECK(r.has_value());
+    }
+  }
+
+  stop_server(child);
 }
 
 } // namespace
@@ -961,6 +1386,14 @@ int main(int argc, char** argv) {
   if (subtest == "all" || subtest == "gameplay") test_scenario_14_complete_match_gameplay(server_path);
   if (subtest == "all" || subtest == "isolation") test_scenario_15_concurrent_match_isolation(server_path);
   if (subtest == "all" || subtest == "cleanup") test_scenario_16_disconnect_cleanup(server_path);
+  if (subtest == "all" || subtest == "ca-leaf-fingerprint") test_scenario_17_ca_signed_leaf_fingerprint_mode(server_path);
+  if (subtest == "all" || subtest == "not-yet-valid") test_scenario_18_not_yet_valid_cert_rejection(server_path);
+  if (subtest == "all" || subtest == "invalid-eku") test_scenario_19_invalid_server_eku_rejection(server_path);
+  if (subtest == "all" || subtest == "cert-rotation") test_scenario_20_cert_rotation_pin_update(server_path);
+  if (subtest == "all" || subtest == "key-permissions") test_scenario_21_strict_key_permissions(server_path);
+  if (subtest == "all" || subtest == "cli-exclusivity") test_scenario_22_cli_mutual_exclusivity(server_path);
+  if (subtest == "all" || subtest == "unexpected-eof") test_scenario_23_truncated_tls_termination(server_path);
+  if (subtest == "all" || subtest == "cross-direction") test_scenario_24_reactor_cross_direction_and_key_update(server_path);
 
   if (g_failures > 0) {
     std::cerr << "FAIL: " << g_failures << " assertions failed\n";

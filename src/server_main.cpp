@@ -23,6 +23,7 @@ int main() {
 #include <ifaddrs.h>
 #include <iostream>
 #include <map>
+#include <netinet/tcp.h>
 #include <netinet/in.h>
 #include <string>
 #include <string_view>
@@ -84,8 +85,14 @@ struct Connection {
   TransportType transport{TransportType::Plaintext};
   darkpool::transport::SslPtr ssl{nullptr};
   bool tls_handshake_done{true};
-  bool tls_want_read{false};
-  bool tls_want_write{false};
+  bool tls_handshake_want_read{false};
+  bool tls_handshake_want_write{false};
+
+  bool tls_read_want_read{false};
+  bool tls_read_want_write{false};
+
+  bool tls_write_want_read{false};
+  bool tls_write_want_write{false};
 };
 
 struct SocketFileGuard {
@@ -211,6 +218,43 @@ bool set_events(int epoll_fd, int fd, bool reading, bool writing) {
   return epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, &event) == 0;
 }
 
+bool update_connection_events(int epoll_fd, int fd, Connection &connection) {
+  if (connection.transport == TransportType::Plaintext) {
+    const bool reading = !connection.peer_closed;
+    const bool writing = !connection.output.pending().empty();
+    return set_events(epoll_fd, fd, reading, writing);
+  }
+
+  // Handshake phase
+  if (!connection.tls_handshake_done) {
+    return set_events(epoll_fd, fd, connection.tls_handshake_want_read,
+                      connection.tls_handshake_want_write);
+  }
+
+  bool reading = false;
+  bool writing = false;
+
+  // Read readiness requirements
+  if (!connection.peer_closed) {
+    if (connection.tls_read_want_write) {
+      writing = true; // SSL_read needs write readiness to resume
+    } else {
+      reading = true; // normal read or tls_read_want_read
+    }
+  }
+
+  // Write readiness requirements
+  if (!connection.output.pending().empty()) {
+    if (connection.tls_write_want_read) {
+      reading = true; // SSL_write needs read readiness to resume; DO NOT set writing (prevents spin)
+    } else {
+      writing = true; // normal write or tls_write_want_write
+    }
+  }
+
+  return set_events(epoll_fd, fd, reading, writing);
+}
+
 void close_connection(int epoll_fd, int fd, std::map<int, Connection> &clients,
                       std::size_t &players, std::size_t &moderators,
                       darkpool::server::MatchCoordinator &coordinator) {
@@ -236,9 +280,7 @@ bool enqueue_echo(int epoll_fd, int fd, Connection &connection,
   try {
     if (!connection.output.append(frame.serialize()))
       return false;
-    const bool writing = true;
-    const bool reading = !connection.peer_closed || connection.tls_want_read;
-    return set_events(epoll_fd, fd, reading, writing);
+    return update_connection_events(epoll_fd, fd, connection);
   } catch (const std::exception &) {
     return false;
   }
@@ -332,6 +374,8 @@ bool read_client(int epoll_fd, int fd, Connection &connection,
       const auto status = darkpool::transport::tls_read(
           connection.ssl.get(), buffer, sizeof(buffer), bytes_read, err);
       if (status == darkpool::transport::TlsIoStatus::Ok) {
+        connection.tls_read_want_read = false;
+        connection.tls_read_want_write = false;
         try {
           const auto frames = connection.decoder.feed(
               std::span<const char>(buffer, bytes_read));
@@ -345,15 +389,17 @@ bool read_client(int epoll_fd, int fd, Connection &connection,
         }
       } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
         connection.peer_closed = true;
-        return set_events(epoll_fd, fd, false,
-                          !connection.output.pending().empty());
+        connection.tls_read_want_read = false;
+        connection.tls_read_want_write = false;
+        return update_connection_events(epoll_fd, fd, connection);
       } else if (status == darkpool::transport::TlsIoStatus::WantRead) {
-        connection.tls_want_read = true;
-        return set_events(epoll_fd, fd, true,
-                          connection.tls_want_write || !connection.output.pending().empty());
+        connection.tls_read_want_read = true;
+        connection.tls_read_want_write = false;
+        return update_connection_events(epoll_fd, fd, connection);
       } else if (status == darkpool::transport::TlsIoStatus::WantWrite) {
-        connection.tls_want_write = true;
-        return set_events(epoll_fd, fd, connection.tls_want_read, true);
+        connection.tls_read_want_read = false;
+        connection.tls_read_want_write = true;
+        return update_connection_events(epoll_fd, fd, connection);
       } else {
         return false;
       }
@@ -365,8 +411,7 @@ bool read_client(int epoll_fd, int fd, Connection &connection,
     const auto count = recv(fd, buffer, sizeof(buffer), 0);
     if (count == 0) {
       connection.peer_closed = true;
-      return set_events(epoll_fd, fd, false,
-                        !connection.output.pending().empty());
+      return update_connection_events(epoll_fd, fd, connection);
     }
     if (count < 0) {
       if (errno == EINTR)
@@ -399,20 +444,23 @@ bool write_client(int epoll_fd, int fd, Connection &connection) {
           connection.ssl.get(), pending.data(), pending.size(), bytes_written, err);
       if (status == darkpool::transport::TlsIoStatus::Ok) {
         connection.output.consume(bytes_written);
-        connection.tls_want_write = false;
+        connection.tls_write_want_read = false;
+        connection.tls_write_want_write = false;
       } else if (status == darkpool::transport::TlsIoStatus::WantWrite) {
-        connection.tls_want_write = true;
-        return set_events(epoll_fd, fd, connection.tls_want_read, true);
+        connection.tls_write_want_write = true;
+        connection.tls_write_want_read = false;
+        return update_connection_events(epoll_fd, fd, connection);
       } else if (status == darkpool::transport::TlsIoStatus::WantRead) {
-        connection.tls_want_read = true;
-        return set_events(epoll_fd, fd, true,
-                          connection.tls_want_write || !connection.output.pending().empty());
+        connection.tls_write_want_read = true;
+        connection.tls_write_want_write = false;
+        return update_connection_events(epoll_fd, fd, connection);
       } else {
         return false;
       }
     }
-    connection.tls_want_write = false;
-    return set_events(epoll_fd, fd, !connection.peer_closed, false);
+    connection.tls_write_want_write = false;
+    connection.tls_write_want_read = false;
+    return update_connection_events(epoll_fd, fd, connection);
   }
 
   while (!connection.output.pending().empty()) {
@@ -429,7 +477,7 @@ bool write_client(int epoll_fd, int fd, Connection &connection) {
       return false;
     connection.output.consume(static_cast<std::size_t>(count));
   }
-  return set_events(epoll_fd, fd, !connection.peer_closed, false);
+  return update_connection_events(epoll_fd, fd, connection);
 }
 
 bool parse_port(const char *text, std::uint16_t &port) {
@@ -460,6 +508,9 @@ void accept_clients(int listener, int epoll_fd,
     int sndbuf = 16384;
     (void)setsockopt(client, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 
+    int one = 1;
+    (void)setsockopt(client, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+
     if (is_tls) {
       if (server_ssl_ctx == nullptr) {
         (void)close(client);
@@ -486,6 +537,8 @@ void accept_clients(int listener, int epoll_fd,
         conn.transport = TransportType::Tls;
         conn.ssl = std::move(ssl);
         conn.tls_handshake_done = false;
+        conn.tls_handshake_want_read = true;
+        conn.tls_handshake_want_write = false;
         clients.emplace(client, std::move(conn));
       } else {
         (void)close(client);
@@ -1032,13 +1085,13 @@ int main(int argc, char **argv) {
             found->second.ssl.get(), true, want_read, want_write, err);
         if (status == darkpool::transport::TlsHandshakeStatus::Established) {
           found->second.tls_handshake_done = true;
-          found->second.tls_want_read = false;
-          found->second.tls_want_write = false;
-          (void)set_events(epoll_fd, fd, true, !found->second.output.pending().empty());
+          found->second.tls_handshake_want_read = false;
+          found->second.tls_handshake_want_write = false;
+          (void)update_connection_events(epoll_fd, fd, found->second);
         } else if (status == darkpool::transport::TlsHandshakeStatus::InProgress) {
-          found->second.tls_want_read = want_read;
-          found->second.tls_want_write = want_write;
-          (void)set_events(epoll_fd, fd, want_read, want_write);
+          found->second.tls_handshake_want_read = want_read;
+          found->second.tls_handshake_want_write = want_write;
+          (void)update_connection_events(epoll_fd, fd, found->second);
           continue;
         } else {
           // Handshake failed (e.g. plaintext sent to TLS port or bad client alert)
@@ -1051,20 +1104,39 @@ int main(int argc, char **argv) {
       const auto read_or_hangup = static_cast<std::uint32_t>(EPOLLIN) |
                                    static_cast<std::uint32_t>(EPOLLRDHUP) |
                                    static_cast<std::uint32_t>(EPOLLHUP);
-      if ((flags & read_or_hangup) != 0U) {
+
+      // Cross-direction resume:
+      // If a pending TLS write was waiting for read readiness (SSL_ERROR_WANT_READ) and read readiness fired:
+      if (found->second.transport == TransportType::Tls && found->second.tls_write_want_read && (flags & read_or_hangup) != 0U) {
+        keep = write_client(epoll_fd, fd, found->second);
+      }
+
+      // If read operation wants read readiness (or normal read) and read readiness fired:
+      if (keep && !found->second.tls_read_want_write && (flags & read_or_hangup) != 0U) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
+
+      // Cross-direction resume:
+      // If a pending TLS read was waiting for write readiness (SSL_ERROR_WANT_WRITE) and write readiness fired:
+      if (keep && found->second.transport == TransportType::Tls && found->second.tls_read_want_write && (flags & EPOLLOUT) != 0U) {
+        keep = read_client(epoll_fd, fd, found->second, players, moderators,
+                           coordinator);
+      }
+
       if (keep && (flags & (EPOLLRDHUP | EPOLLHUP)) != 0U &&
           !found->second.peer_closed) {
         found->second.peer_closed = true;
-        keep = set_events(epoll_fd, fd, false,
-                          !found->second.output.pending().empty());
+        keep = update_connection_events(epoll_fd, fd, found->second);
       }
-      if (keep && ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
+
+      // If write operation wants write readiness and write readiness fired (or peer closed with pending output):
+      if (keep && !found->second.tls_write_want_read &&
+          ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
           !found->second.output.pending().empty()) {
         keep = write_client(epoll_fd, fd, found->second);
       }
+
       if (keep && found->second.peer_closed &&
           found->second.output.pending().empty())
         keep = false;

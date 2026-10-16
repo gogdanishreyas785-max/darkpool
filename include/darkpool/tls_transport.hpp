@@ -123,6 +123,9 @@ enum class TlsIoStatus {
 // Verifies if the certificate contains an IP SAN matching the given IP
 [[nodiscard]] bool verify_cert_ip_san(X509* cert, const std::string& expected_ip, std::string& err_msg);
 
+// Verifies if the certificate key usage and EKU allow TLS server authentication
+[[nodiscard]] bool verify_cert_server_purpose(X509* cert, std::string& err_msg);
+
 // Creates an initialized OpenSSL server context enforcing strict TLS 1.3
 [[nodiscard]] SslCtxPtr create_server_ssl_ctx(
     const ServerTlsConfig& config,
@@ -174,7 +177,9 @@ struct EphemeralCertBundle {
     const std::string& ip_san = "127.0.0.1",
     int validity_days = 1,
     bool self_signed = false,
-    bool expired = false);
+    bool expired = false,
+    bool not_yet_valid = false,
+    bool client_auth_only_eku = false);
 
 }  // namespace darkpool::transport
 

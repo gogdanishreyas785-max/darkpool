@@ -96,12 +96,36 @@ bool verify_cert_time_validity(X509* cert, std::string& err_msg) {
     return false;
   }
 
-  if (X509_cmp_current_time(not_before) > 0) {
+  const int cmp_before = X509_cmp_current_time(not_before);
+  if (cmp_before == 0) {
+    err_msg = "invalid or malformed notBefore timestamp in certificate";
+    return false;
+  }
+  if (cmp_before > 0) {
     err_msg = "certificate is not yet valid (notBefore in future)";
     return false;
   }
-  if (X509_cmp_current_time(not_after) < 0) {
+
+  const int cmp_after = X509_cmp_current_time(not_after);
+  if (cmp_after == 0) {
+    err_msg = "invalid or malformed notAfter timestamp in certificate";
+    return false;
+  }
+  if (cmp_after < 0) {
     err_msg = "certificate has expired (notAfter in past)";
+    return false;
+  }
+  return true;
+}
+
+bool verify_cert_server_purpose(X509* cert, std::string& err_msg) {
+  if (cert == nullptr) {
+    err_msg = "null certificate presented";
+    return false;
+  }
+  // Check that the certificate is valid for SSL/TLS server authentication
+  if (X509_check_purpose(cert, X509_PURPOSE_SSL_SERVER, 0) != 1) {
+    err_msg = "certificate key usage or extended key usage does not permit TLS server authentication";
     return false;
   }
   return true;
@@ -148,11 +172,13 @@ SslCtxPtr create_server_ssl_ctx(
     return nullptr;
   }
 
-  // Check private key permissions; warn if group or others have read permissions
+  // Strict production private-key permission policy: fail-closed if accessible by group or others
   if ((key_st.st_mode & 0077) != 0) {
-    std::cerr << "warning: private key file '" << config.key_file
-              << "' permissions (" << std::oct << (key_st.st_mode & 0777) << std::dec
-              << ") are insecure; recommended mode is 0600\n";
+    std::ostringstream mode_oss;
+    mode_oss << "0" << std::oct << (key_st.st_mode & 0777);
+    err_msg = "private key file '" + config.key_file + "' has insecure permissions (" +
+              mode_oss.str() + "); must not be accessible by group or others (enforce chmod 0600 or 0400)";
+    return nullptr;
   }
 
   SSL_CTX* raw_ctx = SSL_CTX_new(TLS_server_method());
@@ -213,12 +239,14 @@ int client_verify_callback(int preverify_ok, X509_STORE_CTX* x509_ctx) {
     if (preverify_ok != 1) {
       return 0;
     }
-    // Verify leaf cert IP SAN explicitly if at depth 0
+    // Verify leaf cert IP SAN, time validity, and server purpose explicitly at depth 0
     const int depth = X509_STORE_CTX_get_error_depth(x509_ctx);
     if (depth == 0) {
       X509* cert = X509_STORE_CTX_get_current_cert(x509_ctx);
       std::string err;
-      if (!verify_cert_time_validity(cert, err) || !verify_cert_ip_san(cert, cfg->target_ip, err)) {
+      if (!verify_cert_time_validity(cert, err) ||
+          !verify_cert_server_purpose(cert, err) ||
+          !verify_cert_ip_san(cert, cfg->target_ip, err)) {
         return 0;
       }
     }
@@ -226,17 +254,23 @@ int client_verify_callback(int preverify_ok, X509_STORE_CTX* x509_ctx) {
   }
 
   if (cfg->mode == ClientVerifyMode::FingerprintPinning) {
-    // In fingerprint mode, we only accept the leaf certificate
+    // In fingerprint mode, the pinned leaf certificate itself is the trust anchor.
+    // Accept intermediate/root certificates at depth > 0 so verification reaches the leaf.
     const int depth = X509_STORE_CTX_get_error_depth(x509_ctx);
-    if (depth != 0) {
-      return 0;
+    if (depth > 0) {
+      return 1;
     }
+
+    // At depth == 0 (leaf):
     X509* cert = X509_STORE_CTX_get_current_cert(x509_ctx);
     if (cert == nullptr) {
       return 0;
     }
     std::string err;
     if (!verify_cert_time_validity(cert, err)) {
+      return 0;
+    }
+    if (!verify_cert_server_purpose(cert, err)) {
       return 0;
     }
     if (!verify_cert_ip_san(cert, cfg->target_ip, err)) {
@@ -255,7 +289,8 @@ int client_verify_callback(int preverify_ok, X509_STORE_CTX* x509_ctx) {
     if (actual_fp != oss.str()) {
       return 0;
     }
-    // Pinned fingerprint matches exactly, certificate is time-valid, and IP SAN matches!
+    // Explicitly set X509_V_OK in store context so OpenSSL verification result succeeds
+    X509_STORE_CTX_set_error(x509_ctx, X509_V_OK);
     return 1;
   }
 
@@ -372,7 +407,7 @@ TlsIoStatus tls_read(
   }
 
   const int err = SSL_get_error(ssl, count);
-  if (count == 0 || err == SSL_ERROR_ZERO_RETURN) {
+  if (err == SSL_ERROR_ZERO_RETURN) {
     return TlsIoStatus::PeerClosed;
   }
   if (err == SSL_ERROR_WANT_READ) {
@@ -384,7 +419,11 @@ TlsIoStatus tls_read(
 
   err_msg = get_openssl_error_string();
   if (err_msg.empty()) {
-    err_msg = "SSL_read error " + std::to_string(err);
+    if (err == SSL_ERROR_SYSCALL) {
+      err_msg = "unexpected TLS EOF / connection reset without close_notify";
+    } else {
+      err_msg = "SSL_read error " + std::to_string(err);
+    }
   }
   return TlsIoStatus::Error;
 }
@@ -436,7 +475,9 @@ std::unique_ptr<EphemeralCertBundle> generate_ephemeral_certs(
     const std::string& ip_san,
     int validity_days,
     bool self_signed,
-    bool expired) {
+    bool expired,
+    bool not_yet_valid,
+    bool client_auth_only_eku) {
   char temp_template[] = "/tmp/darkpool_tls_XXXXXX";
   char* temp_dir = ::mkdtemp(temp_template);
   if (temp_dir == nullptr) {
@@ -506,6 +547,9 @@ std::unique_ptr<EphemeralCertBundle> generate_ephemeral_certs(
   if (expired) {
     (void)X509_gmtime_adj(X509_get_notBefore(server_cert.get()), -7200);
     (void)X509_gmtime_adj(X509_get_notAfter(server_cert.get()), -3600);
+  } else if (not_yet_valid) {
+    (void)X509_gmtime_adj(X509_get_notBefore(server_cert.get()), 3600);
+    (void)X509_gmtime_adj(X509_get_notAfter(server_cert.get()), 86400 * validity_days);
   } else {
     (void)X509_gmtime_adj(X509_get_notBefore(server_cert.get()), -3600);
     (void)X509_gmtime_adj(X509_get_notAfter(server_cert.get()), 86400 * validity_days);
@@ -524,10 +568,30 @@ std::unique_ptr<EphemeralCertBundle> generate_ephemeral_certs(
     (void)X509_set_issuer_name(server_cert.get(), X509_get_subject_name(ca_cert.get()));
   }
 
-  // Set IP SAN extension
+  // Set standard X.509 v3 server extensions
   X509V3_CTX ext_ctx{};
   X509V3_set_ctx_nodb(&ext_ctx);
   X509V3_set_ctx(&ext_ctx, self_signed ? server_cert.get() : ca_cert.get(), server_cert.get(), nullptr, nullptr, 0);
+
+  X509_EXTENSION* ext_bc = X509V3_EXT_conf_nid(nullptr, &ext_ctx, NID_basic_constraints, "critical,CA:FALSE");
+  if (ext_bc != nullptr) {
+    (void)X509_add_ext(server_cert.get(), ext_bc, -1);
+    X509_EXTENSION_free(ext_bc);
+  }
+
+  X509_EXTENSION* ext_ku = X509V3_EXT_conf_nid(nullptr, &ext_ctx, NID_key_usage, "critical,digitalSignature,keyEncipherment");
+  if (ext_ku != nullptr) {
+    (void)X509_add_ext(server_cert.get(), ext_ku, -1);
+    X509_EXTENSION_free(ext_ku);
+  }
+
+  const char* eku_str = client_auth_only_eku ? "clientAuth" : "serverAuth";
+  X509_EXTENSION* ext_eku = X509V3_EXT_conf_nid(nullptr, &ext_ctx, NID_ext_key_usage, eku_str);
+  if (ext_eku != nullptr) {
+    (void)X509_add_ext(server_cert.get(), ext_eku, -1);
+    X509_EXTENSION_free(ext_eku);
+  }
+
   const std::string san_str = "IP:" + ip_san;
   X509_EXTENSION* ext_san = X509V3_EXT_conf_nid(nullptr, &ext_ctx, NID_subject_alt_name, san_str.c_str());
   if (ext_san != nullptr) {

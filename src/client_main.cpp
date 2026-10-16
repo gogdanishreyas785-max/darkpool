@@ -12,6 +12,7 @@
 #include <iomanip>
 #include <iostream>
 #include <netdb.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <sstream>
 #include <string>
@@ -156,9 +157,13 @@ int connect_tcp(const std::string& host, std::uint16_t port) {
   int fd = -1;
   for (auto* address = addresses; address != nullptr; address = address->ai_next) {
     fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-    if (fd >= 0 && connect(fd, address->ai_addr, address->ai_addrlen) == 0) break;
-    if (fd >= 0) (void)close(fd);
-    fd = -1;
+    if (fd >= 0) {
+      int one = 1;
+      (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+      if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) break;
+      (void)close(fd);
+      fd = -1;
+    }
   }
   freeaddrinfo(addresses);
   if (fd < 0) {
@@ -171,12 +176,17 @@ int connect_tcp(const std::string& host, std::uint16_t port) {
 bool perform_client_tls_handshake(SSL* ssl, int fd, std::chrono::seconds timeout) {
   const int flags = fcntl(fd, F_GETFL, 0);
   (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  const auto start = std::chrono::steady_clock::now();
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (true) {
-    if (std::chrono::steady_clock::now() - start >= timeout) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
       std::cerr << "error: TLS handshake timed out after " << timeout.count() << " seconds\n";
+      (void)fcntl(fd, F_SETFL, flags);
       return false;
     }
+    const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+    const int poll_timeout = std::clamp(static_cast<int>(remaining_ms), 1, 500);
+
     bool want_read = false;
     bool want_write = false;
     std::string err;
@@ -187,14 +197,16 @@ bool perform_client_tls_handshake(SSL* ssl, int fd, std::chrono::seconds timeout
     }
     if (status == darkpool::transport::TlsHandshakeStatus::Failed) {
       std::cerr << "error: TLS handshake failed: " << err << '\n';
+      (void)fcntl(fd, F_SETFL, flags);
       return false;
     }
     pollfd pfd{};
     pfd.fd = fd;
     pfd.events = (want_read ? POLLIN : 0) | (want_write ? POLLOUT : 0);
-    const int pret = poll(&pfd, 1, 500);
+    const int pret = poll(&pfd, 1, poll_timeout);
     if (pret < 0 && errno != EINTR) {
       std::cerr << "error: poll during TLS handshake: " << std::strerror(errno) << '\n';
+      (void)fcntl(fd, F_SETFL, flags);
       return false;
     }
   }
@@ -272,6 +284,10 @@ int main(int argc, char** argv) {
   }
 
   if (args.use_tls) {
+    if (!args.ca_file.empty() && !args.fingerprint_hex.empty()) {
+      std::cerr << "error: mutually exclusive verification options: cannot specify both --ca-cert and --server-fingerprint\n";
+      return 2;
+    }
     if (!args.has_explicit_mode) {
       std::cerr << "error: TLS client requires either --ca-cert <path> or --server-fingerprint <sha256>\n";
       return 2;
@@ -380,25 +396,31 @@ int main(int argc, char** argv) {
       return 1;
     }
 
+    X509* peer_cert = SSL_get_peer_certificate(ssl.get());
+    if (peer_cert == nullptr) {
+      std::cerr << "error: server presented no certificate\n";
+      (void)close(fd);
+      return 1;
+    }
+    darkpool::transport::X509Ptr cert_guard(peer_cert);
+    std::string err;
+    if (!darkpool::transport::verify_cert_time_validity(peer_cert, err)) {
+      std::cerr << "error: certificate validity check failed: " << err << '\n';
+      (void)close(fd);
+      return 1;
+    }
+    if (!darkpool::transport::verify_cert_server_purpose(peer_cert, err)) {
+      std::cerr << "error: certificate server purpose check failed: " << err << '\n';
+      (void)close(fd);
+      return 1;
+    }
+    if (!darkpool::transport::verify_cert_ip_san(peer_cert, args.host, err)) {
+      std::cerr << "error: IP SAN verification failed: " << err << '\n';
+      (void)close(fd);
+      return 1;
+    }
+
     if (args.verify_mode == darkpool::transport::ClientVerifyMode::FingerprintPinning) {
-      X509* peer_cert = SSL_get_peer_certificate(ssl.get());
-      if (peer_cert == nullptr) {
-        std::cerr << "error: server presented no certificate in fingerprint pinning mode\n";
-        (void)close(fd);
-        return 1;
-      }
-      darkpool::transport::X509Ptr cert_guard(peer_cert);
-      std::string err;
-      if (!darkpool::transport::verify_cert_time_validity(peer_cert, err)) {
-        std::cerr << "error: certificate validity check failed: " << err << '\n';
-        (void)close(fd);
-        return 1;
-      }
-      if (!darkpool::transport::verify_cert_ip_san(peer_cert, args.host, err)) {
-        std::cerr << "error: IP SAN verification failed: " << err << '\n';
-        (void)close(fd);
-        return 1;
-      }
       const std::string actual_fp = darkpool::transport::compute_cert_fingerprint_sha256(peer_cert);
       std::array<std::uint8_t, 32> exp_digest{};
       if (!darkpool::transport::parse_fingerprint_sha256(args.fingerprint_hex, exp_digest, err)) {
