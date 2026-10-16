@@ -3,10 +3,7 @@ name: S1 Ubuntu build and tests
 on:
   push:
     branches:
-      - s1/deterministic-engine
-      - s2/stage1-tcp-json
-      - s2/playable-cli
-      - s2/moderator-auth
+      - '**'
   pull_request:
     branches:
       - main
@@ -35,3 +32,7 @@ jobs:
         run: |
           python3 tools/validate_l6_sustained_evidence.py
           python3 tests/test_validate_l6_sustained_evidence.py
+      - name: Validate L8 flood evidence and run validator regression tests
+        run: |
+          python3 tools/validate_l8_evidence.py
+          python3 tests/test_validate_l8_evidence.py

@@ -14,7 +14,7 @@ The coordinator supports server-assigned membership, independent matches with di
 - **Capacity limits and verification status:** The coordinator allows four concurrent matches. The server is configured for at most 256 player connections plus four independent authenticated moderator connections (260 total connections); each match is independently owned and controlled by its dedicated moderator connection. Four-match 256-player concurrent functional capacity is verified through reproducible benchmarks (`docs/load_test_l6_results.json`). Sustained long-duration multi-match reliability (10-minute smoke and 30-minute reliability soak workloads on a single persistent server) is evaluated as a distinct stage; see `docs/test-plan.md` for current measured status and evidence.
 - **Credits:** Credits are non-conserved player counters. The provisional S1 cap is 1,000,000 credits per player (`uint32_t`); an order that would exceed it is rejected and consumes the round's trade-action slot under the approved action-slot rule. This is an implementation detail, not a new gameplay approval.
 - **Canonical view privacy:** Canonical engine state is an internal test/replay view containing secret roles and clue/event information. It must not be sent to players.
-- **Test coverage:** Engine roster tests cover N=3,4,5,8,9,16,24,32,64. Integration tests cover five-player and N=8 matches over TCP, as well as complete UNIX-domain socket lifecycle, authentication, five-player gameplay, and malformed-frame isolation. These functional tests do not establish load, latency, or server capacity; no load test is recorded for variable-size matches.
+- **Test coverage:** Engine roster and boundary tests cover N=2 (rejection), N=3,4,5,8,9,16,24,32,64, and N=65 (rejection). Integration tests cover three-player, five-player, and eight-player matches over TCP, boundary rejection, as well as complete UNIX-domain socket lifecycle, authentication, LAN interface binding, five-player gameplay, and malformed-frame isolation. Dedicated load benchmarks are recorded for L1 (5-player), L3 (32-player), L4 (64-player), L5 (2×32-player), L6 (4×64-player), L7 (slow-client queue bounds), and L8 (request flood rate limiting).
 
 ## Build and test on Ubuntu
 
@@ -54,7 +54,7 @@ export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ### Option B: Localhost TCP stream socket
 
 ```sh
-# Terminal 0: Start the TCP coordinator server (default port: 4782)
+# Terminal 0: Start the TCP coordinator server (default port: 4782, binds 127.0.0.1)
 export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ./build/darkpool_server 4782
 
@@ -66,7 +66,58 @@ export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
 ./build/darkpool_client 127.0.0.1 4782 player
 ```
 
-The default port is `4782`. The client provides an interactive terminal CLI with command prompts, input validation, role guidance, and confidential information display. Raw JSON input (`{...}`) remains supported for scripted test harnesses.
+### Option C: Trusted Private LAN TCP stream socket (Multi-machine play)
+
+For multiplayer over a trusted private local network (RFC 1918 IPv4), configure the server to bind to an assigned private IPv4 address using `--bind-address <IPv4-address>` (or `--bind-address=<IPv4-address>` / `-b <IPv4-address>`):
+
+1. **Discover the Server's Assigned LAN Address**:
+   On the server host, run:
+   ```sh
+   ip -4 addr show
+   ```
+   Identify your active private IPv4 address on the primary interface (e.g. `192.168.1.50`, `10.0.0.25`, or `172.16.0.10`).
+
+   > **Note on Localhost vs Remote IP**: On player machines, `127.0.0.1` points back to that player's own local computer, **not** the game server. Players connecting from other machines across the LAN must specify the server's actual assigned private LAN IP address.
+
+2. **Configure Firewall**:
+   Restrict incoming TCP traffic on port 4782 to your local subnet (substituting your actual subnet, e.g. `192.168.1.0/24`):
+   ```sh
+   sudo ufw allow from 192.168.1.0/24 to any port 4782 proto tcp
+   # Or using iptables:
+   # sudo iptables -A INPUT -p tcp -s 192.168.1.0/24 --dport 4782 -j ACCEPT
+   ```
+
+3. **Launch Server on Private Interface**:
+   ```sh
+   # On Server Host (substitute 192.168.1.50 with your actual assigned LAN address):
+   export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+   ./build/darkpool_server --bind-address 192.168.1.50 4782
+   ```
+
+4. **Launch Clients Across the LAN**:
+   ```sh
+   # On Moderator Machine (same host or another LAN machine):
+   export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+   ./build/darkpool_client 192.168.1.50 4782 moderator
+
+   # On Player Machines:
+   ./build/darkpool_client 192.168.1.50 4782 player
+   ```
+
+> **Security Warning (LAN Transport)**: The LAN TCP transport is currently unencrypted plaintext without TLS. The moderator token and all gameplay messages traverse the local network in plaintext. Non-loopback binding is restricted strictly to RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and must never be exposed to public or untrusted networks.
+
+### LAN Troubleshooting Guide
+
+- **Connection refused / Timed out**:
+  - Verify that the server process is running and actively listening: `ss -tulpn | grep 4782`.
+  - Check firewall status on the server host: `sudo ufw status`.
+  - Check whether Wi-Fi router has "AP isolation" or "guest network isolation" enabled, which blocks direct peer-to-peer communication between devices on Wi-Fi.
+  - If a VPN (Tailscale, WireGuard, OpenVPN, corporate VPN) is active, confirm both machines are routing traffic over the intended physical LAN subnet rather than split tunnels.
+- **Bind failure / Error exit 1 on startup**:
+  - `bind_address is not assigned to any local network interface`: The address specified with `--bind-address` must be actively assigned to an interface on the server machine. Check `ip -4 addr show`.
+  - `Address already in use`: Another process or previous server instance is already bound to port 4782. Terminate it with `killall darkpool_server` or select a different port.
+- **Invalid address rejection (exit 2)**:
+  - The server strictly rejects public IPs, wildcard `0.0.0.0`, multicast `224.0.0.0/4`, loopback aliases, or malformed strings. Only valid local RFC 1918 private IPv4 addresses are accepted for non-loopback binding.
 
 ### Moderator CLI Commands
 
@@ -116,6 +167,40 @@ The default port is `4782`. The client provides an interactive terminal CLI with
 14. **Cast Votes**: Each player casts an elimination vote, e.g. `vote 1` or `vote abstain`.
 15. **Resolve Votes**: Moderator types `resolve`. Eliminations and victory outcomes are announced.
 16. **Next Rounds**: If neither side has won, repeat steps 7–15 for Rounds 2 and 3. The final winner is announced when the Insider is eliminated (`EmployeesWin`), the company collapses (`InsiderWin`), or Round 3 concludes (`InsiderWin`).
+
+## Two-Computer Manual Acceptance Checklist (Trusted Private LAN)
+
+**Status:** `NOT RUN — requires two reachable LAN computers`
+> Automated single-host integration tests verify private address parsing, loopback default binding, interface assignment checking, and non-loopback interface socket handshakes. Physical two-computer cross-network acceptance requires two independent physical machines connected on the same physical subnet and is tracked via the checklist below:
+
+| Step | Verification Item | Expected Result | Acceptance Status |
+|---|---|---|:---:|
+| 1 | Discover Server IP | `ip -4 addr show` displays active RFC 1918 address (e.g. `192.168.1.50`). | Ready for run |
+| 2 | Start Server | `./build/darkpool_server --bind-address 192.168.1.50 4782` starts and prints bound address & security warning. | Ready for run |
+| 3 | Firewall Rule | Port 4782 restricted to subnet (`sudo ufw allow from 192.168.1.0/24 to any port 4782 proto tcp`). | Ready for run |
+| 4 | Connect Moderator | From Computer B: `./build/darkpool_client 192.168.1.50 4782 moderator` authenticates with token. | `NOT RUN` (physical 2-machine env required) |
+| 5 | Connect Players | Connect >= 5 players across Computer A and Computer B using `darkpool_client 192.168.1.50 4782 player`. | `NOT RUN` (physical 2-machine env required) |
+| 6 | Match Creation | Moderator runs `create 5`; receives `match_created` with 5 seats (1 Insider, 1 Investigator, 3 Employees). | `NOT RUN` (physical 2-machine env required) |
+| 7 | Player Joins & Role Privacy | Each player runs `join 1`; receives assigned private role. Confirm roles are never leaked to other terminals. | `NOT RUN` (physical 2-machine env required) |
+| 8 | Match Start & Round 1 Event | Moderator runs `start`, then `event 1`. Phase transitions to `Discussion` on all client terminals. | `NOT RUN` (physical 2-machine env required) |
+| 9 | Insider Hint Privacy | Insider runs `hint`; receives event impact 1. Confirm non-insiders cannot view or receive the hint. | `NOT RUN` (physical 2-machine env required) |
+| 10 | Trading Phase & Execution | Moderator opens trading; players submit `buy`/`sell`/`hold`; market resolves with conserved shares and updated price. | `NOT RUN` (physical 2-machine env required) |
+| 11 | Clue Investigation Privacy | Investigator runs `clue <target_id>`; receives private clue. Confirm result is private to investigator only. | `NOT RUN` (physical 2-machine env required) |
+| 12 | Voting Phase & Elimination | Moderator opens voting; players cast votes; vote resolution handles ties/eliminations accurately. | `NOT RUN` (physical 2-machine env required) |
+| 13 | Rounds 2 & 3 Progression | Complete rounds 2 and 3 through all phase transitions; verify deterministic outcome (`InsiderWin` / `EmployeesWin`). | `NOT RUN` (physical 2-machine env required) |
+| 14 | Post-Game Disconnect | Disconnect all clients; verify server remains responsive and cleans up all connection state cleanly. | `NOT RUN` (physical 2-machine env required) |
+
+## Deferred Future Work (Backlog)
+
+The following items are explicitly tracked as separate future milestones and are **not** implemented in this phase:
+
+1. **Remote Internet Play over TLS 1.3**: Encrypted transport layer replacing plaintext TCP sockets for public internet deployment.
+2. **Production-Grade Client/Player Authentication**: Individual cryptographically verified player identities, credentials, and token management.
+3. **Certificate Lifecycle & Rotation**: Automated ACME/Let's Encrypt certificate issuance, renewal, and dynamic TLS reload.
+4. **Public Deployment & Operational Monitoring**: Prometheus metrics export, Grafana dashboards, health-check endpoints, and paging/alerting.
+5. **Service Packaging & Supervision**: Systemd unit files, process supervision, auto-restart policies, rollback procedures, and hardening profiles.
+6. **Durable Match Persistence**: State journaling and crash-recovery to resume active matches across process restarts.
+7. **Distribution Bundling**: Standalone release archives and packaging workflows (deferred until explicitly scheduled).
 
 ## Engine API outline
 

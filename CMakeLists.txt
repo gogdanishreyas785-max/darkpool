@@ -101,12 +101,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> gameplay)
   add_test(NAME darkpool_variable_gameplay_e2e_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> variable-gameplay)
+  add_test(NAME darkpool_min_player_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> min-player)
+  set_tests_properties(darkpool_min_player_tests PROPERTIES TIMEOUT 30)
   add_test(NAME darkpool_malformed_tcp_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> malformed)
   set_tests_properties(darkpool_malformed_tcp_tests PROPERTIES TIMEOUT 30)
   add_test(NAME darkpool_unix_socket_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> unix)
   set_tests_properties(darkpool_unix_socket_tests PROPERTIES TIMEOUT 20)
+  add_test(NAME darkpool_lan_binding_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> lan-binding)
+  set_tests_properties(darkpool_lan_binding_tests PROPERTIES TIMEOUT 30)
 
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
   target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)
@@ -127,6 +133,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_regression_tests
     COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --selftest)
   set_tests_properties(darkpool_load_regression_tests PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_load_l1_functional
+    COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --smoke-run --players 5)
+  set_tests_properties(darkpool_load_l1_functional PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_load_l3_functional
+    COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --smoke-run --players 32)
+  set_tests_properties(darkpool_load_l3_functional PROPERTIES TIMEOUT 30)
   add_executable(darkpool_load_tests_64p tests/load_test_64p_harness.cpp)
   target_link_libraries(darkpool_load_tests_64p PRIVATE darkpool_network)
   darkpool_enable_warnings(darkpool_load_tests_64p)

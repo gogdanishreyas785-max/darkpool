@@ -33,6 +33,9 @@ struct L8FaultConfig {
   bool inject_cleanup_failure{false};
   bool inject_rate_limit_mutation{false};
   bool inject_flood_starvation{false};
+  bool inject_flood_skipped{false};
+  bool inject_absent_rate_limit_evidence{false};
+  bool inject_flood_transport_error{false};
 };
 
 struct L8RunResult {
@@ -56,7 +59,11 @@ struct L8RunResult {
 
   // Flood Isolation Concurrent Match Results
   int flood_requests_sent{0};
+  int flood_responses_received{0};
+  int flood_requests_accepted{0};
   int flood_requests_rate_limited{0};
+  int flood_transport_errors{0};
+  int flood_malformed_responses{0};
   bool healthy_match_passed{false};
   std::uint64_t healthy_match_id{0};
   std::string healthy_match_phase;
@@ -382,33 +389,81 @@ L8RunResult execute_l8_workload(
     result.peak_open_fds = peak_fds_opt.value_or(0);
     result.peak_open_fds_sample_ok = peak_fds_opt.has_value();
 
-    // Start background flooding thread
-    std::atomic<bool> stop_flooding{false};
-    std::atomic<int> flood_sent{0};
-    std::atomic<int> flood_limited{0};
+    // Set non-blocking mode on flood client socket
+    const int flood_fl = fcntl(flood1_fd, F_GETFL, 0);
+    if (flood_fl >= 0) {
+      (void)fcntl(flood1_fd, F_SETFL, flood_fl | O_NONBLOCK);
+    }
 
-    std::thread flood_thread([&]() {
+    // Start background flooding sender and draining receiver threads
+    std::atomic<bool> stop_flooding{false};
+    std::atomic<bool> stop_receiving{false};
+    std::atomic<int> flood_sent{0};
+    std::atomic<int> flood_received{0};
+    std::atomic<int> flood_accepted{0};
+    std::atomic<int> flood_limited{0};
+    std::atomic<int> flood_trans_err{0};
+    std::atomic<int> flood_malformed{0};
+
+    // Draining receiver thread: parses complete frames with FrameStream
+    std::thread receiver_thread([&]() {
       if (flood1_fd < 0) return;
-      const auto flood_frame = Frame(json{{"echo", "flood_ping"}}).serialize();
-      while (!stop_flooding) {
-        if (write(flood1_fd, flood_frame.data(), flood_frame.size()) > 0) {
-          flood_sent++;
-          // Read response
-          pollfd pfd{};
-          pfd.fd = flood1_fd;
-          pfd.events = POLLIN;
-          if (poll(&pfd, 1, 5) > 0) {
-            char buf[512];
-            const auto r = recv(flood1_fd, buf, sizeof(buf), MSG_DONTWAIT);
-            if (r > 4) {
-              const std::string resp_str(buf + 4, static_cast<std::size_t>(r - 4));
-              if (resp_str.find("rate limit exceeded") != std::string::npos) {
-                flood_limited++;
+      darkpool::network::FrameStream stream;
+      char rcv_buf[4096];
+      while (!stop_receiving) {
+        pollfd pfd{};
+        pfd.fd = flood1_fd;
+        pfd.events = POLLIN;
+        const int pr = poll(&pfd, 1, 5);
+        if (pr > 0 && (pfd.revents & POLLIN)) {
+          const ssize_t n = recv(flood1_fd, rcv_buf, sizeof(rcv_buf), MSG_DONTWAIT);
+          if (n > 0) {
+            try {
+              stream.feed(std::span<const char>(rcv_buf, static_cast<std::size_t>(n)));
+              Frame frame(json{});
+              while (stream.next(frame)) {
+                flood_received++;
+                const auto& payload = frame.payload();
+                if (payload.is_object() && payload.value("type", "") == "error" &&
+                    payload.value("error", "").find("rate limit exceeded") != std::string::npos) {
+                  flood_limited++;
+                } else if (payload.is_object() && payload.value("echo", "") == "flood_ping") {
+                  flood_accepted++;
+                } else {
+                  flood_malformed++;
+                }
               }
+            } catch (...) {
+              flood_malformed++;
             }
+          } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+            flood_trans_err++;
+            break;
           }
         }
-        std::this_thread::sleep_for(std::chrono::microseconds(500));
+      }
+    });
+
+    // High-rate sender thread: continuously blasts frames without waiting for responses
+    std::thread sender_thread([&]() {
+      if (flood1_fd < 0) return;
+      const auto flood_frame = Frame(json{{"echo", "flood_ping"}}).serialize();
+      while (!stop_flooding.load() || flood_sent.load() < 60) {
+        if (flood_sent.load() >= 100) {
+          if (stop_flooding.load()) break;
+          std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          continue;
+        }
+        const ssize_t wr = send(flood1_fd, flood_frame.data(), flood_frame.size(), MSG_NOSIGNAL);
+        if (wr > 0) {
+          flood_sent++;
+        } else if (wr < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          std::this_thread::yield();
+        } else if (wr < 0) {
+          flood_trans_err++;
+          break;
+        }
+        std::this_thread::yield();
       }
     });
 
@@ -420,6 +475,8 @@ L8RunResult execute_l8_workload(
           healthy_metrics, result.healthy_match_failures,
           expect_transition("Discussion"));
       if (!ev.has_value()) return false;
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
       const auto optr = timed_request(
           mod_fd,
@@ -443,6 +500,8 @@ L8RunResult execute_l8_workload(
           healthy_metrics, result.healthy_match_failures,
           expect_market_result());
       if (!mres.has_value()) return false;
+
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
 
       const auto opvt = timed_request(
           mod_fd,
@@ -501,10 +560,24 @@ L8RunResult execute_l8_workload(
     }
 
     stop_flooding = true;
-    flood_thread.join();
+    sender_thread.join();
+
+    // Drain receiver up to 500ms
+    const auto drain_start = std::chrono::steady_clock::now();
+    while (flood_received < flood_sent &&
+           std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - drain_start).count() < 500) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    stop_receiving = true;
+    receiver_thread.join();
 
     result.flood_requests_sent = flood_sent.load();
+    result.flood_responses_received = flood_received.load();
+    result.flood_requests_accepted = flood_accepted.load();
     result.flood_requests_rate_limited = flood_limited.load();
+    result.flood_transport_errors = flood_trans_err.load();
+    result.flood_malformed_responses = flood_malformed.load();
 
     // Compute healthy match metrics
     std::vector<std::uint64_t> lats;
@@ -567,6 +640,15 @@ L8RunResult execute_l8_workload(
   if (fault_cfg.inject_flood_starvation) {
     result.healthy_match_passed = false;
   }
+  if (fault_cfg.inject_flood_skipped) {
+    result.flood_requests_sent = 0;
+  }
+  if (fault_cfg.inject_absent_rate_limit_evidence) {
+    result.flood_requests_rate_limited = 0;
+  }
+  if (fault_cfg.inject_flood_transport_error) {
+    result.flood_transport_errors = 1;
+  }
 
   const bool rate_limit_ok = (result.burst_requests_accepted == 40) &&
                              result.over_burst_rejected &&
@@ -578,7 +660,13 @@ L8RunResult execute_l8_workload(
                             result.malformed_json_closed &&
                             result.server_survived_malformed;
 
-  const bool flood_ok = result.healthy_match_passed &&
+  const bool flood_rate_limiting_triggered = (result.flood_requests_sent > 40) &&
+                                             (result.flood_requests_rate_limited > 0) &&
+                                             (result.flood_transport_errors == 0) &&
+                                             (result.flood_malformed_responses == 0);
+
+  const bool flood_ok = flood_rate_limiting_triggered &&
+                        result.healthy_match_passed &&
                         (result.healthy_match_failures.total() == 0);
 
   const bool resources_ok = result.baseline_open_fds_sample_ok &&
@@ -595,7 +683,10 @@ L8RunResult execute_l8_workload(
                       !fault_cfg.inject_missing_rss_sample &&
                       !fault_cfg.inject_cleanup_failure &&
                       !fault_cfg.inject_rate_limit_mutation &&
-                      !fault_cfg.inject_flood_starvation;
+                      !fault_cfg.inject_flood_starvation &&
+                      !fault_cfg.inject_flood_skipped &&
+                      !fault_cfg.inject_absent_rate_limit_evidence &&
+                      !fault_cfg.inject_flood_transport_error;
 
   if (!result.run_passed && result.failure_reason.empty()) {
     if (!rate_limit_ok) {
@@ -603,7 +694,21 @@ L8RunResult execute_l8_workload(
     } else if (!malformed_ok) {
       result.failure_reason = "Malformed frame safety tests failed";
     } else if (!flood_ok) {
-      result.failure_reason = "Flood isolation test failed: healthy match did not complete";
+      if (!flood_rate_limiting_triggered) {
+        if (result.flood_requests_sent <= 40) {
+          result.failure_reason = "Flood isolation test failed: flood volume insufficient (sent " +
+                                  std::to_string(result.flood_requests_sent) + " <= 40)";
+        } else if (result.flood_requests_rate_limited == 0) {
+          result.failure_reason = "Flood isolation test failed: zero rate-limited responses observed (sent " +
+                                  std::to_string(result.flood_requests_sent) + ")";
+        } else if (result.flood_transport_errors > 0) {
+          result.failure_reason = "Flood isolation test failed: transport error observed on flood client";
+        } else {
+          result.failure_reason = "Flood isolation test failed: malformed response observed on flood client";
+        }
+      } else {
+        result.failure_reason = "Flood isolation test failed: healthy match did not complete successfully";
+      }
     } else if (!resources_ok) {
       result.failure_reason = "Resource telemetry or cleanup check failed: " + result.cleanup_failure_reason;
     } else {
@@ -671,7 +776,11 @@ inline json serialize_l8_results(const L8RunResult& r, const std::string& commit
 
   j["flood_isolation_workload"] = json{
       {"flood_requests_sent", r.flood_requests_sent},
+      {"flood_responses_received", r.flood_responses_received},
+      {"flood_requests_accepted", r.flood_requests_accepted},
       {"flood_requests_rate_limited", r.flood_requests_rate_limited},
+      {"flood_transport_errors", r.flood_transport_errors},
+      {"flood_malformed_responses", r.flood_malformed_responses},
       {"healthy_match_id", r.healthy_match_id},
       {"healthy_match_status", r.healthy_match_passed ? "PASS" : "FAIL"},
       {"healthy_match_phase", r.healthy_match_phase},
@@ -767,6 +876,45 @@ int run_l8_selftest_suite(const std::string& server_bin, const std::string& sock
        },
        false},
 
+      {"Injected flood skipped forces nonzero exit",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kL8ModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         L8FaultConfig cfg;
+         cfg.inject_flood_skipped = true;
+         const auto r = execute_l8_workload(pid, sock, kL8ModeratorToken, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
+      {"Injected absent rate limit evidence forces nonzero exit",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kL8ModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         L8FaultConfig cfg;
+         cfg.inject_absent_rate_limit_evidence = true;
+         const auto r = execute_l8_workload(pid, sock, kL8ModeratorToken, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
+      {"Injected flood transport error forces nonzero exit",
+       [](const std::string& srv, const std::string& sock) {
+         pid_t pid = spawn_server_unix(srv, sock, kL8ModeratorToken);
+         if (pid <= 0) return 1;
+         const auto base_fds = sample_baseline_fds_probed(pid, sock);
+         L8FaultConfig cfg;
+         cfg.inject_flood_transport_error = true;
+         const auto r = execute_l8_workload(pid, sock, kL8ModeratorToken, base_fds, cfg);
+         stop_server_unix(pid, sock);
+         return r.run_passed ? 0 : 1;
+       },
+       false},
+
       {"Injected cleanup failure forces nonzero exit",
        [](const std::string& srv, const std::string& sock) {
          pid_t pid = spawn_server_unix(srv, sock, kL8ModeratorToken);
@@ -835,6 +983,7 @@ int main(int argc, char* argv[]) {
     std::cerr << "Usage: darkpool_load_tests_l8 <server_binary_path> [options]\n"
               << "Options:\n"
               << "  --out <path>   JSON output report path\n"
+              << "  --runs <N>     Number of repeatable runs (default 1)\n"
               << "  --functional   Run standard functional workload\n"
               << "  --selftest     Run regression selftest suite\n";
     return 1;
@@ -843,6 +992,7 @@ int main(int argc, char* argv[]) {
   const std::string server_bin = argv[1];
   std::string out_path;
   bool selftest_mode = false;
+  int repeat_runs = 1;
 
   for (int i = 2; i < argc; ++i) {
     const std::string arg = argv[i];
@@ -852,6 +1002,8 @@ int main(int argc, char* argv[]) {
       // standard functional mode
     } else if (arg == "--out" && i + 1 < argc) {
       out_path = argv[++i];
+    } else if (arg == "--runs" && i + 1 < argc) {
+      repeat_runs = std::max(1, std::atoi(argv[++i]));
     }
   }
 
@@ -864,41 +1016,72 @@ int main(int argc, char* argv[]) {
   std::cout << "=================================================================\n";
   std::cout << " DARKPOOL L8 Malformed Traffic & Request Flood Protection Benchmark\n";
   std::cout << " 20 req/s, Burst 40 | 4 KiB Frames | Concurrent Flood Isolation\n";
+  std::cout << " Planned Runs : " << repeat_runs << '\n';
   std::cout << "=================================================================\n";
 
-  pid_t server_pid = spawn_server_unix(server_bin, socket_path, kL8ModeratorToken);
-  if (server_pid <= 0) {
-    std::cerr << "error: failed to start server at " << socket_path << '\n';
-    return 1;
+  std::vector<L8RunResult> all_results;
+  bool all_passed = true;
+
+  for (int r = 1; r <= repeat_runs; ++r) {
+    const std::string run_sock = generate_unique_socket_path();
+    pid_t server_pid = spawn_server_unix(server_bin, run_sock, kL8ModeratorToken);
+    if (server_pid <= 0) {
+      std::cerr << "error: failed to start server at " << run_sock << '\n';
+      return 1;
+    }
+
+    const auto baseline_fds = sample_baseline_fds_probed(server_pid, run_sock);
+    if (!baseline_fds.has_value()) {
+      std::cerr << "error: failed to sample baseline open file descriptors\n";
+      stop_server_unix(server_pid, run_sock);
+      return 1;
+    }
+
+    std::cout << "[Run " << r << "/" << repeat_runs << "] Executing L8 workload... " << std::flush;
+    const auto res = execute_l8_workload(server_pid, run_sock, kL8ModeratorToken, baseline_fds);
+    stop_server_unix(server_pid, run_sock);
+    all_results.push_back(res);
+
+    if (!res.run_passed) {
+      all_passed = false;
+      std::cout << "FAILED: " << res.failure_reason << '\n';
+    } else {
+      std::cout << "PASSED (" << res.duration_ms << " ms, "
+                << "burst=" << res.burst_requests_accepted << "/40, "
+                << "flood sent=" << res.flood_requests_sent << ", "
+                << "limited=" << res.flood_requests_rate_limited << ", "
+                << "sibling p95=" << res.healthy_match_metrics.p95_ms << " ms)\n";
+    }
   }
 
-  const auto baseline_fds = sample_baseline_fds_probed(server_pid, socket_path);
-  if (!baseline_fds.has_value()) {
-    std::cerr << "error: failed to sample baseline open file descriptors\n";
-    stop_server_unix(server_pid, socket_path);
-    return 1;
-  }
+  const auto& last_res = all_results.back();
 
-  const auto res = execute_l8_workload(server_pid, socket_path, kL8ModeratorToken, baseline_fds);
-
-  stop_server_unix(server_pid, socket_path);
-
-  std::cout << "\n--> Workload Results:\n";
-  std::cout << "    Status                     : " << (res.run_passed ? "PASS" : "FAIL") << '\n';
-  std::cout << "    Duration                   : " << res.duration_ms << " ms\n";
-  std::cout << "    Burst Accepted             : " << res.burst_requests_accepted << "/40\n";
-  std::cout << "    Over-Burst Rejected        : " << (res.over_burst_rejected ? "YES" : "NO") << '\n';
-  std::cout << "    Refill Recovery            : " << (res.token_refill_recovery_ok ? "YES" : "NO") << '\n';
-  std::cout << "    Oversized Frame Closed     : " << (res.oversized_frame_closed ? "YES" : "NO") << '\n';
-  std::cout << "    Malformed JSON Closed      : " << (res.malformed_json_closed ? "YES" : "NO") << '\n';
-  std::cout << "    Flood Requests Sent        : " << res.flood_requests_sent << '\n';
-  std::cout << "    Flood Requests Rate-Limited: " << res.flood_requests_rate_limited << '\n';
-  std::cout << "    Healthy Match Status       : " << (res.healthy_match_passed ? "PASS" : "FAIL") << '\n';
-  std::cout << "    Healthy Latency p95        : " << res.healthy_match_metrics.p95_ms << " ms\n";
-  std::cout << "    Settled FDs                : " << res.post_cleanup_open_fds << " (baseline: " << *baseline_fds << ")\n";
+  std::cout << "\n--> Final Aggregate Summary:\n";
+  std::cout << "    Status                     : " << (all_passed ? "PASS" : "FAIL") << '\n';
+  std::cout << "    Repeat Runs                : " << repeat_runs << '\n';
+  std::cout << "    Burst Accepted             : " << last_res.burst_requests_accepted << "/40\n";
+  std::cout << "    Over-Burst Rejected        : " << (last_res.over_burst_rejected ? "YES" : "NO") << '\n';
+  std::cout << "    Refill Recovery            : " << (last_res.token_refill_recovery_ok ? "YES" : "NO") << '\n';
+  std::cout << "    Oversized Frame Closed     : " << (last_res.oversized_frame_closed ? "YES" : "NO") << '\n';
+  std::cout << "    Malformed JSON Closed      : " << (last_res.malformed_json_closed ? "YES" : "NO") << '\n';
+  std::cout << "    Flood Requests Sent        : " << last_res.flood_requests_sent << '\n';
+  std::cout << "    Flood Requests Rate-Limited: " << last_res.flood_requests_rate_limited << '\n';
+  std::cout << "    Healthy Match Status       : " << (last_res.healthy_match_passed ? "PASS" : "FAIL") << '\n';
+  std::cout << "    Healthy Latency p95        : " << last_res.healthy_match_metrics.p95_ms << " ms\n";
+  std::cout << "    Settled FDs                : " << last_res.post_cleanup_open_fds
+            << " (baseline: " << last_res.baseline_open_fds << ")\n";
 
   if (!out_path.empty()) {
-    const auto j = serialize_l8_results(res, DARKPOOL_SOURCE_COMMIT);
+    auto j = serialize_l8_results(last_res, DARKPOOL_SOURCE_COMMIT);
+    j["status"] = all_passed ? "PASS" : "FAIL";
+    j["repeat_runs"] = repeat_runs;
+    j["all_runs_passed"] = all_passed;
+    json runs_array = json::array();
+    for (const auto& r : all_results) {
+      runs_array.push_back(serialize_l8_results(r, DARKPOOL_SOURCE_COMMIT));
+    }
+    j["runs"] = runs_array;
+
     std::ofstream out_file(out_path);
     if (out_file.is_open()) {
       out_file << j.dump(2) << '\n';
@@ -910,9 +1093,9 @@ int main(int argc, char* argv[]) {
   }
 
   std::cout << "\n=================================================================\n";
-  std::cout << " L8 BENCHMARK " << (res.run_passed ? "PASSED (100% OK)" : "FAILED") << '\n';
+  std::cout << " L8 BENCHMARK " << (all_passed ? "PASSED (100% OK)" : "FAILED") << '\n';
   std::cout << "=================================================================\n";
-  return res.run_passed ? 0 : 1;
+  return all_passed ? 0 : 1;
 }
 
 #endif

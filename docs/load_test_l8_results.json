@@ -1,5 +1,6 @@
 {
-  "duration_ms": 196,
+  "all_runs_passed": true,
+  "duration_ms": 241,
   "environment": {
     "compiler": "GCC",
     "machine": "x86_64",
@@ -9,16 +10,20 @@
   },
   "failure_reason": "",
   "flood_isolation_workload": {
-    "flood_requests_rate_limited": 0,
-    "flood_requests_sent": 16,
+    "flood_malformed_responses": 0,
+    "flood_requests_accepted": 40,
+    "flood_requests_rate_limited": 60,
+    "flood_requests_sent": 100,
+    "flood_responses_received": 100,
+    "flood_transport_errors": 0,
     "healthy_match_id": 2,
     "healthy_match_latency": {
-      "max_ms": 0.477,
-      "mean_ms": 0.25552542372881354,
-      "min_ms": 0.097,
-      "p50_ms": 0.248,
-      "p95_ms": 0.399,
-      "p99_ms": 0.477
+      "max_ms": 1.22,
+      "mean_ms": 0.3440169491525424,
+      "min_ms": 0.122,
+      "p50_ms": 0.319,
+      "p95_ms": 0.495,
+      "p99_ms": 1.22
     },
     "healthy_match_outcome": "InsiderWin",
     "healthy_match_phase": "Finished",
@@ -52,26 +57,272 @@
     "state_mutation_prevented": true,
     "token_refill_recovery_ok": true
   },
+  "repeat_runs": 3,
   "resource_telemetry": {
     "baseline_open_fds": 8,
     "baseline_open_fds_sample_ok": true,
-    "baseline_rss_kb": 3668,
+    "baseline_rss_kb": 3612,
     "cleanup_failure_reason": "",
     "cleanup_settle_time_ms": 10,
     "immediate_post_cleanup_open_fds": 14,
     "immediate_post_cleanup_sample_ok": true,
     "peak_open_fds": 19,
     "peak_open_fds_sample_ok": true,
-    "peak_rss_kb": 3936,
+    "peak_rss_kb": 3948,
     "peak_rss_sample_ok": true,
     "post_cleanup_open_fds": 8,
-    "post_cleanup_rss_kb": 3936,
+    "post_cleanup_rss_kb": 3948,
     "post_cleanup_rss_sample_ok": true,
     "post_cleanup_sample_ok": true,
     "post_cleanup_settled": true
   },
-  "source_commit": "bfe240cee5ffaf23c9a92c29e5f06fb11f133e11",
+  "runs": [
+    {
+      "duration_ms": 237,
+      "environment": {
+        "compiler": "GCC",
+        "machine": "x86_64",
+        "os": "Linux",
+        "release": "6.18.54.1-microsoft-standard-WSL2",
+        "sysname": "Linux"
+      },
+      "failure_reason": "",
+      "flood_isolation_workload": {
+        "flood_malformed_responses": 0,
+        "flood_requests_accepted": 40,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
+        "flood_transport_errors": 0,
+        "healthy_match_id": 2,
+        "healthy_match_latency": {
+          "max_ms": 0.963,
+          "mean_ms": 0.3055762711864407,
+          "min_ms": 0.135,
+          "p50_ms": 0.268,
+          "p95_ms": 0.846,
+          "p99_ms": 0.963
+        },
+        "healthy_match_outcome": "InsiderWin",
+        "healthy_match_phase": "Finished",
+        "healthy_match_requests": {
+          "correctness_failures": 0,
+          "expected_rejections": 0,
+          "successful": 59,
+          "total": 59,
+          "transport_failures": 0
+        },
+        "healthy_match_status": "PASS"
+      },
+      "git_dirty": false,
+      "malformed_traffic_tests": {
+        "malformed_json_closed": true,
+        "oversized_frame_closed": true,
+        "server_survived_malformed": true
+      },
+      "policy": {
+        "approved_decision": "DEC-11",
+        "burst_capacity": 40.0,
+        "max_frame_payload_bytes": 4096,
+        "request_rate_per_sec": 20.0
+      },
+      "rate_limiter_boundary_tests": {
+        "burst_requests_accepted": 40,
+        "burst_requests_sent": 40,
+        "connection_usable_after_rate_limit": true,
+        "over_burst_rejected": true,
+        "rejection_error_message": "rate limit exceeded",
+        "state_mutation_prevented": true,
+        "token_refill_recovery_ok": true
+      },
+      "resource_telemetry": {
+        "baseline_open_fds": 8,
+        "baseline_open_fds_sample_ok": true,
+        "baseline_rss_kb": 3592,
+        "cleanup_failure_reason": "",
+        "cleanup_settle_time_ms": 10,
+        "immediate_post_cleanup_open_fds": 16,
+        "immediate_post_cleanup_sample_ok": true,
+        "peak_open_fds": 19,
+        "peak_open_fds_sample_ok": true,
+        "peak_rss_kb": 3924,
+        "peak_rss_sample_ok": true,
+        "post_cleanup_open_fds": 8,
+        "post_cleanup_rss_kb": 3924,
+        "post_cleanup_rss_sample_ok": true,
+        "post_cleanup_sample_ok": true,
+        "post_cleanup_settled": true
+      },
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
+      "status": "PASS",
+      "test_name": "darkpool_load_tests_l8",
+      "timestamp_utc": "2026-10-16T04:38:48Z"
+    },
+    {
+      "duration_ms": 237,
+      "environment": {
+        "compiler": "GCC",
+        "machine": "x86_64",
+        "os": "Linux",
+        "release": "6.18.54.1-microsoft-standard-WSL2",
+        "sysname": "Linux"
+      },
+      "failure_reason": "",
+      "flood_isolation_workload": {
+        "flood_malformed_responses": 0,
+        "flood_requests_accepted": 40,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
+        "flood_transport_errors": 0,
+        "healthy_match_id": 2,
+        "healthy_match_latency": {
+          "max_ms": 0.652,
+          "mean_ms": 0.3029322033898305,
+          "min_ms": 0.172,
+          "p50_ms": 0.299,
+          "p95_ms": 0.499,
+          "p99_ms": 0.652
+        },
+        "healthy_match_outcome": "InsiderWin",
+        "healthy_match_phase": "Finished",
+        "healthy_match_requests": {
+          "correctness_failures": 0,
+          "expected_rejections": 0,
+          "successful": 59,
+          "total": 59,
+          "transport_failures": 0
+        },
+        "healthy_match_status": "PASS"
+      },
+      "git_dirty": false,
+      "malformed_traffic_tests": {
+        "malformed_json_closed": true,
+        "oversized_frame_closed": true,
+        "server_survived_malformed": true
+      },
+      "policy": {
+        "approved_decision": "DEC-11",
+        "burst_capacity": 40.0,
+        "max_frame_payload_bytes": 4096,
+        "request_rate_per_sec": 20.0
+      },
+      "rate_limiter_boundary_tests": {
+        "burst_requests_accepted": 40,
+        "burst_requests_sent": 40,
+        "connection_usable_after_rate_limit": true,
+        "over_burst_rejected": true,
+        "rejection_error_message": "rate limit exceeded",
+        "state_mutation_prevented": true,
+        "token_refill_recovery_ok": true
+      },
+      "resource_telemetry": {
+        "baseline_open_fds": 8,
+        "baseline_open_fds_sample_ok": true,
+        "baseline_rss_kb": 3608,
+        "cleanup_failure_reason": "",
+        "cleanup_settle_time_ms": 10,
+        "immediate_post_cleanup_open_fds": 19,
+        "immediate_post_cleanup_sample_ok": true,
+        "peak_open_fds": 19,
+        "peak_open_fds_sample_ok": true,
+        "peak_rss_kb": 3948,
+        "peak_rss_sample_ok": true,
+        "post_cleanup_open_fds": 8,
+        "post_cleanup_rss_kb": 3948,
+        "post_cleanup_rss_sample_ok": true,
+        "post_cleanup_sample_ok": true,
+        "post_cleanup_settled": true
+      },
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
+      "status": "PASS",
+      "test_name": "darkpool_load_tests_l8",
+      "timestamp_utc": "2026-10-16T04:38:48Z"
+    },
+    {
+      "duration_ms": 241,
+      "environment": {
+        "compiler": "GCC",
+        "machine": "x86_64",
+        "os": "Linux",
+        "release": "6.18.54.1-microsoft-standard-WSL2",
+        "sysname": "Linux"
+      },
+      "failure_reason": "",
+      "flood_isolation_workload": {
+        "flood_malformed_responses": 0,
+        "flood_requests_accepted": 40,
+        "flood_requests_rate_limited": 60,
+        "flood_requests_sent": 100,
+        "flood_responses_received": 100,
+        "flood_transport_errors": 0,
+        "healthy_match_id": 2,
+        "healthy_match_latency": {
+          "max_ms": 1.22,
+          "mean_ms": 0.3440169491525424,
+          "min_ms": 0.122,
+          "p50_ms": 0.319,
+          "p95_ms": 0.495,
+          "p99_ms": 1.22
+        },
+        "healthy_match_outcome": "InsiderWin",
+        "healthy_match_phase": "Finished",
+        "healthy_match_requests": {
+          "correctness_failures": 0,
+          "expected_rejections": 0,
+          "successful": 59,
+          "total": 59,
+          "transport_failures": 0
+        },
+        "healthy_match_status": "PASS"
+      },
+      "git_dirty": false,
+      "malformed_traffic_tests": {
+        "malformed_json_closed": true,
+        "oversized_frame_closed": true,
+        "server_survived_malformed": true
+      },
+      "policy": {
+        "approved_decision": "DEC-11",
+        "burst_capacity": 40.0,
+        "max_frame_payload_bytes": 4096,
+        "request_rate_per_sec": 20.0
+      },
+      "rate_limiter_boundary_tests": {
+        "burst_requests_accepted": 40,
+        "burst_requests_sent": 40,
+        "connection_usable_after_rate_limit": true,
+        "over_burst_rejected": true,
+        "rejection_error_message": "rate limit exceeded",
+        "state_mutation_prevented": true,
+        "token_refill_recovery_ok": true
+      },
+      "resource_telemetry": {
+        "baseline_open_fds": 8,
+        "baseline_open_fds_sample_ok": true,
+        "baseline_rss_kb": 3612,
+        "cleanup_failure_reason": "",
+        "cleanup_settle_time_ms": 10,
+        "immediate_post_cleanup_open_fds": 14,
+        "immediate_post_cleanup_sample_ok": true,
+        "peak_open_fds": 19,
+        "peak_open_fds_sample_ok": true,
+        "peak_rss_kb": 3948,
+        "peak_rss_sample_ok": true,
+        "post_cleanup_open_fds": 8,
+        "post_cleanup_rss_kb": 3948,
+        "post_cleanup_rss_sample_ok": true,
+        "post_cleanup_sample_ok": true,
+        "post_cleanup_settled": true
+      },
+      "source_commit": "50888910e0b3874622e30da264c138be08337d64",
+      "status": "PASS",
+      "test_name": "darkpool_load_tests_l8",
+      "timestamp_utc": "2026-10-16T04:38:48Z"
+    }
+  ],
+  "source_commit": "50888910e0b3874622e30da264c138be08337d64",
   "status": "PASS",
   "test_name": "darkpool_load_tests_l8",
-  "timestamp_utc": "2026-10-16T03:23:53Z"
+  "timestamp_utc": "2026-10-16T04:38:48Z"
 }

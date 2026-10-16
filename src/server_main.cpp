@@ -12,12 +12,14 @@ int main() {
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
 
+#include <arpa/inet.h>
 #include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ifaddrs.h>
 #include <iostream>
 #include <map>
 #include <netinet/in.h>
@@ -391,17 +393,94 @@ void accept_clients(int listener, int epoll_fd,
   }
 }
 
+bool validate_bind_address(const std::string& ip_str, std::string& error_msg) {
+  if (ip_str.empty()) {
+    error_msg = "bind address cannot be empty";
+    return false;
+  }
+  if (ip_str.find(':') != std::string::npos) {
+    error_msg = "IPv6 addresses are not supported in this IPv4-only milestone; must specify an IPv4 address";
+    return false;
+  }
+  struct in_addr in {};
+  if (inet_pton(AF_INET, ip_str.c_str(), &in) <= 0) {
+    error_msg = "malformed IPv4 address '" + ip_str + "'";
+    return false;
+  }
+  char canonical[INET_ADDRSTRLEN];
+  if (inet_ntop(AF_INET, &in, canonical, sizeof(canonical)) == nullptr || ip_str != canonical) {
+    error_msg = "malformed or non-canonical IPv4 address format '" + ip_str + "'";
+    return false;
+  }
+  const std::uint32_t host_ip = ntohl(in.s_addr);
+  if (host_ip == 0U) {
+    error_msg = "unspecified address 0.0.0.0 is not allowed; must specify an assigned unicast IPv4 address";
+    return false;
+  }
+  // Multicast: 224.0.0.0/4 (224.0.0.0 - 239.255.255.255)
+  if ((host_ip >> 28U) == 0xEU) {
+    error_msg = "multicast address is not allowed";
+    return false;
+  }
+  // Broadcast or reserved: 240.0.0.0/4 (240.0.0.0 - 255.255.255.255), including 255.255.255.255
+  if ((host_ip >> 28U) == 0xFU) {
+    error_msg = "broadcast or reserved address is not allowed";
+    return false;
+  }
+  // Check loopback: 127.0.0.0/8
+  const bool is_loopback = ((host_ip >> 24U) == 127U);
+  // Check RFC1918 private IPv4:
+  // 10.0.0.0/8 (10.0.0.0 - 10.255.255.255)
+  const bool is_10_net = ((host_ip >> 24U) == 10U);
+  // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255) -> host_ip between 0xAC100000 and 0xAC1FFFFF
+  const bool is_172_net = (host_ip >= 0xAC100000U && host_ip <= 0xAC1FFFFFU);
+  // 192.168.0.0/16 (192.168.0.0 - 192.168.255.255) -> (host_ip >> 16U) == 0xC0A8U
+  const bool is_192_net = ((host_ip >> 16U) == 0xC0A8U);
+
+  if (!is_loopback && !is_10_net && !is_172_net && !is_192_net) {
+    error_msg = "bind address must be an RFC1918 private IPv4 address (10.0.0.0/8, 172.16.0.0/12, or 192.168.0.0/16) or loopback (127.0.0.0/8); public or non-LAN address '" + ip_str + "' is rejected";
+    return false;
+  }
+  return true;
+}
+
+bool is_address_assigned_to_local_interface(const std::string& ip_str) {
+  struct ifaddrs *ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) == -1) {
+    return false;
+  }
+  bool found = false;
+  for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+    if (ifa->ifa_addr == nullptr) continue;
+    if (ifa->ifa_addr->sa_family == AF_INET) {
+      char host[INET_ADDRSTRLEN];
+      auto *sa = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+      if (inet_ntop(AF_INET, &(sa->sin_addr), host, sizeof(host)) != nullptr) {
+        if (ip_str == host) {
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+  freeifaddrs(ifaddr);
+  return found;
+}
+
 struct ServerConfig {
   bool enable_tcp{false};
   std::uint16_t tcp_port{kDefaultPort};
+  std::string bind_address{"127.0.0.1"};
+  bool explicit_bind_address{false};
   bool enable_unix{false};
   std::string unix_path;
 };
 
-bool parse_server_args(int argc, char **argv, ServerConfig &config) {
+bool parse_server_args(int argc, char **argv, ServerConfig &config, std::string &error_msg) {
   if (argc == 1) {
     config.enable_tcp = true;
     config.tcp_port = kDefaultPort;
+    config.bind_address = "127.0.0.1";
     config.enable_unix = true;
     const char *env_path = std::getenv("DARKPOOL_SOCKET_PATH");
     config.unix_path =
@@ -419,14 +498,56 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config) {
       config.enable_unix = false;
       explicit_unix = true;
     } else if (arg == "--port" || arg == "-p") {
-      if (i + 1 >= argc)
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --port";
         return false;
-      if (!parse_port(argv[++i], config.tcp_port))
+      }
+      if (!parse_port(argv[++i], config.tcp_port)) {
+        error_msg = "invalid port argument";
         return false;
+      }
+      config.enable_tcp = true;
+    } else if (arg.rfind("--port=", 0) == 0) {
+      std::uint16_t p = 0;
+      if (!parse_port(std::string(arg.substr(7)).c_str(), p)) {
+        error_msg = "invalid port argument";
+        return false;
+      }
+      config.tcp_port = p;
+      config.enable_tcp = true;
+    } else if (arg == "--bind-address" || arg == "-b") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --bind-address";
+        return false;
+      }
+      const std::string addr = argv[++i];
+      if (!validate_bind_address(addr, error_msg)) {
+        return false;
+      }
+      config.bind_address = addr;
+      config.explicit_bind_address = true;
+      config.enable_tcp = true;
+    } else if (arg.rfind("--bind-address=", 0) == 0) {
+      const std::string addr = std::string(arg.substr(15));
+      if (!validate_bind_address(addr, error_msg)) {
+        return false;
+      }
+      config.bind_address = addr;
+      config.explicit_bind_address = true;
+      config.enable_tcp = true;
+    } else if (arg.rfind("-b=", 0) == 0) {
+      const std::string addr = std::string(arg.substr(3));
+      if (!validate_bind_address(addr, error_msg)) {
+        return false;
+      }
+      config.bind_address = addr;
+      config.explicit_bind_address = true;
       config.enable_tcp = true;
     } else if (arg == "--socket" || arg == "-s") {
-      if (i + 1 >= argc)
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --socket";
         return false;
+      }
       config.unix_path = argv[++i];
       config.enable_unix = true;
       explicit_unix = true;
@@ -434,12 +555,6 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config) {
       config.unix_path = arg.substr(9);
       config.enable_unix = true;
       explicit_unix = true;
-    } else if (arg.rfind("--port=", 0) == 0) {
-      std::uint16_t p = 0;
-      if (!parse_port(std::string(arg.substr(7)).c_str(), p))
-        return false;
-      config.tcp_port = p;
-      config.enable_tcp = true;
     } else {
       std::uint16_t p = 0;
       if (parse_port(argv[i], p)) {
@@ -466,10 +581,22 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config) {
 
 int main(int argc, char **argv) {
   ServerConfig config;
-  if (!parse_server_args(argc, argv, config)) {
-    std::cerr << "usage: darkpool_server [--port <port>] [--socket <path>] "
+  std::string arg_error;
+  if (!parse_server_args(argc, argv, config, arg_error)) {
+    if (!arg_error.empty()) {
+      std::cerr << "error: " << arg_error << '\n';
+    }
+    std::cerr << "usage: darkpool_server [--bind-address <IPv4>] [--port <port>] [--socket <path>] "
                  "[--no-tcp] [--no-unix] [port] [socket_path]\n";
     return 2;
+  }
+
+  if (config.enable_tcp) {
+    if (!is_address_assigned_to_local_interface(config.bind_address)) {
+      std::cerr << "error: requested bind address " << config.bind_address
+                << " is not assigned to any local network interface\n";
+      return 1;
+    }
   }
 
   int tcp_listener = -1;
@@ -486,11 +613,16 @@ int main(int argc, char **argv) {
     sockaddr_in address{};
     address.sin_family = AF_INET;
     address.sin_port = htons(config.tcp_port);
-    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (inet_pton(AF_INET, config.bind_address.c_str(), &address.sin_addr) <= 0) {
+      std::cerr << "tcp invalid address: " << config.bind_address << '\n';
+      (void)close(tcp_listener);
+      return 1;
+    }
     if (bind(tcp_listener, reinterpret_cast<sockaddr *>(&address),
              sizeof(address)) < 0 ||
         listen(tcp_listener, 16) < 0) {
-      std::cerr << "tcp bind/listen: " << std::strerror(errno) << '\n';
+      std::cerr << "tcp bind/listen on " << config.bind_address << ":" << config.tcp_port
+                << ": " << std::strerror(errno) << '\n';
       (void)close(tcp_listener);
       return 1;
     }
@@ -566,7 +698,11 @@ int main(int argc, char **argv) {
   std::size_t moderators = 0;
 
   if (config.enable_tcp) {
-    std::cout << "darkpool_server listening on port " << config.tcp_port
+    if (config.bind_address != "127.0.0.1") {
+      std::cout << "WARNING: LAN binding enabled on " << config.bind_address
+                << ". The LAN transport is plaintext and unencrypted; do NOT expose this server to untrusted networks or the public internet!\n";
+    }
+    std::cout << "darkpool_server listening on " << config.bind_address << ":" << config.tcp_port
               << '\n';
   }
   if (config.enable_unix) {

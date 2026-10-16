@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <fcntl.h>
+#include <ifaddrs.h>
 #include <iostream>
 #include <string>
 #include <sys/socket.h>
@@ -324,8 +325,10 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
   const auto created = request_json(moderator, create_match);
   CHECK(created && (*created)["type"] == "match_created");
   CHECK(created && (*created)["player_count"] == player_count);
-  const auto expected_counts = player_count == 5U ? std::array<std::size_t, 3>{1U, 1U, 3U}
-      : std::array<std::size_t, 3>{1U, 1U, 6U};
+  const auto expected_insiders = 1U + (player_count - 1U) / 8U;
+  const auto expected_investigators = 1U + (player_count - 1U) / 16U;
+  const auto expected_employees = player_count - expected_insiders - expected_investigators;
+  const std::array<std::size_t, 3> expected_counts{expected_insiders, expected_investigators, expected_employees};
   CHECK(created && (*created)["insiders"] == expected_counts[0] &&
         (*created)["investigators"] == expected_counts[1] && (*created)["employees"] == expected_counts[2]);
   if (!created || !created->contains("match_id")) { cleanup(); return; }
@@ -336,6 +339,11 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
   std::uint64_t employee_target = 0;
   std::size_t insiders = 0, investigators = 0, employees = 0;
   for (std::size_t i = 0; i < players.size(); ++i) {
+    if (i == players.size() - 1U) {
+      const auto premature_start = command(moderator, match_id, "start_match");
+      CHECK(premature_start && (*premature_start)["type"] == "error" &&
+            (*premature_start)["error"] == "all configured players must join before start");
+    }
     const auto joined = request_json(players[i], json{{"type", "join_match"}, {"match_id", match_id}});
     CHECK(joined && (*joined)["type"] == "joined_match");
     CHECK(joined && (*joined)["player_id"] == i + 1U);
@@ -1397,17 +1405,409 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
   }
 }
 
+int run_server_exit_code(const char* server_path, const std::vector<std::string>& args) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    const int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null >= 0) {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    std::vector<const char*> argv;
+    argv.push_back(server_path);
+    for (const auto& a : args) {
+      argv.push_back(a.c_str());
+    }
+    argv.push_back(nullptr);
+    execv(server_path, const_cast<char* const*>(argv.data()));
+    _exit(127);
+  }
+  int status = 0;
+  waitpid(child, &status, 0);
+  if (WIFEXITED(status)) {
+    return WEXITSTATUS(status);
+  }
+  return -1;
+}
+
+pid_t spawn_server_proc(const char* server_path, const std::vector<std::string>& args) {
+  const auto child = fork();
+  if (child < 0) return -1;
+  if (child == 0) {
+    const int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null >= 0) {
+      dup2(dev_null, STDOUT_FILENO);
+      dup2(dev_null, STDERR_FILENO);
+      close(dev_null);
+    }
+    std::vector<const char*> argv;
+    argv.push_back(server_path);
+    for (const auto& a : args) {
+      argv.push_back(a.c_str());
+    }
+    argv.push_back(nullptr);
+    execv(server_path, const_cast<char* const*>(argv.data()));
+    _exit(127);
+  }
+  return child;
+}
+
+int connect_to_addr(const std::string& host, std::uint16_t port, int max_attempts = 80) {
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd >= 0) {
+      sockaddr_in address{};
+      address.sin_family = AF_INET;
+      address.sin_port = htons(port);
+      if (inet_pton(AF_INET, host.c_str(), &address.sin_addr) > 0) {
+        if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+          return fd;
+        }
+      }
+      close(fd);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(25));
+  }
+  return -1;
+}
+
+void test_lan_binding(const char* server_path) {
+  std::cout << "Testing LAN bind configuration, default loopback, and argument validation...\n";
+
+  // 1. Invalid bind address rejections (exit code 2)
+  CHECK(run_server_exit_code(server_path, {"--bind-address"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address="}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", ""}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "0.0.0.0"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address=0.0.0.0"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "8.8.8.8"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "224.0.0.1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "255.255.255.255"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "::1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "fe80::1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "invalid_host"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.1.999"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.1"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"-b", "8.8.8.8"}) == 2);
+  CHECK(run_server_exit_code(server_path, {"-b=8.8.8.8"}) == 2);
+
+  // 2. Unassigned RFC1918 address fails startup with exit code 1
+  CHECK(run_server_exit_code(server_path, {"--bind-address", "192.168.254.254", "--no-unix"}) == 1);
+
+  // 3. Default loopback binding (no --bind-address specified)
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 4. Explicit loopback binding with --bind-address
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--bind-address", "127.0.0.1", "--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 5. Option order and flag formats (--bind-address=, -b, and reversed order)
+  {
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--port", std::to_string(p), "--bind-address=127.0.0.1", "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr("127.0.0.1", p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+  }
+
+  // 6. Test binding to an assigned non-loopback private IPv4 interface if one exists
+  std::string found_lan_ip;
+  struct ifaddrs *ifaddr = nullptr;
+  if (getifaddrs(&ifaddr) == 0) {
+    for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+      if (ifa->ifa_addr == nullptr) continue;
+      if (ifa->ifa_addr->sa_family == AF_INET) {
+        char host[INET_ADDRSTRLEN];
+        auto *sa = reinterpret_cast<struct sockaddr_in *>(ifa->ifa_addr);
+        if (inet_ntop(AF_INET, &(sa->sin_addr), host, sizeof(host)) != nullptr) {
+          const std::string ip(host);
+          const uint32_t host_ip = ntohl(sa->sin_addr.s_addr);
+          const bool is_loopback = ((host_ip >> 24U) == 127U);
+          const bool is_10_net = ((host_ip >> 24U) == 10U);
+          const bool is_172_net = (host_ip >= 0xAC100000U && host_ip <= 0xAC1FFFFFU);
+          const bool is_192_net = ((host_ip >> 16U) == 0xC0A8U);
+          if (!is_loopback && (is_10_net || is_172_net || is_192_net)) {
+            found_lan_ip = ip;
+            break;
+          }
+        }
+      }
+    }
+    freeifaddrs(ifaddr);
+  }
+
+  if (!found_lan_ip.empty()) {
+    std::cout << "  Found active private RFC1918 interface: " << found_lan_ip << ", testing live binding...\n";
+    const auto p = reserve_port();
+    CHECK(p != 0U);
+    const auto child = spawn_server_proc(server_path, {"--bind-address", found_lan_ip, "--port", std::to_string(p), "--no-unix"});
+    CHECK(child > 0);
+    const int fd = connect_to_addr(found_lan_ip, p);
+    CHECK(fd >= 0);
+    CHECK(exchange(fd, json{{"type", "connect"}, {"role", "player"}}, false));
+    (void)close(fd);
+    CHECK(kill(child, SIGTERM) == 0);
+    waitpid(child, nullptr, 0);
+    std::cout << "  Live LAN binding and protocol handshake verified on " << found_lan_ip << ":" << p << "\n";
+  } else {
+    std::cout << "  [SKIPPED] No non-loopback private IPv4 interface found in environment for live LAN bind test\n";
+  }
+}
+
+void test_min_player_and_boundary_rejection(const char* server_path) {
+  std::cout << "Running test_min_player_and_boundary_rejection...\n";
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+  const auto child = start_server(server_path, port, "min-player-test-token");
+  CHECK(child >= 0);
+  if (child < 0) return;
+
+  std::vector<int> connected;
+  const auto cleanup = [&]() {
+    for (const auto fd : connected) (void)close(fd);
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  const int moderator = connect_with_retry(port);
+  CHECK(moderator >= 0);
+  if (moderator < 0) { cleanup(); return; }
+  connected.push_back(moderator);
+  timeval timeout{2, 0};
+  (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
+  // Authenticate moderator
+  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "min-player-test-token"}});
+  CHECK(mod_hello && (*mod_hello)["type"] == "connect" && (*mod_hello)["role"] == "moderator");
+
+  // 1. Explicitly verify N=2 boundary rejection over TCP protocol (lower illegal boundary)
+  const auto req_two = request_json(moderator, json{{"type", "create_match"}, {"player_count", 2}});
+  CHECK(req_two && (*req_two)["type"] == "error");
+  CHECK(req_two && (*req_two)["error"] == "player_count must be an integer from 3 through 64");
+
+  // 2. Reject other invalid counts: 0, 1, 65, -1, string, float
+  for (const auto& bad_val : json::array({0, 1, 65, -1, -10, "3", 3.5})) {
+    const auto bad_req = request_json(moderator, json{{"type", "create_match"}, {"player_count", bad_val}});
+    CHECK(bad_req && (*bad_req)["type"] == "error");
+    CHECK(bad_req && (*bad_req)["error"] == "player_count must be an integer from 3 through 64");
+  }
+
+  // 3. Reject client-supplied roles
+  const auto bad_roles = request_json(moderator, json{{"type", "create_match"},
+      {"roles", {"Insider", "Investigator", "Employee"}}});
+  CHECK(bad_roles && (*bad_roles)["type"] == "error");
+  CHECK(bad_roles && (*bad_roles)["error"] == "client-supplied roles are not accepted");
+
+  // 4. Verify boundary role counts on match creation: N=3, N=5, N=32, N=64
+  const auto m32 = request_json(moderator, json{{"type", "create_match"}, {"player_count", 32}});
+  CHECK(m32 && (*m32)["type"] == "match_created" && (*m32)["player_count"] == 32U);
+  CHECK(m32 && (*m32)["insiders"] == 4U && (*m32)["investigators"] == 2U && (*m32)["employees"] == 26U);
+
+  const auto m64 = request_json(moderator, json{{"type", "create_match"}, {"player_count", 64}});
+  CHECK(m64 && (*m64)["type"] == "match_created" && (*m64)["player_count"] == 64U);
+  CHECK(m64 && (*m64)["insiders"] == 8U && (*m64)["investigators"] == 4U && (*m64)["employees"] == 52U);
+
+  const auto m5 = request_json(moderator, json{{"type", "create_match"}, {"player_count", 5}});
+  CHECK(m5 && (*m5)["type"] == "match_created" && (*m5)["player_count"] == 5U);
+  CHECK(m5 && (*m5)["insiders"] == 1U && (*m5)["investigators"] == 1U && (*m5)["employees"] == 3U);
+
+  // 5. Create 3-player match and verify complete end-to-end match lifecycle
+  const auto m3 = request_json(moderator, json{{"type", "create_match"}, {"player_count", 3}});
+  CHECK(m3 && (*m3)["type"] == "match_created" && (*m3)["player_count"] == 3U);
+  CHECK(m3 && (*m3)["insiders"] == 1U && (*m3)["investigators"] == 1U && (*m3)["employees"] == 1U);
+  if (!m3 || !m3->contains("match_id")) { cleanup(); return; }
+  const auto match_id = (*m3)["match_id"].get<std::uint64_t>();
+
+  // Moderator cannot join as a player
+  const auto mod_join = request_json(moderator, json{{"type", "join_match"}, {"match_id", match_id}});
+  CHECK(mod_join && (*mod_join)["type"] == "error");
+  CHECK(mod_join && (*mod_join)["error"] == "player permission required");
+
+  // Connect 3 player TCP clients
+  std::vector<int> players;
+  for (std::size_t i = 0; i < 3U; ++i) {
+    const int pfd = connect_to(port);
+    CHECK(pfd >= 0);
+    if (pfd < 0) { cleanup(); return; }
+    connected.push_back(pfd);
+    players.push_back(pfd);
+    (void)setsockopt(pfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const auto phello = request_json(pfd, json{{"type", "connect"}, {"role", "player"}});
+    CHECK(phello && (*phello)["type"] == "connect" && (*phello)["role"] == "player");
+  }
+
+  // Premature start with 0 players joined
+  const auto start_0 = command(moderator, match_id, "start_match");
+  CHECK(start_0 && (*start_0)["type"] == "error" && (*start_0)["error"] == "all configured players must join before start");
+
+  // Player 1 joins seat 1
+  const auto j1 = request_json(players[0], json{{"type", "join_match"}, {"match_id", match_id}});
+  CHECK(j1 && (*j1)["type"] == "joined_match" && (*j1)["seat"] == 1U && (*j1)["player_id"] == 1U);
+
+  // Premature start with 1 player joined
+  const auto start_1 = command(moderator, match_id, "start_match");
+  CHECK(start_1 && (*start_1)["type"] == "error" && (*start_1)["error"] == "all configured players must join before start");
+
+  // Player 2 joins seat 2
+  const auto j2 = request_json(players[1], json{{"type", "join_match"}, {"match_id", match_id}});
+  CHECK(j2 && (*j2)["type"] == "joined_match" && (*j2)["seat"] == 2U && (*j2)["player_id"] == 2U);
+
+  // Premature start with 2 players joined (out of 3 required)
+  const auto start_2 = command(moderator, match_id, "start_match");
+  CHECK(start_2 && (*start_2)["type"] == "error" && (*start_2)["error"] == "all configured players must join before start");
+
+  // Player 3 joins seat 3
+  const auto j3 = request_json(players[2], json{{"type", "join_match"}, {"match_id", match_id}});
+  CHECK(j3 && (*j3)["type"] == "joined_match" && (*j3)["seat"] == 3U && (*j3)["player_id"] == 3U);
+
+  // Connect a 4th player and verify 4th join is rejected ("match is full")
+  const int p4 = connect_to(port);
+  CHECK(p4 >= 0);
+  if (p4 >= 0) {
+    connected.push_back(p4);
+    (void)setsockopt(p4, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    (void)request_json(p4, json{{"type", "connect"}, {"role", "player"}});
+    const auto j4 = request_json(p4, json{{"type", "join_match"}, {"match_id", match_id}});
+    CHECK(j4 && (*j4)["type"] == "error" && (*j4)["error"] == "match is full");
+  }
+
+  // Verify role distribution across the 3 seats
+  std::size_t insider_idx = 3;
+  std::size_t investigator_idx = 3;
+  std::size_t employee_idx = 3;
+  std::size_t insiders = 0, investigators = 0, employees = 0;
+  const std::array<json, 3> joins{j1.value(), j2.value(), j3.value()};
+  for (std::size_t i = 0; i < 3U; ++i) {
+    const auto r = joins[i]["private_role"].get<std::string>();
+    if (r == "Insider") { ++insiders; insider_idx = i; }
+    else if (r == "Investigator") { ++investigators; investigator_idx = i; }
+    else if (r == "Employee") { ++employees; employee_idx = i; }
+  }
+  CHECK(insiders == 1U && investigators == 1U && employees == 1U);
+  CHECK(insider_idx < 3U && investigator_idx < 3U && employee_idx < 3U);
+
+  // Moderator starts match after all 3 players joined
+  const auto start_ok = command(moderator, match_id, "start_match");
+  CHECK(start_ok && (*start_ok)["type"] == "transition_result" && (*start_ok)["ok"]);
+  CHECK(start_ok && (*start_ok)["phase"] == "AwaitingEvent");
+
+  // Execute all 3 rounds of the 3-player match
+  for (std::uint32_t round = 1; round <= 3U; ++round) {
+    // 1. Publish event
+    const auto event = request_json(moderator, json{{"type", "publish_event"},
+        {"match_id", match_id}, {"impact", 0}});
+    CHECK(event && (*event)["type"] == "transition_result" && (*event)["phase"] == "Discussion");
+
+    // 2. Insider private hint
+    const auto hint = command(players[insider_idx], match_id, "insider_hint");
+    CHECK(hint && (*hint)["type"] == "hint_private" && (*hint)["event_impact"] == 0);
+
+    // Verify public status does not leak event impact
+    const auto pub_disc = request_json(players[employee_idx],
+        json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(pub_disc && !pub_disc->contains("event_impact"));
+
+    // 3. Open trading and submit trades
+    const auto trading = command(moderator, match_id, "open_trading");
+    CHECK(trading && (*trading)["phase"] == "Trading");
+    for (const auto pfd : players) {
+      const auto trade = request_json(pfd, json{{"type", "trade"},
+          {"match_id", match_id}, {"action", "HOLD"}});
+      CHECK(trade && (*trade)["type"] == "trade_result" && (*trade)["ok"]);
+    }
+
+    // 4. Resolve market
+    const auto market = command(moderator, match_id, "resolve_market");
+    CHECK(market && (*market)["type"] == "market_result" && (*market)["ok"]);
+    CHECK(market && (*market)["closing_health"] == 5 && (*market)["outcome"] == "None");
+
+    // 5. Clue phase
+    const auto clue_st = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(clue_st && (*clue_st)["phase"] == "Clue");
+
+    if (round == 1U) {
+      const auto employee_pid = joins[employee_idx]["player_id"].get<std::uint64_t>();
+      const auto clue = request_json(players[investigator_idx], json{{"type", "request_clue"},
+          {"match_id", match_id}, {"target_id", employee_pid}});
+      CHECK(clue && (*clue)["type"] == "clue_private" && (*clue)["is_insider"] == false);
+    }
+
+    // Public status must not leak clue
+    const auto pub_clue = request_json(players[employee_idx],
+        json{{"type", "match_status"}, {"match_id", match_id}});
+    CHECK(pub_clue && !pub_clue->contains("clue_result") && !pub_clue->contains("clue_target"));
+
+    // 6. Open voting and submit votes
+    const auto voting = command(moderator, match_id, "open_voting");
+    CHECK(voting && (*voting)["phase"] == "Voting");
+    for (const auto pfd : players) {
+      const auto vote = request_json(pfd, json{{"type", "vote"},
+          {"match_id", match_id}, {"target_id", nullptr}});
+      CHECK(vote && (*vote)["type"] == "vote_result" && (*vote)["accepted"]);
+    }
+
+    // 7. Resolve votes
+    const auto resolved = command(moderator, match_id, "resolve_votes");
+    CHECK(resolved && (*resolved)["type"] == "vote_resolution" && (*resolved)["ok"]);
+    CHECK(resolved && (*resolved)["eliminated_player"].is_null());
+
+    if (round < 3U) {
+      CHECK(resolved && (*resolved)["outcome"] == "None");
+      const auto next_st = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+      CHECK(next_st && (*next_st)["phase"] == "AwaitingEvent" && (*next_st)["round"] == round + 1U);
+    } else {
+      CHECK(resolved && (*resolved)["outcome"] == "InsiderWin");
+      const auto fin_st = request_json(players[0], json{{"type", "match_status"}, {"match_id", match_id}});
+      CHECK(fin_st && (*fin_st)["phase"] == "Finished" && (*fin_st)["outcome"] == "InsiderWin");
+    }
+  }
+
+  cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|malformed|unix|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|min-player|malformed|unix|lan-binding|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
     test_complete_three_round_match(argv[1], 5U);
   } else if (argc == 3 && std::string(argv[2]) == "variable-gameplay") {
+    test_complete_three_round_match(argv[1], 3U);
     test_complete_three_round_match(argv[1], 8U);
+  } else if (argc == 3 && std::string(argv[2]) == "min-player") {
+    test_min_player_and_boundary_rejection(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "auth") {
     test_moderator_authentication(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "malformed") {
@@ -1416,13 +1816,18 @@ int main(int argc, char** argv) {
     test_idle_unassigned_timeout(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "unix") {
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "lan-binding") {
+    test_lan_binding(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
     test_server_capacity_and_echo(argv[1]);
     test_idle_unassigned_timeout(argv[1]);
     test_moderator_authentication(argv[1]);
+    test_min_player_and_boundary_rejection(argv[1]);
+    test_complete_three_round_match(argv[1], 3U);
     test_complete_three_round_match(argv[1], 5U);
     test_complete_three_round_match(argv[1], 8U);
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
+    test_lan_binding(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }

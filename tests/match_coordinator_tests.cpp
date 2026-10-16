@@ -397,6 +397,98 @@ void test_match_lifecycle_cleanup_and_isolation() {
   CHECK(c_status_after && (*c_status_after)["phase"] == "AwaitingEvent");
 }
 
+void test_boundary_player_counts_and_three_player_match() {
+  MatchCoordinator coordinator;
+  coordinator.register_session(900, SessionRole::Moderator);
+  for (std::uint64_t session = 1; session <= 10; ++session) {
+    coordinator.register_session(session, SessionRole::Player);
+  }
+
+  // 1. Explicitly verify N=2 boundary rejection (lower illegal boundary)
+  const auto req_two = coordinator.handle(900, json{{"type", "create_match"}, {"player_count", 2}});
+  CHECK(req_two && (*req_two)["type"] == "error");
+  CHECK((*req_two)["error"] == "player_count must be an integer from 3 through 64");
+
+  // 2. Reject other invalid counts: 0, 1, 65, -1, string, float
+  for (const auto& bad_val : json::array({0, 1, 65, -1, -5, "3", 3.14})) {
+    const auto bad_req = coordinator.handle(900, json{{"type", "create_match"}, {"player_count", bad_val}});
+    CHECK(bad_req && (*bad_req)["type"] == "error");
+    CHECK((*bad_req)["error"] == "player_count must be an integer from 3 through 64");
+  }
+
+  // 3. Reject client-supplied roles
+  const auto bad_roles = coordinator.handle(900, json{{"type", "create_match"},
+      {"roles", {"Insider", "Investigator", "Employee"}}});
+  CHECK(bad_roles && (*bad_roles)["type"] == "error");
+  CHECK((*bad_roles)["error"] == "client-supplied roles are not accepted");
+
+  // 4. Verify boundary role counts: N=3, N=5, N=32, N=64
+  const auto m3 = create(coordinator, 900, 3);
+  CHECK(m3["type"] == "match_created" && m3["player_count"] == 3U);
+  CHECK(m3["insiders"] == 1U && m3["investigators"] == 1U && m3["employees"] == 1U);
+  const auto m3_id = m3["match_id"].get<std::uint64_t>();
+
+  // Moderator cannot join as a player
+  const auto mod_join = coordinator.handle(900, json{{"type", "join_match"}, {"match_id", m3_id}});
+  CHECK(mod_join && (*mod_join)["type"] == "error");
+  CHECK((*mod_join)["error"] == "player permission required");
+
+  // Premature start with 0 players
+  const auto start_0 = coordinator.handle(900, json{{"type", "start_match"}, {"match_id", m3_id}});
+  CHECK(start_0 && (*start_0)["type"] == "error" && (*start_0)["error"] == "all configured players must join before start");
+
+  // Player 1 joins seat 1
+  const auto j1 = join(coordinator, 1, m3_id);
+  CHECK(j1["type"] == "joined_match" && j1["seat"] == 1U && j1["player_id"] == 1U);
+
+  // Premature start with 1 player
+  const auto start_1 = coordinator.handle(900, json{{"type", "start_match"}, {"match_id", m3_id}});
+  CHECK(start_1 && (*start_1)["type"] == "error" && (*start_1)["error"] == "all configured players must join before start");
+
+  // Player 2 joins seat 2
+  const auto j2 = join(coordinator, 2, m3_id);
+  CHECK(j2["type"] == "joined_match" && j2["seat"] == 2U && j2["player_id"] == 2U);
+
+  // Premature start with 2 players (out of 3 required)
+  const auto start_2 = coordinator.handle(900, json{{"type", "start_match"}, {"match_id", m3_id}});
+  CHECK(start_2 && (*start_2)["type"] == "error" && (*start_2)["error"] == "all configured players must join before start");
+
+  // Player 3 joins seat 3
+  const auto j3 = join(coordinator, 3, m3_id);
+  CHECK(j3["type"] == "joined_match" && j3["seat"] == 3U && j3["player_id"] == 3U);
+
+  // 4th player attempts to join full 3-player match
+  const auto j4 = join(coordinator, 4, m3_id);
+  CHECK(j4["type"] == "error" && j4["error"] == "match is full");
+
+  // Assert exact role counts across the 3 seats
+  std::size_t insiders = 0, investigators = 0, employees = 0;
+  for (const auto& j : {j1, j2, j3}) {
+    const auto r = j["private_role"].get<std::string>();
+    if (r == "Insider") ++insiders;
+    else if (r == "Investigator") ++investigators;
+    else if (r == "Employee") ++employees;
+  }
+  CHECK(insiders == 1U && investigators == 1U && employees == 1U);
+
+  // Start succeeds once all 3 players joined
+  const auto start_ok = coordinator.handle(900, json{{"type", "start_match"}, {"match_id", m3_id}});
+  CHECK(start_ok && (*start_ok)["type"] == "transition_result" && (*start_ok)["ok"]);
+  CHECK((*start_ok)["phase"] == "AwaitingEvent");
+
+  // Verify other boundary role distributions: N=5, N=32, N=64
+  coordinator.unregister_session(900); // clears m3
+  coordinator.register_session(901, SessionRole::Moderator);
+  const auto m5 = create(coordinator, 901, 5);
+  CHECK(m5["type"] == "match_created" && m5["insiders"] == 1U && m5["investigators"] == 1U && m5["employees"] == 3U);
+
+  const auto m32 = create(coordinator, 901, 32);
+  CHECK(m32["type"] == "match_created" && m32["insiders"] == 4U && m32["investigators"] == 2U && m32["employees"] == 26U);
+
+  const auto m64 = create(coordinator, 901, 64);
+  CHECK(m64["type"] == "match_created" && m64["insiders"] == 8U && m64["investigators"] == 4U && m64["employees"] == 52U);
+}
+
 }  // namespace
 
 int main() {
@@ -407,6 +499,7 @@ int main() {
   test_multiple_investigator_clues_remain_private();
   test_multiple_investigator_clues_reverse_order();
   test_match_lifecycle_cleanup_and_isolation();
+  test_boundary_player_counts_and_three_player_match();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Match coordinator isolation tests passed.\n";
   return EXIT_SUCCESS;
