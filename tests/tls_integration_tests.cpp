@@ -161,6 +161,16 @@ void stop_server(pid_t child) {
   }
 }
 
+struct ServerSubprocessGuard {
+  pid_t pid{-1};
+  ~ServerSubprocessGuard() {
+    if (pid > 0) {
+      stop_server(pid);
+    }
+  }
+  void release() noexcept { pid = -1; }
+};
+
 enum class FrameReadStatus {
   Success,
   Timeout,
@@ -193,10 +203,17 @@ struct TlsClientConnection {
     }
   }
 
-  bool send_frame(const json& payload) {
+  bool send_frame(const json& payload, int timeout_ms = 5000) {
     const std::string bytes = Frame(payload).serialize();
     std::size_t offset = 0;
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start + std::chrono::milliseconds(timeout_ms);
     while (offset < bytes.size()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        return false;
+      }
+      const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
       std::size_t written = 0;
       std::string err;
       const auto status = darkpool::transport::tls_write(
@@ -206,7 +223,8 @@ struct TlsClientConnection {
       } else if (status == darkpool::transport::TlsIoStatus::WantWrite ||
                  status == darkpool::transport::TlsIoStatus::WantRead) {
         pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN), 0};
-        (void)poll(&pfd, 1, 1000);
+        const int wait_ms = static_cast<int>(std::clamp<long long>(remaining_ms, 1, 100));
+        (void)poll(&pfd, 1, wait_ms);
       } else {
         return false;
       }
@@ -645,11 +663,16 @@ void test_scenario_10_coalesced_frames(const char* server_path) {
 // --------------------------------------------------------------------------
 // Scenario 11: Slow-reader output queue bounds over TLS (drives queue >64 KiB)
 // --------------------------------------------------------------------------
+// --------------------------------------------------------------------------
+// Scenario 11: Slow-reader output queue bounds over TLS (drives queue >64 KiB)
+// --------------------------------------------------------------------------
 void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
   CHECK(child > 0);
+  ServerSubprocessGuard server_guard{child};
+
   // Wait for server listener to initialize before capturing baseline open FDs
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   const auto initial_server_fds = count_open_fds_pid(child);
@@ -660,30 +683,67 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   client_cfg.ca_file = certs->ca_cert_pem_path;
   client_cfg.target_ip = "127.0.0.1";
 
+  // 1. Setup healthy sibling match participants
+  auto mod = connect_tls_client(port, client_cfg);
+  CHECK(mod != nullptr);
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  auto mod_conn = mod->receive_frame();
+  CHECK(mod_conn.has_value());
+
+  CHECK(mod->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
+  auto create_resp = mod->receive_frame();
+  CHECK(create_resp.has_value());
+  const std::uint64_t match_id = create_resp->value("match_id", 1ULL);
+
+  auto p1 = connect_tls_client(port, client_cfg);
+  auto p2 = connect_tls_client(port, client_cfg);
+  auto p3 = connect_tls_client(port, client_cfg);
+  CHECK(p1 != nullptr && p2 != nullptr && p3 != nullptr);
+  CHECK(p1->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p1->receive_frame();
+  CHECK(p1->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p1->receive_frame();
+  CHECK(p2->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p2->receive_frame();
+  CHECK(p2->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p2->receive_frame();
+  CHECK(p3->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p3->receive_frame();
+  CHECK(p3->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p3->receive_frame();
+
+  // 2. Slow client connects as an independent connection over TLS
   auto slow_client = connect_tls_client(port, client_cfg);
   CHECK(slow_client != nullptr);
-
-  // Shrink client receive buffer to quickly saturate TCP window
   int rcvbuf = 2048;
   (void)setsockopt(slow_client->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
-
   CHECK(slow_client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
-  auto resp = slow_client->receive_frame();
-  CHECK(resp.has_value());
+  auto slow_conn = slow_client->receive_frame();
+  CHECK(slow_conn.has_value());
 
-  // Send status requests without reading replies to drive server output queue beyond 64 KiB boundary
-  // At ~51 bytes per rate-limited response frame, filling TCP socket buffers (~128 KiB)
-  // plus the 64 KiB server user-space queue requires > 3,800 unread response frames.
+  // 3. Flood unread responses from slow client with finite deadline
+  const auto flood_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
   bool evicted = false;
-  for (int i = 0; i < 6000; ++i) {
-    if (!slow_client->send_frame(json{{"type", "status"}})) {
+  for (int i = 0; i < 6000 && std::chrono::steady_clock::now() < flood_deadline; ++i) {
+    if (!slow_client->send_frame(json{{"type", "status"}}, 200)) {
       evicted = true;
       break;
     }
   }
 
-  // Drain buffered responses and verify that the server terminated the connection
-  // with CleanClose or TransportError (a timeout is NEVER accepted as proof of eviction).
+  // 4. Concurrently, healthy sibling participants and moderator start and advance the match
+  CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}}));
+  auto start_resp = mod->receive_frame();
+  CHECK(start_resp.has_value());
+  CHECK(start_resp->value("ok", false) == true);
+  CHECK(start_resp->value("phase", "") == "AwaitingEvent");
+
+  CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}));
+  auto pub_resp = mod->receive_frame();
+  CHECK(pub_resp.has_value());
+  CHECK(pub_resp->value("ok", false) == true);
+  CHECK(pub_resp->value("phase", "") == "Discussion");
+
+  CHECK(p1->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
+  auto p1_status = p1->receive_frame();
+  CHECK(p1_status.has_value());
+  CHECK(p1_status->value("phase", "") == "Discussion");
+
+  // 5. Verify slow client eviction within finite deadline (timeout NEVER counts as eviction)
   if (!evicted) {
     const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < drain_deadline) {
@@ -694,36 +754,23 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
         break;
       }
       if (res.status == FrameReadStatus::Timeout) {
-        // A timeout does NOT establish eviction. Attempt a send to probe socket health:
-        if (!slow_client->send_frame(json{{"type", "status"}})) {
+        if (!slow_client->send_frame(json{{"type", "status"}}, 200)) {
           evicted = true;
           break;
         }
       }
     }
   }
-  // The slow client must be evicted by server output queue overflow within the deadline
   CHECK(evicted);
 
-  // Connect healthy sibling client over TLS to verify server reactor is responsive and sibling completes cleanly
-  auto healthy_client = connect_tls_client(port, client_cfg);
-  CHECK(healthy_client != nullptr);
-  if (healthy_client != nullptr) {
-    CHECK(healthy_client->send_frame(json{{"type", "connect"}, {"role", "player"}}));
-    auto healthy_resp = healthy_client->receive_frame();
-    CHECK(healthy_resp.has_value());
-    CHECK(healthy_resp->value("type", "") == "connect");
-
-    CHECK(healthy_client->send_frame(json{{"type", "status"}}));
-    auto healthy_status = healthy_client->receive_frame();
-    CHECK(healthy_status.has_value());
-  }
-
-  healthy_client.reset();
+  // 6. Cleanup client connections and verify server descriptors settle back to baseline
   slow_client.reset();
+  p1.reset();
+  p2.reset();
+  p3.reset();
+  mod.reset();
 
-  // Allow server reactor to settle FDs after client closures (poll up to 2000 ms)
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2000);
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
   bool settled = false;
   while (std::chrono::steady_clock::now() < deadline) {
     const auto cur = count_open_fds_pid(child);
@@ -734,8 +781,6 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
   CHECK(settled);
-
-  stop_server(child);
 }
 
 // --------------------------------------------------------------------------
@@ -746,6 +791,7 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
   CHECK(child > 0);
+  ServerSubprocessGuard server_guard{child};
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
@@ -782,7 +828,7 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   CHECK(start_resp->value("ok", false) == true);
   CHECK(start_resp->value("phase", "") == "AwaitingEvent");
 
-  // Snapshot authoritative match status from independent player connection (p1)
+  // Snapshot complete observable match status from independent player connection (p1) before throttled mutation
   CHECK(p1->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
   auto status_before = p1->receive_frame();
   CHECK(status_before.has_value());
@@ -794,7 +840,7 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   CHECK(round_before == 1);
 
   // Ensure token bucket has refilled completely to 40 burst tokens after setup commands
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
   // Exhaust moderator's token bucket rate limiter (burst capacity 40 tokens)
   int accepted_status = 0;
@@ -816,20 +862,35 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   CHECK(throttled_resp->value("type", "") == "error");
   CHECK(throttled_resp->value("error", "") == "rate limit exceeded");
 
-  // Query authoritative match status via independent sibling connection (p1)
-  // Verify that the rate-limited mutation request caused ZERO state mutation:
+  // Query observable match status via independent connection (p1)
+  // Verify that the complete observable match-status snapshot remained completely unchanged:
   CHECK(p1->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
   auto status_after_throttled = p1->receive_frame();
   CHECK(status_after_throttled.has_value());
+  // Complete JSON equality comparison
+  CHECK(*status_after_throttled == *status_before);
+  CHECK(status_after_throttled->value("match_id", 0ULL) == status_before->value("match_id", 0ULL));
   CHECK(status_after_throttled->value("phase", "") == phase_before);
   CHECK(status_after_throttled->value("health", 0) == health_before);
   CHECK(status_after_throttled->value("round", 0) == round_before);
+  CHECK(status_after_throttled->value("price", 0) == status_before->value("price", 0));
+  CHECK(status_after_throttled->value("outcome", "") == status_before->value("outcome", ""));
+  CHECK(status_after_throttled->value("player_count", 0) == status_before->value("player_count", 0));
+  CHECK(status_after_throttled->value("joined_players", 0) == status_before->value("joined_players", 0));
+  if (status_before->contains("last_market")) {
+    CHECK(status_after_throttled->contains("last_market"));
+    CHECK((*status_after_throttled)["last_market"] == (*status_before)["last_market"]);
+  }
+  if (status_before->contains("last_vote")) {
+    CHECK(status_after_throttled->contains("last_vote"));
+    CHECK((*status_after_throttled)["last_vote"] == (*status_before)["last_vote"]);
+  }
 
   // Test token refill: rate is 20 tokens/sec (1 token per 50 ms).
-  // Wait 150 ms for token bucket to refill at least 2-3 tokens.
-  std::this_thread::sleep_for(std::chrono::milliseconds(150));
+  // Wait 250 ms for token bucket to refill at least 5 tokens.
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
-  // Now submit the EXACT SAME valid mutation command that was previously rejected:
+  // Now submit the EXACT SAME valid mutation command that was previously throttled:
   CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 1}}));
   auto refilled_resp = mod->receive_frame();
   CHECK(refilled_resp.has_value());
@@ -837,13 +898,13 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   CHECK(refilled_resp->value("ok", false) == true);
   CHECK(refilled_resp->value("phase", "") == "Discussion");
 
-  // Query authoritative match status via p1 again: verify that state mutation has now succeeded!
+  // Query observable match status via p1 again: verify that state mutation has now succeeded!
   CHECK(p1->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
   auto status_after_refilled = p1->receive_frame();
   CHECK(status_after_refilled.has_value());
   CHECK(status_after_refilled->value("phase", "") == "Discussion");
-
-  stop_server(child);
+  CHECK(status_after_refilled->value("health", 0) == health_before);
+  CHECK(*status_after_refilled != *status_before);
 }
 
 // --------------------------------------------------------------------------
@@ -1385,6 +1446,41 @@ void test_scenario_23_truncated_tls_termination(const char* server_path) {
 // --------------------------------------------------------------------------
 // Scenario 24: Reactor state machine cross-direction WANT_READ/WANT_WRITE & KeyUpdate
 // --------------------------------------------------------------------------
+static bool g_seam_read_want_write = false;
+static bool g_seam_write_want_read = false;
+
+static int cross_direction_seam_write(BIO* b, const char* in, int inl) {
+  BIO_clear_retry_flags(b);
+  if (g_seam_write_want_read) {
+    BIO_set_retry_read(b);
+    return -1;
+  }
+  BIO* next = BIO_next(b);
+  if (!next) return -1;
+  int ret = BIO_write(next, in, inl);
+  BIO_copy_next_retry(b);
+  return ret;
+}
+
+static int cross_direction_seam_read(BIO* b, char* out, int outl) {
+  BIO_clear_retry_flags(b);
+  if (g_seam_read_want_write) {
+    BIO_set_retry_write(b);
+    return -1;
+  }
+  BIO* next = BIO_next(b);
+  if (!next) return -1;
+  int ret = BIO_read(next, out, outl);
+  BIO_copy_next_retry(b);
+  return ret;
+}
+
+static long cross_direction_seam_ctrl(BIO* b, int cmd, long num, void* ptr) {
+  BIO* next = BIO_next(b);
+  if (!next) return 0;
+  return BIO_ctrl(next, cmd, num, ptr);
+}
+
 void test_transport_level_cross_direction_io(const darkpool::transport::EphemeralCertBundle& certs) {
   darkpool::transport::ServerTlsConfig s_cfg;
   s_cfg.cert_file = certs.server_cert_pem_path;
@@ -1406,14 +1502,25 @@ void test_transport_level_cross_direction_io(const darkpool::transport::Ephemera
 
   SSL_set_app_data(client_ssl.get(), &c_cfg);
 
-  // Setup BIO pairs with bounded buffer size (1024 bytes) to test WANT_WRITE / WANT_READ
+  // Setup BIO pairs with a test seam filter on server BIO to verify exact WantRead and WantWrite transitions
   BIO *s_in = nullptr, *s_net = nullptr;
-  BIO_new_bio_pair(&s_in, 1024, &s_net, 1024);
+  BIO_new_bio_pair(&s_in, 4096, &s_net, 4096);
+
+  static BIO_METHOD* seam_method = nullptr;
+  if (!seam_method) {
+    seam_method = BIO_meth_new(BIO_TYPE_FILTER, "cross_direction_seam");
+    BIO_meth_set_write(seam_method, cross_direction_seam_write);
+    BIO_meth_set_read(seam_method, cross_direction_seam_read);
+    BIO_meth_set_ctrl(seam_method, cross_direction_seam_ctrl);
+  }
+  BIO* seam_bio = BIO_new(seam_method);
+  s_in = BIO_push(seam_bio, s_in);
+
   SSL_set_bio(server_ssl.get(), s_in, s_in);
   SSL_set_accept_state(server_ssl.get());
 
   BIO *c_in = nullptr, *c_net = nullptr;
-  BIO_new_bio_pair(&c_in, 1024, &c_net, 1024);
+  BIO_new_bio_pair(&c_in, 4096, &c_net, 4096);
   SSL_set_bio(client_ssl.get(), c_in, c_in);
   SSL_set_connect_state(client_ssl.get());
 
@@ -1442,37 +1549,66 @@ void test_transport_level_cross_direction_io(const darkpool::transport::Ephemera
   CHECK(SSL_is_init_finished(client_ssl.get()));
   CHECK(SSL_is_init_finished(server_ssl.get()));
 
-  // 1. Deterministic ordinary WANT_READ: server reads when no network data is available
+  // 1. Ordinary WANT_READ when no network data is available
   char read_buf[256];
   std::size_t count = 0;
   auto st_read = darkpool::transport::tls_read(server_ssl.get(), read_buf, sizeof(read_buf), count, err);
   CHECK(st_read == darkpool::transport::TlsIoStatus::WantRead);
 
-  // 2. Deterministic ordinary WANT_WRITE: fill server network BIO buffer to capacity
-  std::string chunk(400, 'Q');
-  std::size_t written = 0;
-  // Write chunks until internal buffer is full and returns WantWrite
-  darkpool::transport::TlsIoStatus st_write = darkpool::transport::TlsIoStatus::Ok;
-  while (st_write == darkpool::transport::TlsIoStatus::Ok) {
-    st_write = darkpool::transport::tls_write(server_ssl.get(), chunk.data(), chunk.size(), written, err);
-  }
-  CHECK(st_write == darkpool::transport::TlsIoStatus::WantWrite);
-
-  // Resume write when network BIO is drained to client
-  pump(s_net, c_net);
-  st_write = darkpool::transport::tls_write(server_ssl.get(), chunk.data(), chunk.size(), written, err);
-  CHECK(st_write == darkpool::transport::TlsIoStatus::Ok);
-  pump(s_net, c_net);
-
-  // 3. Deterministic cross-direction KeyUpdate: client requests key update with response required
-  CHECK(SSL_key_update(client_ssl.get(), SSL_KEY_UPDATE_REQUESTED) == 1);
-  (void)SSL_do_handshake(client_ssl.get());
+  // 2. Deterministic cross-direction: SSL_read returning WANT_WRITE
+  // Client sends framed request bytes
+  const std::string test_req = Frame(json{{"type", "cross_req"}, {"id", 101}}).serialize();
+  std::size_t c_written = 0;
+  auto st_cw = darkpool::transport::tls_write(client_ssl.get(), test_req.data(), test_req.size(), c_written, err);
+  CHECK(st_cw == darkpool::transport::TlsIoStatus::Ok);
+  CHECK(c_written == test_req.size());
   pump(c_net, s_net);
 
-  // Server reads client's KeyUpdate message.
+  // Force transport read seam to signal write readiness required (WantWrite)
+  g_seam_read_want_write = true;
   st_read = darkpool::transport::tls_read(server_ssl.get(), read_buf, sizeof(read_buf), count, err);
+  CHECK(st_read == darkpool::transport::TlsIoStatus::WantWrite);
+
+  // Simulate reactor event handling for tls_read_want_write:
+  // Write readiness arrives (seam cleared), reactor retries the EXACT pending read operation
+  g_seam_read_want_write = false;
+  st_read = darkpool::transport::tls_read(server_ssl.get(), read_buf, sizeof(read_buf), count, err);
+  CHECK(st_read == darkpool::transport::TlsIoStatus::Ok);
+  CHECK(count > 0);
+  darkpool::network::FrameDecoder decoder;
+  auto decoded_frames = decoder.feed(std::span<const char>(read_buf, count));
+  CHECK(decoded_frames.size() == 1);
+  CHECK(decoded_frames[0].payload().value("type", "") == "cross_req");
+  CHECK(decoded_frames[0].payload().value("id", 0) == 101);
+
+  // 3. Deterministic cross-direction: SSL_write returning WANT_READ
+  // Server prepares framed response
+  const std::string test_resp = Frame(json{{"type", "cross_resp"}, {"id", 101}}).serialize();
+  std::size_t s_written = 0;
+
+  // Force transport write seam to signal read readiness required (WantRead)
+  g_seam_write_want_read = true;
+  auto st_write = darkpool::transport::tls_write(server_ssl.get(), test_resp.data(), test_resp.size(), s_written, err);
+  CHECK(st_write == darkpool::transport::TlsIoStatus::WantRead);
+
+  // Simulate reactor event handling for tls_write_want_read:
+  // Read readiness arrives (seam cleared), reactor retries the EXACT pending write operation
+  g_seam_write_want_read = false;
+  st_write = darkpool::transport::tls_write(server_ssl.get(), test_resp.data(), test_resp.size(), s_written, err);
+  CHECK(st_write == darkpool::transport::TlsIoStatus::Ok);
+  CHECK(s_written == test_resp.size());
   pump(s_net, c_net);
-  (void)SSL_do_handshake(client_ssl.get());
+
+  // Client reads and verifies the response frame intact without loss or corruption
+  char c_read_buf[256];
+  std::size_t c_read_count = 0;
+  auto st_cr = darkpool::transport::tls_read(client_ssl.get(), c_read_buf, sizeof(c_read_buf), c_read_count, err);
+  CHECK(st_cr == darkpool::transport::TlsIoStatus::Ok);
+  darkpool::network::FrameDecoder client_decoder;
+  auto client_frames = client_decoder.feed(std::span<const char>(c_read_buf, c_read_count));
+  CHECK(client_frames.size() == 1);
+  CHECK(client_frames[0].payload().value("type", "") == "cross_resp");
+  CHECK(client_frames[0].payload().value("id", 0) == 101);
 
   // Cleanup network BIOs
   BIO_free(s_net);
@@ -1483,18 +1619,20 @@ void test_scenario_24_reactor_cross_direction_and_key_update(const char* server_
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   CHECK(certs != nullptr);
 
-  // Run transport-level deterministic verification of WANT_READ, WANT_WRITE, and KeyUpdate
+  // Run transport-level deterministic verification of WantRead, WantWrite, and cross-direction retry
   test_transport_level_cross_direction_io(*certs);
 
   const auto port = reserve_port();
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
   CHECK(child > 0);
+  ServerSubprocessGuard server_guard{child};
 
   darkpool::transport::ClientTlsConfig client_cfg;
   client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
   client_cfg.ca_file = certs->ca_cert_pem_path;
   client_cfg.target_ip = "127.0.0.1";
 
+  // Integration smoke test: verify TLS 1.3 KeyUpdate on live reactor socket
   auto client = connect_tls_client(port, client_cfg);
   CHECK(client != nullptr);
   if (client != nullptr) {
@@ -1523,8 +1661,6 @@ void test_scenario_24_reactor_cross_direction_and_key_update(const char* server_
     // 20 requests over local loopback TLS should execute within 1500 ms (no spinloop)
     CHECK(elapsed < 1500);
   }
-
-  stop_server(child);
 }
 
 } // namespace

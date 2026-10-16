@@ -1105,21 +1105,24 @@ int main(int argc, char **argv) {
                                    static_cast<std::uint32_t>(EPOLLRDHUP) |
                                    static_cast<std::uint32_t>(EPOLLHUP);
 
+      const bool initial_write_want_read = (found->second.transport == TransportType::Tls) && found->second.tls_write_want_read;
+      const bool initial_read_want_write = (found->second.transport == TransportType::Tls) && found->second.tls_read_want_write;
+
       // Cross-direction resume:
       // If a pending TLS write was waiting for read readiness (SSL_ERROR_WANT_READ) and read readiness fired:
-      if (found->second.transport == TransportType::Tls && found->second.tls_write_want_read && (flags & read_or_hangup) != 0U) {
+      if (initial_write_want_read && (flags & read_or_hangup) != 0U) {
         keep = write_client(epoll_fd, fd, found->second);
       }
 
-      // If read operation wants read readiness (or normal read) and read readiness fired:
-      if (keep && !found->second.tls_write_want_read && !found->second.tls_read_want_write && (flags & read_or_hangup) != 0U) {
+      // Normal read: only if not waiting for cross-direction readiness
+      if (keep && !initial_write_want_read && !initial_read_want_write && (flags & read_or_hangup) != 0U) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
 
       // Cross-direction resume:
       // If a pending TLS read was waiting for write readiness (SSL_ERROR_WANT_WRITE) and write readiness fired:
-      if (keep && found->second.transport == TransportType::Tls && found->second.tls_read_want_write && (flags & EPOLLOUT) != 0U) {
+      if (keep && initial_read_want_write && (flags & EPOLLOUT) != 0U) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
@@ -1130,8 +1133,8 @@ int main(int argc, char **argv) {
         keep = update_connection_events(epoll_fd, fd, found->second);
       }
 
-      // If write operation wants write readiness and write readiness fired (or peer closed with pending output):
-      if (keep && !found->second.tls_read_want_write && !found->second.tls_write_want_read &&
+      // Normal write: only if not waiting for cross-direction readiness
+      if (keep && !initial_read_want_write && !initial_write_want_read &&
           ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
           !found->second.output.pending().empty()) {
         keep = write_client(epoll_fd, fd, found->second);
