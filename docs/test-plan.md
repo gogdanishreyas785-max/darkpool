@@ -523,32 +523,32 @@ To isolate TLS cryptographic and protocol overhead from TCP transport difference
 
 | Configuration | Transport | Runs | Mean Duration | p50 ACK Latency | p95 ACK Latency | Peak VmRSS | Server Settled FDs | Status |
 |:---|:---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| **5-Player Match** | Plaintext TCP (4782) | 3 | 8.3 ms | 0.07 ms | 0.39 ms | 9,560 kB | 6 | PASS |
-| | TLS 1.3 TCP (4783) | 3 | 30.7 ms | 0.10 ms | 0.44 ms | 9,584 kB | 6 | PASS |
-| | UNIX Domain (Ref) | 3 | 40.0 ms | 0.34 ms | 0.65 ms | 4,008 kB | 8 | PASS |
-| **64-Player Match** | Plaintext TCP (4782) | 3 | 46.7 ms | 0.06 ms | 0.11 ms | 10,720 kB | 6 | PASS |
-| | TLS 1.3 TCP (4783) | 3 | 260.0 ms | 0.12 ms | 0.35 ms | 11,212 kB | 6-7 | PASS |
-| | UNIX Domain (Ref) | 3 | 75.0 ms | 0.13 ms | 0.58 ms | 3,872 kB | 8 | PASS |
-| **256-Player Concurrent** | Plaintext TCP (4782) | 3 | 104.3 ms | 0.13 ms | 0.24 ms | 16,380 kB | 6 | PASS |
-| | TLS 1.3 TCP (4783) | 3 | 1,038.7 ms | 0.30 ms | 4.47 ms | 16,564 kB | 6 | PASS |
-| | UNIX Domain (Ref) | 3 | 601.3 ms | 0.16 ms | 19.54 ms | 4,236 kB | 8 | PASS |
+| **5-Player Match** | Plaintext TCP (4782) | 3 | 23.3 ms | 0.213 ms | 1.371 ms | 5,792 kB | 6 | PASS |
+| | **TLS 1.3 TCP (4783)** | 3 | 56.3 ms | 0.293 ms | 0.746 ms | 9,456 kB | 6 | PASS |
+| | *UNIX Domain (Historical Ref)* | *3* | *40.0 ms* | *0.338 ms* | *0.646 ms* | *6,712 kB* | *8* | *PASS* |
+| **64-Player Match** | Plaintext TCP (4782) | 3 | 140.7 ms | 0.186 ms | 0.355 ms | 5,940 kB | 6 | PASS |
+| | **TLS 1.3 TCP (4783)** | 3 | 313.7 ms | 0.148 ms | 0.401 ms | 11,024 kB | 6 | PASS |
+| | *UNIX Domain (Historical Ref)* | *3* | *75.0 ms* | *0.134 ms* | *0.579 ms* | *8,188 kB* | *8* | *PASS* |
+| **256-Player Concurrent** | Plaintext TCP (4782) | 3 | 142.3 ms | 0.176 ms | 0.385 ms | 6,228 kB | 6 | PASS |
+| | **TLS 1.3 TCP (4783)** | 3 | 853.0 ms | 0.408 ms | 2.308 ms | 17,056 kB | 6 | PASS |
+| | *UNIX Domain (Historical Ref)* | *3* | *601.3 ms* | *0.159 ms* | *19.543 ms* | *11,768 kB* | *8* | *PASS* |
 
 #### Investigation of Transport Overhead, TCP_NODELAY, and Descriptor Lifecycle
 
 1. **TCP_NODELAY and Latency Floor Resolution**:
    - Initial measurements without `TCP_NODELAY` exhibited high p95 latencies clustering tightly around 44–45 ms across all configurations due to Linux delayed ACK timers (40 ms) interacting with Nagle's algorithm on small control frames.
    - Enabling `TCP_NODELAY` (`IPPROTO_TCP, TCP_NODELAY`) on both client and server TCP stream sockets eliminated this artificial floor.
-   - Resulting p95 command acknowledgment latencies dropped from ~45 ms down to **0.35–0.44 ms** for 5P and 64P matches, and **4.47 ms** for 256P concurrent matches—well under the 100 ms requirement.
+   - Resulting p95 command acknowledgment latencies dropped from ~45 ms down to **0.40–0.75 ms** for 5P and 64P matches, and **2.31 ms** for 256P concurrent matches—well under the 100 ms requirement.
 
 2. **Accurate Isolation of TLS Overhead**:
    - Comparing TLS 1.3 TCP directly against Plaintext TCP isolates cryptographic operations (AES-256-GCM cipher suite negotiation, per-record MAC and AEAD encryption/decryption) and TLS 1.3 handshake exchange from TCP kernel stack dynamics.
-   - TLS handshake adds ~20 ms across 5-player matches and ~934 ms across 260 concurrent client handshakes in 256-player matches, while per-command p50 latency overhead is negligible (+0.03 ms for 5P, +0.06 ms for 64P, +0.17 ms for 256P).
-   - UNIX-domain socket performance serves as a reference for single-host IPC, but does not represent TCP transport dynamics.
+   - TLS handshake adds ~33 ms across 5-player matches, ~173 ms across 64-player matches, and ~710 ms across 260 concurrent client handshakes in 256-player matches, while per-command p50 latency overhead is negligible (+0.08 ms for 5P, -0.04 ms for 64P, +0.23 ms for 256P).
+   - Historical UNIX-domain socket performance from L1/L4/L6 benchmarks serves as a distinct third reference for single-host IPC, but does not represent TCP transport dynamics.
 
 3. **Descriptor Lifecycle and Telemetry Verification**:
    - Investigation of earlier telemetry reporting increasing descriptor counts (221, 481, 741) identified a socket descriptor leak in `tests/load_test_tls_harness.cpp` (`TlsClient::connect()`) where an initial socket was created before a retry loop and overwritten without closing.
    - Sockets now use `SOCK_CLOEXEC` exclusively, all non-standard inherited descriptors (> 2) are closed upon child process launch, and server process open descriptors are sampled by directly inspecting `/proc/<server_pid>/fd`.
-   - Verified that server child open descriptors settle back to baseline of **6** (within documented tolerance) across all runs and parent harness descriptors cleanly return to baseline.
+   - The settle helper enforces an explicit tolerance of **0** (`sample_settled_open_fds(..., 0, 3000ms)`), verifying that server child open descriptors settle back to the exact initial baseline of **6** across all 18 runs, with parent harness descriptors cleanly returning to baseline. Zero descriptor leaks.
 
 ### Physical Two-Computer LAN Acceptance Status
 
