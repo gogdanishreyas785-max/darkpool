@@ -668,9 +668,14 @@ RunResult execute_tls_match(
   mod.close();
 
   // Settle server descriptors and verify return to baseline
-  const auto cleanup_report = sample_settled_open_fds(server_pid, initial_server_fds.value_or(8), 2);
+  if (!initial_server_fds.has_value()) {
+    res.failures.correctness_failures++;
+    res.failures.last_failure_reason = "Failed to sample initial server FD baseline";
+  }
+  const auto cleanup_report = sample_settled_open_fds(
+      server_pid, initial_server_fds.value_or(0), 0, std::chrono::milliseconds(3000));
   res.open_fds = cleanup_report.settled_open_fds;
-  if (!cleanup_report.settled_within_tolerance) {
+  if (!initial_server_fds.has_value() || !cleanup_report.settled_within_tolerance || cleanup_report.settled_open_fds != *initial_server_fds) {
     res.failures.correctness_failures++;
     res.failures.last_failure_reason = "Server FDs failed to settle to baseline: " + cleanup_report.failure_reason;
   }
@@ -857,9 +862,14 @@ RunResult execute_tls_256p_concurrent(
   res.cpu_time_ms = sample_cpu_time_ms(server_pid);
 
   // Settle server descriptors and verify return to baseline
-  const auto cleanup_report = sample_settled_open_fds(server_pid, initial_server_fds.value_or(8), 2);
+  if (!initial_server_fds.has_value()) {
+    res.failures.correctness_failures++;
+    res.failures.last_failure_reason = "Failed to sample initial server FD baseline";
+  }
+  const auto cleanup_report = sample_settled_open_fds(
+      server_pid, initial_server_fds.value_or(0), 0, std::chrono::milliseconds(3000));
   res.open_fds = cleanup_report.settled_open_fds;
-  if (!cleanup_report.settled_within_tolerance) {
+  if (!initial_server_fds.has_value() || !cleanup_report.settled_within_tolerance || cleanup_report.settled_open_fds != *initial_server_fds) {
     res.failures.correctness_failures++;
     res.failures.last_failure_reason = "Server FDs failed to settle to baseline: " + cleanup_report.failure_reason;
   }
@@ -1081,9 +1091,14 @@ RunResult execute_tcp_match(
   for (auto& p : players) p->close();
   mod.close();
 
-  const auto cleanup_report = sample_settled_open_fds(server_pid, initial_server_fds.value_or(8), 2);
+  if (!initial_server_fds.has_value()) {
+    res.failures.correctness_failures++;
+    res.failures.last_failure_reason = "Failed to sample initial server FD baseline";
+  }
+  const auto cleanup_report = sample_settled_open_fds(
+      server_pid, initial_server_fds.value_or(0), 0, std::chrono::milliseconds(3000));
   res.open_fds = cleanup_report.settled_open_fds;
-  if (!cleanup_report.settled_within_tolerance) {
+  if (!initial_server_fds.has_value() || !cleanup_report.settled_within_tolerance || cleanup_report.settled_open_fds != *initial_server_fds) {
     res.failures.correctness_failures++;
     res.failures.last_failure_reason = "Server FDs failed to settle to baseline: " + cleanup_report.failure_reason;
   }
@@ -1262,9 +1277,14 @@ RunResult execute_tcp_256p_concurrent(
   res.peak_rss_kb = sample_peak_rss_kb(server_pid).value_or(0);
   res.cpu_time_ms = sample_cpu_time_ms(server_pid);
 
-  const auto cleanup_report = sample_settled_open_fds(server_pid, initial_server_fds.value_or(8), 2);
+  if (!initial_server_fds.has_value()) {
+    res.failures.correctness_failures++;
+    res.failures.last_failure_reason = "Failed to sample initial server FD baseline";
+  }
+  const auto cleanup_report = sample_settled_open_fds(
+      server_pid, initial_server_fds.value_or(0), 0, std::chrono::milliseconds(3000));
   res.open_fds = cleanup_report.settled_open_fds;
-  if (!cleanup_report.settled_within_tolerance) {
+  if (!initial_server_fds.has_value() || !cleanup_report.settled_within_tolerance || cleanup_report.settled_open_fds != *initial_server_fds) {
     res.failures.correctness_failures++;
     res.failures.last_failure_reason = "Server FDs failed to settle to baseline: " + cleanup_report.failure_reason;
   }

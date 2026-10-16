@@ -1112,7 +1112,7 @@ int main(int argc, char **argv) {
       }
 
       // If read operation wants read readiness (or normal read) and read readiness fired:
-      if (keep && !found->second.tls_read_want_write && (flags & read_or_hangup) != 0U) {
+      if (keep && !found->second.tls_write_want_read && !found->second.tls_read_want_write && (flags & read_or_hangup) != 0U) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
@@ -1131,7 +1131,7 @@ int main(int argc, char **argv) {
       }
 
       // If write operation wants write readiness and write readiness fired (or peer closed with pending output):
-      if (keep && !found->second.tls_write_want_read &&
+      if (keep && !found->second.tls_read_want_write && !found->second.tls_write_want_read &&
           ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
           !found->second.output.pending().empty()) {
         keep = write_client(epoll_fd, fd, found->second);
