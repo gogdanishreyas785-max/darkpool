@@ -60,7 +60,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.19s, 2,661 cycles, 10,644 matches, 5,790,336 requests: 5,758,404 successful operations, 31,932 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=10.32 ms, p99=13.12 ms, mean=2.14 ms. Throughput: 9,647.4 req/s. Initial VmRSS=3,580 kB, End VmRSS=4,276 kB, Peak VmHWM=4,296 kB, CPU=308.8s, Settled FDs=8 (100% of 2,661 cycles settled within baseline + 2 tolerance). Single measured run completed. |
 | L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.11s, 8,934 cycles, 35,736 matches, 19,440,384 requests: 19,333,176 successful operations, 107,208 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=9.44 ms, p99=11.39 ms, mean=2.00 ms. Throughput: 10,799.5 req/s. Initial VmRSS=3,520 kB, End VmRSS=4,216 kB, Peak VmHWM=4,400 kB, CPU=973.5s, Settled FDs=8. Post-cleanup VmRSS series bounded in 4,144–4,248 kB envelope (mean 4,200 kB) across all 8,934 cycles. Single measured run completed. |
 | L7 | Slow/disconnected clients | **PASS** | 64 KiB output queue bound with persistent overflow disconnect verified under concurrent multi-match load (76,080 bytes sent over 20 frames without reading triggers eviction at ~105 ms). Healthy sibling match completes all 3 rounds to `InsiderWin` with 100% success (latency p95=0.51 ms). Zero resource leaks (settled FDs 8 vs baseline 8). |
-| L8 | Malformed/flood traffic | **PASS** | Token bucket rate limiting (20 req/s, burst 40) strictly enforced without game state mutation (40 accepted, 41st rejected with error, token refill recovery verified). 4 KiB framing boundary (4,097 bytes) and malformed JSON closed safely. Concurrent high-volume flood (57-60 frames sent, 17-20 rate-limited responses observed, 0 transport errors) isolates sibling match responsiveness (p95=0.42 ms) and outcome (`InsiderWin`). Zero leaks (settled FDs 8 vs baseline 8). |
+| L8 | Malformed/flood traffic | **PASS** | Token bucket rate limiting (20 req/s, burst 40) strictly enforced without game state mutation (40 accepted, 41st rejected with error, token refill recovery verified). 4 KiB framing boundary (4,097 bytes) and malformed JSON closed safely. Concurrent flood workload (100 requests sent: 40 accepted, 60 rate-limited, 100 responses received, 0 transport errors, 0 malformed responses) isolates sibling match responsiveness across all 3 runs (p50 0.268–0.319 ms, p95 0.495–0.846 ms, max 0.652–1.220 ms; top-level record: min=0.122 ms, p50=0.319 ms, mean=0.344 ms, p95=0.495 ms, max=1.220 ms) and outcome (`InsiderWin`). Descriptors settled to baseline 8; maximum sampled RSS was 3,948 kB across the three runs (short-run bounded observations do not establish the absence of memory leaks). |
 
 ### Measured 5-Player Real-Server Load Test Results (L1)
 
@@ -448,11 +448,22 @@ python tools/validate_l6_sustained_evidence.py
    - **Malformed JSON**: Syntactically invalid payloads (truncated or corrupt JSON bytes) are handled safely by terminating the offending connection.
 4. **Concurrent Flood Isolation**:
    A high-rate concurrent flood (decoupled non-blocking sender blasting 100 requests across healthy match overlap and a concurrent draining receiver parsing responses with `FrameStream`) is executed concurrently with an active sibling match.
-   - **Flood Traffic Metrics**: 100 requests sent, exactly 40 accepted (initial burst), 60 rate-limited responses observed with `rate limit exceeded`, 0 transport errors, 0 malformed responses.
-   - **Sibling Match Integrity**: Healthy sibling match progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures).
-   - **Sibling Client Latency**: min = 0.08 ms, p50 = 0.25 ms, p95 = 0.49–0.85 ms, max = 0.95 ms.
+   - **Flood Traffic Metrics**: 100 requests sent, exactly 40 accepted (initial burst), 60 rate-limited responses observed with `rate limit exceeded`, 0 transport errors, 0 malformed responses (verified across all 3 runs).
+   - **Sibling Match Integrity**: Healthy sibling match progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures in every run).
+   - **Sibling Client Latency Per Run**:
+     The machine-readable evidence (`docs/load_test_l8_results.json`) records the following per-run healthy sibling client latency measurements and top-level summary:
+
+| Run | Duration | Minimum | p50 | Mean | p95 | p99 / Max | Sibling Status | Outcome |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 237 ms | 0.135 ms | 0.268 ms | 0.306 ms | 0.846 ms | 0.963 ms | PASS (59/59 reqs) | `InsiderWin` |
+| Run 2 | 237 ms | 0.172 ms | 0.299 ms | 0.303 ms | 0.499 ms | 0.652 ms | PASS (59/59 reqs) | `InsiderWin` |
+| Run 3 | 241 ms | 0.122 ms | 0.319 ms | 0.344 ms | 0.495 ms | 1.220 ms | PASS (59/59 reqs) | `InsiderWin` |
+| **Top-Level Record** | **241 ms** | **0.122 ms** | **0.319 ms** | **0.344 ms** | **0.495 ms** | **1.220 ms** | **PASS (59/59 reqs)** | **`InsiderWin`** |
+
+   *(Note: The top-level `flood_isolation_workload` object in `docs/load_test_l8_results.json` records the metrics from Run 3 rather than a pooled multi-run aggregate. Across all three individual runs in `runs[]`, minimum latency is 0.122–0.172 ms, p50 latency is 0.268–0.319 ms, mean latency is 0.303–0.344 ms, p95 latency is 0.495–0.846 ms, and maximum latency is 0.652–1.220 ms.)*
+
 5. **Resource and Descriptor Cleanup**:
-   Open file descriptors settle to baseline 8 descriptors within 10–11 ms (`post_cleanup_settled == true`). VmRSS remains bounded at 3,912 kB with zero leaks.
+   Open file descriptors returned to the baseline of 8 within 10 ms in all three runs (`post_cleanup_settled == true`; baseline = 8, peak = 19, immediate post-cleanup = 14–19, post-cleanup settled = 8). Sampled VmRSS values remained within the recorded baseline-to-maximum range across all three runs (baseline 3,592–3,612 kB; peak and post-cleanup values 3,924–3,948 kB; maximum sampled RSS 3,948 kB). These short-run samples document the observed resource bounds and descriptor cleanup, but do not independently establish the absence of memory leaks.
 6. **Deterministic Regression Suite**:
    `darkpool_load_l8_regression` executes 9 automated regression test cases validating burst/rejection/refill boundaries, state mutation prevention, flood isolation, injected flood skipping failure propagation, injected absent rate-limit evidence failure propagation, injected flood transport error propagation, cleanup leaks, and missing resource sample propagation (9/9 PASS).
 

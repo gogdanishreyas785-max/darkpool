@@ -59,17 +59,43 @@ Protocol format/versioning and ACK/duplicate semantics; local authentication and
 
 TCP/TLS 1.3/certificate lifecycle; real money, feeds, short selling, derivatives, complex auctions; GUI/mobile, public matchmaking, persistent accounts; multi-region/consensus/failover; unsupported advanced anti-cheat/host-root/side-channel claims; worker pool absent measured need; sandboxing absent approved testable requirement.
 
-## Approval gate
+## Approval gate (Historical S0 status)
 
-The original S0 proposals are not approvals by themselves. The explicit later user follow-ups approve DEC-02 and DEC-20 for variable-size matches. Other proposals remain governed by their individual status. Capacity and performance remain unmeasured targets.
+*(Historical context: At the time these initial S0 and S1 decisions were approved, capacity and performance targets were unmeasured design ceilings. The notes below record the historical status at that milestone. For current measured status following subsequent L4/L6 benchmark suites, see [Post-PR #26 implementation status and capacity follow-up](#post-pr-26-implementation-status-and-capacity-follow-up) below.)*
 
+The original S0 proposals are not approvals by themselves. The explicit later user follow-ups approve DEC-02 and DEC-20 for variable-size matches. Other proposals remain governed by their individual status. At the time of this approval gate, capacity and performance remained unmeasured targets.
 
-## S1 follow-up status
+## S1 follow-up status (Historical S1 baseline)
 
 Approved for S1 by the user's explicit follow-up: separate moderator boundary and stated powers; exactly five active roles; proposed economy, share reserve, event/health/price formulas, update order, clue, voting and victory precedence; supply-boundary fixture; and non-conserved player-credit model. The per-player cap is provisionally 1,000,000 credits (uint32_t) for S1, with overflow-causing trades rejected; this is an implementation detail directed by the S1 request. The engine receives an explicit role assignment and event impacts as inputs; S1 does not invent role shuffling or event randomness.
 
-Still open after S1: protocol encoding/ACKs and duplicate policy; local authentication and production limits; chat/audit retention and secret audit access; reconnect/exit handling; and load-test profile/acceptance evidence. The 64-player/four-match, latency and reliability targets remain unverified. The later variable-size follow-up explicitly supersedes S1's deferred role policy and authorizes the formula in DEC-02.
+Still open after S1: protocol encoding/ACKs and duplicate policy; local authentication and production limits; chat/audit retention and secret audit access; reconnect/exit handling; and load-test profile/acceptance evidence. In the historical S1 baseline, the 64-player/four-match, latency and reliability targets remained unverified (subsequently measured in L4 and L6; see below). The later variable-size follow-up explicitly supersedes S1's deferred role policy and authorizes the formula in DEC-02.
 
-## Variable-size follow-up status
+## Variable-size follow-up status (Historical pre-L6 status)
 
-Approved: 3–64 active players per match; moderator excluded; five remains the default; role counts follow DEC-02 using safe integer arithmetic. Multiple Insiders form a team: health zero gives an immediate Insider-team win; eliminating one Insider does not end the match while another remains; eliminating the last Insider with positive health gives Employees the win; surviving round three with any Insider active gives the Insider team the win. Every Investigator gets an independent once-per-match private binary role clue with same-target retry idempotency. These are approved game rules. Four concurrent 64-player matches and a 256-player server remain unverified until end-to-end load and isolation testing.
+Approved: 3–64 active players per match; moderator excluded; five remains the default; role counts follow DEC-02 using safe integer arithmetic. Multiple Insiders form a team: health zero gives an immediate Insider-team win; eliminating one Insider does not end the match while another remains; eliminating the last Insider with positive health gives Employees the win; surviving round three with any Insider active gives the Insider team the win. Every Investigator gets an independent once-per-match private binary role clue with same-target retry idempotency. These are approved game rules. In this historical milestone, four concurrent 64-player matches and a 256-player server remained unverified until end-to-end load and isolation testing (subsequently validated in L6; see below).
+
+## Post-PR #26 implementation status and capacity follow-up
+
+Following the merge of PRs #24, #25, and #26, the implementation and verification status has advanced beyond the initial unverified design ceilings. This section provides the authoritative current status:
+
+1. **Initial capacity decisions versus measured evidence**:
+   - At the time of the original S0 and S1 decisions, 64 players per match and four matches per process (REQ-07, DEC-20) were theoretical design ceilings and had not yet been measured.
+   - Subsequent L4 load testing (`docs/load_test_64p_results.json`) supplied measured single-match capacity evidence (64 players, sequential p95 = 0.17 ms, concurrent burst p95 = 0.58 ms) and sustained reliability (10-minute smoke and 30-minute soak without resource leaks).
+   - Subsequent L6 multi-match load testing (`docs/load_test_l6_results.json`) supplied measured four-match capacity evidence (4 concurrent matches × 64 players = 256 active players, concurrent burst p95 = 22.31 ms) and sustained reliability (10-minute smoke and 30-minute soak across 35,736 completed matches with zero transport or correctness failures).
+
+2. **Moderator topology and connection limit reconciliation**:
+   - The original S0 proposal (DEC-20) envisioned a single moderator connection across all matches (256 players + 1 moderator = 257 connections).
+   - To support independent moderator sessions and match ownership across multiple matches, the L6 implementation in `src/server_main.cpp` updated the configuration to four independent authenticated moderator connections: `kMaxMatches = 4`, `kMaxModerators = 4`, `kMaxPlayerConnections = 256`, and `kMaxConnections = 260`.
+   - Each match is independently owned and controlled by its dedicated moderator connection.
+
+3. **Scope of verification and deployment boundaries**:
+   - Historical statements that capacity and latency were "unverified" have been superseded **only** for the exact workloads, topologies, and environments measured and recorded in the repository artifacts (`docs/load_test_16p_results.json`, `docs/load_test_64p_results.json`, `docs/load_test_l1_results.json`, `docs/load_test_l3_results.json`, `docs/load_test_l5_results.json`, `docs/load_test_l6_results.json`, `docs/load_test_l7_results.json`, and `docs/load_test_l8_results.json`).
+   - These measurements were performed on a single-host Linux environment over nonblocking sockets. They validate the specific recorded workloads, but do not prove universal capacity under all arbitrary hardware, operating system, network, or production deployment conditions.
+
+4. **Private LAN TCP transport**:
+   - The server supports non-loopback TCP binding on an assigned RFC 1918 private IPv4 address via `--bind-address` (PR #26).
+   - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance remains deferred and `NOT RUN` (requiring two physical networked machines).
+
+5. **Transport security (TLS 1.3) status**:
+   - TLS 1.3, public-Internet deployment, certificate lifecycle, and production client identity remain proposed and deferred future work; they have not been implemented (see architectural design proposal in `docs/s9-transport-security-design.md`).

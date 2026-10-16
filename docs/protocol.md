@@ -3,9 +3,9 @@
 **Direct PDF requirements:** versioned length-prefixed envelope, request IDs, match IDs, payload, bounded input, validation, authorization, backpressure, initial UNIX sockets. **Proposed choices requiring approval:** encoding, field widths, ACK semantics and numeric limits.
 
 **Transport status:**
-- **Currently implemented:** Nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll in `src/server_main.cpp`, with an interactive terminal client CLI in `src/client_main.cpp`.
+- **Currently implemented:** Nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`), localhost TCP stream sockets (`127.0.0.1:4782`), and explicit non-loopback TCP binding on an assigned RFC 1918 private IPv4 address (`--bind-address <IPv4>`) monitored by epoll in `src/server_main.cpp`, with an interactive terminal client CLI in `src/client_main.cpp`. The LAN TCP transport is unencrypted plaintext and restricted strictly to assigned private subnets.
 - **Original architecture requirement:** Nonblocking UNIX domain stream sockets monitored by epoll (implemented).
-- **Deferred future work:** Production TCP/TLS 1.3 remote transport and certificate lifecycle. Transport contains no game rules.
+- **Deferred future work:** Production TCP/TLS 1.3 remote transport, certificate lifecycle management, and public-Internet deployment. Transport contains no game rules.
 
 **Proposed framing:** 4-byte unsigned big-endian frame length, then fixed header (version u16, message type u16, request ID u64, match ID 16 bytes, payload length u32), then UTF-8 JSON payload. Length counts header+payload; validate exact payload length before allocation. Zero match ID only for pre-match/control requests.
 
@@ -17,7 +17,9 @@ Proposed server types: WELCOME, ACK, MATCH_CREATED, JOINED, PHASE, EVENT, ROLE_P
 
 Connection flow: accept and assign connection ID; authenticate peer; create/resume server session; assign player identity server-side; join by validated operation; route using server-side session-to-match mapping; validate frame/schema/session/membership/phase/role/rate; apply transition, audit and enqueue authorized output; cleanup on disconnect under approved grace policy.
 
-The current coordinator `create_match` command accepts optional integer `player_count` in [3,64]; omission preserves the five-player default. The server derives the role counts using DEC-02, shuffles that role list, and assigns roles to server-owned seats. Client-supplied `roles` are rejected. `join_match` only fills an unoccupied seat in that match, and `start_match` requires all configured seats. The moderator is not a player seat. Four match records and 256 player plus one moderator connection (257 total) are configured limits, not measured capacity.
+The current coordinator `create_match` command accepts optional integer `player_count` in [3,64]; omission preserves the five-player default. The server derives the role counts using DEC-02, shuffles that role list, and assigns roles to server-owned seats. Client-supplied `roles` are rejected. `join_match` only fills an unoccupied seat in that match, and `start_match` requires all configured seats. The moderator is not a player seat.
+
+**Capacity and connection limits:** The initial S0 proposal envisioned one shared moderator connection and up to 256 player connections (257 total connections) as unverified design ceilings. This was superseded by the merged L6 multi-match implementation, which configures four match records, up to 256 player connections, and four independent authenticated moderator connections (one per match, 260 total concurrent connections; `kMaxMatches = 4`, `kMaxModerators = 4`, `kMaxConnections = 260`). Furthermore, capacity for these workloads is no longer unmeasured: L4 measured single-match 64-player capacity, and L6 measured four-match 256-player concurrent capacity with four independent moderators across functional and sustained 10-minute smoke / 30-minute soak benchmarks (`docs/load_test_l6_results.json`). However, physical cross-device two-computer LAN acceptance remains untested (`NOT RUN`), and TLS 1.3 remote deployment remains deferred.
 
 Proposed local authentication requiring approval: Linux peer credentials, restrictive socket ownership/mode, server session IDs; same UID does not distinguish humans. No persistent accounts. Reconnect secret policy remains open.
 
