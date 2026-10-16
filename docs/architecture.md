@@ -2,15 +2,15 @@
 
 ## System design
 
-One authoritative server process owns official game state. The implementation connects local client processes through nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP stream sockets (`127.0.0.1:4782`) monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). Remote TCP/TLS 1.3 and remote certificate lifecycle remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
+One authoritative server process owns official game state. The implementation connects local and trusted LAN client processes through nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and configurable TCP stream sockets (defaulting to localhost `127.0.0.1:4782`, or explicitly bound to an assigned RFC 1918 private IPv4 address via `--bind-address`) monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). Remote TCP/TLS 1.3 and remote certificate lifecycle remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
 
-Flow: client processes → UNIX domain / localhost TCP stream transport → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
+Flow: client processes → UNIX domain / localhost or private LAN TCP stream transport → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
 
 One event loop owns mutations initially; no thread per client. Optional workers only for measured CPU-heavy tasks, returning results to the owner loop. Workers never mutate matches. Use monotonic deadlines via timerfd or a deadline heap.
 
 ## Components
 
-- **Transport adapter:** Implemented using nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and localhost TCP sockets (`127.0.0.1:4782`) with epoll; remote TCP/TLS 1.3 adapter remains deferred. No game rules in transport.
+- **Transport adapter:** Implemented using nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`) and configurable TCP stream sockets (default: `127.0.0.1:4782`; optional `--bind-address <IPv4>` restricted to local assigned RFC 1918 private addresses) with epoll; remote internet TCP/TLS 1.3 adapter remains deferred. No game rules in transport.
 - **Connection manager:** connection IDs, framing, lifecycle, bounded input/output queues, rates, backpressure, disconnects.
 - **Protocol:** versioned envelope, schema/length validation, request correlation, error codes.
 - **Session manager:** server-assigned identity, authentication, permissions, reconnect/cleanup.
@@ -55,6 +55,14 @@ The product configuration maximum is 64 active players per match and four concur
 
 Create modules as implementation requires, not as empty placeholder code. CMake selects C++20 and documents supported Ubuntu compiler/kernel.
 
-## Future transport
+## Future transport & deferred roadmap
 
-Keep game and session interfaces transport-neutral. TCP/TLS 1.3, certificate/client identity lifecycle and deployment are later work; adding a transport must not rewrite game rules. Single-process initial design does not provide automatic failover.
+Keep game and session interfaces transport-neutral. The following items remain deferred future milestones:
+- Remote internet play over TLS 1.3
+- Production client authentication and credential lifecycle
+- Dynamic TLS certificate issuance, rotation, and reloading
+- Operational monitoring, Prometheus metrics, and systemd supervision
+- Durable crash-recovery and transaction persistence
+- Release packaging and archive generation (deferred until explicitly requested)
+
+Single-process initial design does not provide automatic failover. Adding new transports must preserve core game engine rules and determinism.

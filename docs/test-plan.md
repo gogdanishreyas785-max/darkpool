@@ -49,9 +49,9 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 | Run | Configuration | Status | Evidence / Notes |
 |---|---|:---:|---|
-| L1 | 5 players/1 match, full game | NOT RUN | Functional tests run at N=5; dedicated load measurement pending. |
+| L1 | 5 players/1 match, full game | **PASS** | Three repeatable 5-player runs (189 requests total: 159 sequential, 30 concurrent, 100% pass; 0 transport/correctness failures). Sequential: p50=0.25 ms, p95=0.38 ms, p99=0.76 ms. Concurrent burst: p50=0.34 ms, p95=0.65 ms, p99=0.67 ms. Verified winner: `InsiderWin`. |
 | L2 | 16 players/1 match | **PASS** | Three repeatable 16-player runs (462 requests total, 100% success; 0 transport/correctness failures). Sequential: p50=0.29 ms, p95=0.52 ms, p99=0.64 ms. Concurrent burst: p50=0.70 ms, p95=1.71 ms, p99=4.29 ms. Verified winner: `InsiderWin`. |
-| L3 | 32 players/1 match | NOT RUN | Untested; capacity unverified. |
+| L3 | 32 players/1 match | **PASS** | Three repeatable 32-player runs (864 requests total: 672 sequential, 192 concurrent, 100% pass; 0 transport/correctness failures). Sequential: p50=0.21 ms, p95=0.41 ms, p99=0.68 ms. Concurrent burst: p50=0.30 ms, p95=1.07 ms, p99=1.52 ms. Verified winner: `InsiderWin`. |
 | L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total: 1,671 successful operations + 12 expected protocol rejections, 100% pass; 0 transport/correctness failures). Sequential: p50=0.10 ms, p95=0.17 ms, p99=0.65 ms. Concurrent burst: p50=0.13 ms, p95=0.58 ms, p99=1.32 ms. Verified winner: `InsiderWin`. |
 | L4-Smoke | 64 players, 10-min sustained | **PASS** | 10-minute sustained repeated-match workload (600.04s, 13,271 matches, 7,365,405 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.09 ms, p99=0.14 ms, mean=0.06 ms. Throughput: 12,274.9 req/s. Peak RSS=3,928 kB, CPU=301.1s, FDs=8. Single measured run completed. |
 | L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
@@ -60,7 +60,32 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.19s, 2,661 cycles, 10,644 matches, 5,790,336 requests: 5,758,404 successful operations, 31,932 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=10.32 ms, p99=13.12 ms, mean=2.14 ms. Throughput: 9,647.4 req/s. Initial VmRSS=3,580 kB, End VmRSS=4,276 kB, Peak VmHWM=4,296 kB, CPU=308.8s, Settled FDs=8 (100% of 2,661 cycles settled within baseline + 2 tolerance). Single measured run completed. |
 | L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.11s, 8,934 cycles, 35,736 matches, 19,440,384 requests: 19,333,176 successful operations, 107,208 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=9.44 ms, p99=11.39 ms, mean=2.00 ms. Throughput: 10,799.5 req/s. Initial VmRSS=3,520 kB, End VmRSS=4,216 kB, Peak VmHWM=4,400 kB, CPU=973.5s, Settled FDs=8. Post-cleanup VmRSS series bounded in 4,144–4,248 kB envelope (mean 4,200 kB) across all 8,934 cycles. Single measured run completed. |
 | L7 | Slow/disconnected clients | **PASS** | 64 KiB output queue bound with persistent overflow disconnect verified under concurrent multi-match load (76,080 bytes sent over 20 frames without reading triggers eviction at ~105 ms). Healthy sibling match completes all 3 rounds to `InsiderWin` with 100% success (latency p95=0.51 ms). Zero resource leaks (settled FDs 8 vs baseline 8). |
-| L8 | Malformed/flood traffic | **PASS** | Token bucket rate limiting (20 req/s, burst 40) strictly enforced without game state mutation (40 accepted, 41st rejected with error, token refill recovery verified). 4 KiB framing boundary (4,097 bytes) and malformed JSON closed safely. Concurrent flood isolation preserves sibling match responsiveness (p95=0.40 ms) and outcome (`InsiderWin`). Zero leaks (settled FDs 8 vs baseline 8). |
+| L8 | Malformed/flood traffic | **PASS** | Token bucket rate limiting (20 req/s, burst 40) strictly enforced without game state mutation (40 accepted, 41st rejected with error, token refill recovery verified). 4 KiB framing boundary (4,097 bytes) and malformed JSON closed safely. Concurrent high-volume flood (57-60 frames sent, 17-20 rate-limited responses observed, 0 transport errors) isolates sibling match responsiveness (p95=0.42 ms) and outcome (`InsiderWin`). Zero leaks (settled FDs 8 vs baseline 8). |
+
+### Measured 5-Player Real-Server Load Test Results (L1)
+
+- **Test Commands**:
+  ```bash
+  # Standalone 3-run 5-player load harness execution
+  ./build/darkpool_load_tests ./build/darkpool_server --players 5 --runs 3 --out docs/load_test_l1_results.json
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_l1_functional$'
+  ```
+- **Source Commit**: `dc225f00101d098f13fba148381705d467be176d`
+- **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
+- **Workload & Correctness Verification**:
+  Real protocol clients driving a complete 5-player match (1 moderator + 5 players = 6 connected clients). Includes match creation, 5 player joins with deterministic role distribution (1 Insider, 1 Investigator, 3 Employees), match start, all 3 rounds of event publication, hints, trades (sequential and concurrent burst), market resolution, clue request, voting, and vote resolution (63 requests per run, 189 total requests).
+  All protocol responses, role counts, transitions, and guaranteed final outcome (`InsiderWin`) are strictly asserted.
+
+| Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Verified Winner |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 6 (5P + 1M) | 43 ms | 0.29 / 0.44 / 0.92 ms | 0.50 / 0.67 / 0.67 ms | 0 / 0 | 4,008 kB | 10.0 ms | `InsiderWin` |
+| Run 2 | 6 (5P + 1M) | 37 ms | 0.20 / 0.30 / 0.54 ms | 0.33 / 0.41 / 0.41 ms | 0 / 0 | 4,004 kB | 10.0 ms | `InsiderWin` |
+| Run 3 | 6 (5P + 1M) | 39 ms | 0.24 / 0.38 / 0.76 ms | 0.35 / 0.52 / 0.52 ms | 0 / 0 | 4,008 kB | 45.1 ms | `InsiderWin` |
+| **Aggregate** | **6** | **119 ms** | **0.25 / 0.38 / 0.76 ms** | **0.34 / 0.65 / 0.67 ms** | **0 / 0 (100% Pass)** | **4,008 kB max** | **65.1 ms total** | **`InsiderWin`** |
+
+*Machine-readable report stored in: [`docs/load_test_l1_results.json`](load_test_l1_results.json)*
 
 ### Measured 16-Player Real-Server Load Test Results (L2)
 
@@ -94,6 +119,31 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | **Aggregate** | **17** | **247 ms** | **0.29 / 0.52 / 0.64 ms** | **0.70 / 1.71 / 4.29 ms** | **0 / 0 (100% Pass)** | **4,136 kB max** | **80.0 ms total** | **`InsiderWin`** |
 
 *Machine-readable report stored in: [`docs/load_test_16p_results.json`](load_test_16p_results.json)*
+
+### Measured 32-Player Real-Server Load Test Results (L3)
+
+- **Test Commands**:
+  ```bash
+  # Standalone 3-run 32-player load harness execution
+  ./build/darkpool_load_tests ./build/darkpool_server --players 32 --runs 3 --out docs/load_test_l3_results.json
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_l3_functional$'
+  ```
+- **Source Commit**: `dc225f00101d098f13fba148381705d467be176d`
+- **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
+- **Workload & Correctness Verification**:
+  Real protocol clients driving a complete 32-player match (1 moderator + 32 players = 33 connected clients). Includes match creation, 32 player joins with deterministic role distribution according to DEC-02 formulas (4 Insiders, 2 Investigators, 26 Employees), match start, all 3 rounds of event publication, insider hints, trades (sequential and 32-client concurrent burst in Round 2), market resolution, clue request, voting (sequential and 32-client concurrent burst), and vote resolution (288 requests per run, 864 total requests).
+  All protocol responses, role distributions, phase transitions, and guaranteed final outcome (`InsiderWin`) are strictly asserted.
+
+| Run | Clients | Duration | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Failures (Transport / Correctness) | Peak Server RSS | Server CPU Time | Verified Winner |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 33 (32P + 1M) | 103 ms | 0.24 / 0.41 / 0.61 ms | 0.31 / 1.03 / 1.30 ms | 0 / 0 | 4,076 kB | 40.0 ms | `InsiderWin` |
+| Run 2 | 33 (32P + 1M) | 93 ms | 0.20 / 0.40 / 0.78 ms | 0.30 / 1.18 / 1.55 ms | 0 / 0 | 4,052 kB | 40.0 ms | `InsiderWin` |
+| Run 3 | 33 (32P + 1M) | 95 ms | 0.20 / 0.42 / 0.64 ms | 0.29 / 0.61 / 0.80 ms | 0 / 0 | 4,056 kB | 30.0 ms | `InsiderWin` |
+| **Aggregate** | **33** | **291 ms** | **0.21 / 0.41 / 0.68 ms** | **0.30 / 1.07 / 1.52 ms** | **0 / 0 (100% Pass)** | **4,076 kB max** | **110.0 ms total** | **`InsiderWin`** |
+
+*Machine-readable report stored in: [`docs/load_test_l3_results.json`](load_test_l3_results.json)*
 
 ### Measured 64-Player Real-Server Load Test Results (L4)
 
@@ -367,18 +417,22 @@ python tools/validate_l6_sustained_evidence.py
 
 ## L8: Malformed Traffic and Request Flood Protection
 
-- **Status**: **PASS** (reproducible functional benchmark and deterministic regression suite).
+- **Status**: **PASS** (three repeatable functional benchmark runs and deterministic 9-case regression suite).
 - **Approved Policy Reference**: [docs/DECISIONS.md](DECISIONS.md) DEC-11 (token bucket rate limiter at 20 req/s with burst capacity 40; 4 KiB frame payload limit; 64 KiB output queue).
 - **Dedicated Machine-Readable Report**: [`docs/load_test_l8_results.json`](load_test_l8_results.json)
-- **Source Commit**: `bfe240cee5ffaf23c9a92c29e5f06fb11f133e11` (clean checkout, `git_dirty: false`)
+- **Source Commit**: `dc225f00101d098f13fba148381705d467be176d` (clean checkout, `git_dirty: false`)
 - **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0.
 - **Test Commands**:
   ```bash
-  # Standalone L8 load harness execution
-  ./build/darkpool_load_tests_l8 ./build/darkpool_server --out docs/load_test_l8_results.json
+  # Standalone L8 3-run load harness execution
+  ./build/darkpool_load_tests_l8 ./build/darkpool_server --runs 3 --out docs/load_test_l8_results.json
 
-  # Automated deterministic regression selftest suite (6 test cases)
+  # Automated deterministic regression selftest suite (9 test cases)
   ./build/darkpool_load_tests_l8 ./build/darkpool_server --selftest
+
+  # Automated evidence validator and validator unit tests
+  python3 tools/validate_l8_evidence.py docs/load_test_l8_results.json
+  python3 -m unittest tests/test_validate_l8_evidence.py
 
   # Automated CTest suite execution
   ctest --test-dir build --output-on-failure -R '^darkpool_load_l8_'
@@ -393,12 +447,14 @@ python tools/validate_l6_sustained_evidence.py
    - **Oversized Frames**: In accordance with the 4 KiB frame limit, payloads exceeding 4,096 bytes (tested with 4,097 bytes) are rejected and the connection is closed without server crash or hang.
    - **Malformed JSON**: Syntactically invalid payloads (truncated or corrupt JSON bytes) are handled safely by terminating the offending connection.
 4. **Concurrent Flood Isolation**:
-   A rapid request flood on Match 1 is executed concurrently with an active 8-player sibling match (Match 2). Healthy Match 2 progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures).
-   - Healthy Client Latency: min = 0.10 ms, p50 = 0.25 ms, p95 = 0.40 ms, p99 = 0.48 ms, max = 0.48 ms.
+   A high-rate concurrent flood (decoupled non-blocking sender blasting 57–68 requests and a concurrent draining receiver parsing responses with `FrameStream`) is executed concurrently with an active sibling match.
+   - **Flood Traffic Metrics**: 57–68 requests sent, exactly 40 accepted (initial burst), 17–28 rate-limited responses observed with `rate limit exceeded`, 0 transport errors, 0 malformed responses.
+   - **Sibling Match Integrity**: Healthy sibling match progresses through all 3 rounds to `Finished`/`InsiderWin` with 100% success (59 requests, 0 transport/correctness failures).
+   - **Sibling Client Latency**: min = 0.08 ms, p50 = 0.24 ms, p95 = 0.42–0.48 ms, max = 0.62 ms.
 5. **Resource and Descriptor Cleanup**:
-   Open file descriptors settle to baseline 8 descriptors within 10 ms (`post_cleanup_settled == true`). VmRSS remains bounded at 3,936 kB with zero leaks.
+   Open file descriptors settle to baseline 8 descriptors within 10–11 ms (`post_cleanup_settled == true`). VmRSS remains bounded at 3,912 kB with zero leaks.
 6. **Deterministic Regression Suite**:
-   `darkpool_load_l8_regression` executes 6 automated regression test cases validating burst/rejection/refill boundaries, state mutation prevention, flood isolation, cleanup leaks, and missing resource sample propagation (6/6 PASS).
+   `darkpool_load_l8_regression` executes 9 automated regression test cases validating burst/rejection/refill boundaries, state mutation prevention, flood isolation, injected flood skipping failure propagation, injected absent rate-limit evidence failure propagation, injected flood transport error propagation, cleanup leaks, and missing resource sample propagation (9/9 PASS).
 
 ## Proposed mixed64-v1 p95 workload — approval required
 

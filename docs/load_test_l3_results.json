@@ -1,0 +1,121 @@
+{
+  "all_runs_passed": true,
+  "client_count": 33,
+  "concurrent_summary": {
+    "mean_ms": 0.3946822916666667,
+    "p50_ms": 0.296,
+    "p95_ms": 1.069,
+    "p99_ms": 1.52,
+    "successful_requests": 192,
+    "total_requests": 192
+  },
+  "environment": "Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz",
+  "player_count": 32,
+  "repeat_runs": 3,
+  "runs": [
+    {
+      "concurrent": {
+        "mean_ms": 0.393375,
+        "p50_ms": 0.306,
+        "p95_ms": 1.032,
+        "p99_ms": 1.305,
+        "successful_requests": 64,
+        "total_requests": 64
+      },
+      "correctness_failures": 0,
+      "cpu_time_ms": 40.0,
+      "duration_ms": 103,
+      "final_outcome": "InsiderWin",
+      "final_phase": "Finished",
+      "peak_rss_kb": 4076,
+      "run_index": 1,
+      "run_passed": true,
+      "sequential": {
+        "mean_ms": 0.2595848214285714,
+        "p50_ms": 0.243,
+        "p95_ms": 0.407,
+        "p99_ms": 0.606,
+        "successful_requests": 224,
+        "total_requests": 224
+      },
+      "transport_failures": 0
+    },
+    {
+      "concurrent": {
+        "mean_ms": 0.473171875,
+        "p50_ms": 0.299,
+        "p95_ms": 1.181,
+        "p99_ms": 1.554,
+        "successful_requests": 64,
+        "total_requests": 64
+      },
+      "correctness_failures": 0,
+      "cpu_time_ms": 40.0,
+      "duration_ms": 93,
+      "final_outcome": "InsiderWin",
+      "final_phase": "Finished",
+      "peak_rss_kb": 4052,
+      "run_index": 2,
+      "run_passed": true,
+      "sequential": {
+        "mean_ms": 0.22820535714285714,
+        "p50_ms": 0.204,
+        "p95_ms": 0.401,
+        "p99_ms": 0.782,
+        "successful_requests": 224,
+        "total_requests": 224
+      },
+      "transport_failures": 0
+    },
+    {
+      "concurrent": {
+        "mean_ms": 0.3175,
+        "p50_ms": 0.286,
+        "p95_ms": 0.613,
+        "p99_ms": 0.804,
+        "successful_requests": 64,
+        "total_requests": 64
+      },
+      "correctness_failures": 0,
+      "cpu_time_ms": 30.0,
+      "duration_ms": 95,
+      "final_outcome": "InsiderWin",
+      "final_phase": "Finished",
+      "peak_rss_kb": 4056,
+      "run_index": 3,
+      "run_passed": true,
+      "sequential": {
+        "mean_ms": 0.22966071428571427,
+        "p50_ms": 0.197,
+        "p95_ms": 0.418,
+        "p99_ms": 0.636,
+        "successful_requests": 224,
+        "total_requests": 224
+      },
+      "transport_failures": 0
+    }
+  ],
+  "sequential_summary": {
+    "mean_ms": 0.23915029761904763,
+    "p50_ms": 0.213,
+    "p95_ms": 0.413,
+    "p99_ms": 0.678,
+    "successful_requests": 672,
+    "total_requests": 672
+  },
+  "source_commit": "dc225f00101d098f13fba148381705d467be176d",
+  "status": "PASS",
+  "test_name": "darkpool_load_tests_32p",
+  "timestamp": 1792124592,
+  "total_summary": {
+    "correctness_failures": 0,
+    "mean_ms": 0.273712962962963,
+    "p50_ms": 0.23,
+    "p95_ms": 0.556,
+    "p99_ms": 1.077,
+    "successful_requests": 864,
+    "total_duration_ms": 291,
+    "total_requests": 864,
+    "transport_failures": 0
+  }
+}
