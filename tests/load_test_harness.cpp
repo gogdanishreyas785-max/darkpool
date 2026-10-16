@@ -461,10 +461,13 @@ RunResult execute_16_player_match(
                             ? (*create_resp)["match_id"].get<std::uint64_t>()
                             : 1U;
 
-  // Verify Role Counts from match_created: N=16 requires 2 Insiders, 1 Investigator, 13 Employees
-  VERIFY(create_resp && (*create_resp)["insiders"] == 2U &&
-             (*create_resp)["investigators"] == 1U && (*create_resp)["employees"] == 13U,
-         "Roster role counts mismatch for 16 players in match_created");
+  // Verify Role Counts from match_created using DEC-02 formulas
+  const std::size_t expected_insiders = (player_count + 7) / 8;
+  const std::size_t expected_investigators = (player_count + 15) / 16;
+  const std::size_t expected_employees = player_count - expected_insiders - expected_investigators;
+  VERIFY(create_resp && (*create_resp)["insiders"] == expected_insiders &&
+             (*create_resp)["investigators"] == expected_investigators && (*create_resp)["employees"] == expected_employees,
+         "Roster role counts mismatch for player count in match_created");
 
   // Role tracking
   std::vector<int> insider_fds;
@@ -495,8 +498,8 @@ RunResult execute_16_player_match(
   }
 
   // Verify Joined Role Distribution
-  VERIFY(insider_fds.size() == 2U, "Expected exactly 2 Insiders");
-  VERIFY(investigator_fd >= 0, "Expected exactly 1 Investigator");
+  VERIFY(insider_fds.size() == expected_insiders, "Expected correct number of Insiders");
+  VERIFY(investigator_fd >= 0, "Expected at least 1 Investigator");
   VERIFY(employee_target > 0U, "Expected at least 1 Employee target");
 
   // Injected fault test: simulate assertion failure if configured
@@ -562,9 +565,12 @@ RunResult execute_16_player_match(
       std::vector<int> conc_success(player_fds.size(), 0);
       std::vector<FailureCounts> thread_failures(player_fds.size());
 
+      const std::size_t num_sells = std::max<std::size_t>(1U, player_count / 4);
+      const std::size_t num_buys = std::max<std::size_t>(1U, player_count / 4);
+
       for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
         threads.emplace_back([&, seat]() {
-          std::string action = (seat < 4U) ? "SELL" : (seat < 8U) ? "BUY" : "HOLD";
+          std::string action = (seat < num_sells) ? "SELL" : (seat < num_sells + num_buys) ? "BUY" : "HOLD";
           std::vector<RequestMetric> local_metrics;
           const auto tr = timed_request(
               player_fds[seat],
@@ -599,7 +605,7 @@ RunResult execute_16_player_match(
       for (std::size_t seat = 0; seat < player_fds.size(); ++seat) {
         std::string action = "HOLD";
         if (round == 1U) {
-          action = (seat < 8U) ? "BUY" : "HOLD";
+          action = (seat < player_count / 2) ? "BUY" : "HOLD";
         } else {
           action = "HOLD";
         }
@@ -1001,7 +1007,7 @@ int main(int argc, char* argv[]) {
   bool all_runs_passed = true;
 
   for (int r = 1; r <= repeat_runs; ++r) {
-    std::cout << "[Run " << r << "/" << repeat_runs << "] Executing 16-player match... " << std::flush;
+    std::cout << "[Run " << r << "/" << repeat_runs << "] Executing " << player_count << "-player match... " << std::flush;
     const auto res = execute_16_player_match(server_path, r, player_count);
     results.push_back(res);
 
@@ -1064,7 +1070,7 @@ int main(int argc, char* argv[]) {
 
   // Print Markdown Results Table
   std::cout << "=================================================================\n";
-  std::cout << " SUMMARY RESULTS (Three Repeatable 16-Player Runs)\n";
+  std::cout << " SUMMARY RESULTS (Three Repeatable " << player_count << "-Player Runs)\n";
   std::cout << "=================================================================\n";
   std::cout << "| Run | Clients | Duration | Sequential (p50/p95/p99) | Concurrent (p50/p95/p99) | Failures (Trans/Corr) | Peak RSS | CPU |\n";
   std::cout << "|---|---|---|---|---|---|---|---|\n";
@@ -1085,7 +1091,8 @@ int main(int argc, char* argv[]) {
 
   // Write Machine-Readable JSON Report
   json report;
-  report["test_name"] = "darkpool_load_tests_16_player";
+  report["test_name"] = "darkpool_load_tests_" + std::to_string(player_count) + "p";
+  report["status"] = all_runs_passed ? "PASS" : "FAIL";
   report["source_commit"] = source_commit;
   report["environment"] = env_info;
   report["player_count"] = player_count;
