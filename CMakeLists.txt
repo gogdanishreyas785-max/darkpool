@@ -148,7 +148,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_definitions(darkpool_load_tests_l5 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
   endif()
   add_test(NAME darkpool_load_l5_functional
-    COMMAND darkpool_load_tests_l5 $<TARGET_FILE:darkpool_server> --functional --out docs/load_test_l5_results.json)
+    COMMAND darkpool_load_tests_l5 $<TARGET_FILE:darkpool_server> --functional)
   set_tests_properties(darkpool_load_l5_functional PROPERTIES TIMEOUT 60)
   add_test(NAME darkpool_load_l5_regression
     COMMAND darkpool_load_tests_l5 $<TARGET_FILE:darkpool_server> --selftest)
