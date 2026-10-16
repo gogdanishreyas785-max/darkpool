@@ -57,8 +57,8 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
 | L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
 | L6-Functional | 4 × 64 (256 players / 4 matches) | **PASS** | Three repeatable 4-match runs over UNIX sockets with 4 independent moderators (6,528 requests total, 100% pass; 0 transport/correctness failures). Sequential: p50=0.14 ms, p95=0.33 ms, p99=1.05 ms. Concurrent burst: p50=14.39 ms, p95=22.31 ms, p99=29.32 ms. Verified winner: `InsiderWin`. |
-| L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.14s, 1,945 cycles, 7,780 matches, 4,232,320 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.10 ms, p95=13.30 ms, p99=19.53 ms, mean=2.86 ms. Throughput: 7,052.2 req/s. Peak RSS=4,292 kB, CPU=287.7s, Settled FDs=8. Single measured run completed. |
-| L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.14s, 6,328 cycles, 25,312 matches, 13,769,728 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.09 ms, p95=12.89 ms, p99=16.88 ms, mean=2.77 ms. Throughput: 7,649.2 req/s. Peak RSS=4,452 kB, CPU=902.3s, Settled FDs=8. Flat memory across 30m (+160 kB peak RSS across >9.5M additional requests). Single measured run completed. |
+| L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.19s, 2,661 cycles, 10,644 matches, 5,790,336 requests: 5,758,404 successful operations, 31,932 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=10.32 ms, p99=13.12 ms, mean=2.14 ms. Throughput: 9,647.4 req/s. Initial VmRSS=3,580 kB, End VmRSS=4,276 kB, Peak VmHWM=4,296 kB, CPU=308.8s, Settled FDs=8 (100% of 2,661 cycles settled within baseline + 2 tolerance). Single measured run completed. |
+| L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.11s, 8,934 cycles, 35,736 matches, 19,440,384 requests: 19,333,176 successful operations, 107,208 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=9.44 ms, p99=11.39 ms, mean=2.00 ms. Throughput: 10,799.5 req/s. Initial VmRSS=3,520 kB, End VmRSS=4,216 kB, Peak VmHWM=4,400 kB, CPU=973.5s, Settled FDs=8. Post-cleanup VmRSS series bounded in 4,144–4,248 kB envelope (mean 4,200 kB) across all 8,934 cycles. Single measured run completed. |
 | L7 | Slow/disconnected clients | NOT RUN | Untested under load. |
 | L8 | Malformed/flood traffic | NOT RUN | Malformed isolation verified functionally; high-rate flood unmeasured. |
 
@@ -246,29 +246,30 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 1. **Measurement Boundary**: Request latency is measured via monotonic clock (`std::chrono::steady_clock`) from frame write initiation until complete correlated response frame deserialization and validation. Excludes harness coordination pauses.
 2. **Concurrency Scope**: Tests 256 simultaneous player clients across 4 matches with burst concurrency in Round 2 and 4 independent moderator connections.
 3. **FD Settle Dynamics**: Immediate post-close FD count captures the transient state before the server epoll loop drains pending connection closes (epoll batch size 16); bounded polling confirms all 260 client sockets are closed and the process settles at 8 open descriptors within 10 ms, fully satisfying the baseline + 2 tolerance threshold (baseline = 9 descriptors, settled = 8 descriptors; note these are distinct counts, not equal counts).
-4. **Sustained / Soak Testing**: Functional capacity benchmark is complemented by single measured runs for L6 sustained workloads: 10-minute smoke test (1,945 cycles, 7,780 matches, 0 failures) and 30-minute reliability test (6,328 cycles, 25,312 matches, 0 failures) on a persistent server process. Multi-run soak repetitions (e.g., three 30m runs) were not executed.
+4. **Sustained / Soak Testing**: Functional capacity benchmark is complemented by single measured runs for L6 sustained workloads: 10-minute smoke test (2,661 cycles, 10,644 matches, 0 failures) and 30-minute reliability test (8,934 cycles, 35,736 matches, 0 failures) on a persistent server process. Multi-run soak repetitions (e.g., three 30m runs) were not executed.
 
 ### L6 Sustained Workload Stages (10-Minute Smoke & 30-Minute Reliability)
 
 - **10-Minute Repeated-Cycle Smoke Test (`--smoke-10m`)**: **PASS** (single measured run on persistent server).
-  - **Source Commit**: `9fdffebbe56458f1a32ef4dd0b4360cf99c38b74` (`git_dirty: false`)
-  - **Actual Duration**: 600.14s (600,145 ms; target: 600s, zero shortfall).
-  - **Completed Cycles & Matches**: 1,945 cycles (7,780 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
-  - **Request Volume**: 4,232,320 requests (4,208,980 successful operations, 23,340 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
-  - **Throughput**: 7,052.2 req/s (denominator: actual elapsed duration in seconds).
-  - **Round-Trip Latency**: Sequential p50 = 0.08 ms, p95 = 0.22 ms, p99 = 0.35 ms; Concurrent Burst p50 = 11.16 ms, p95 = 18.59 ms, p99 = 32.23 ms; Total p50 = 0.10 ms, p95 = 13.30 ms, p99 = 19.53 ms, mean = 2.86 ms (p95 meets provisional ≤100 ms guidance).
-  - **Resources**: Initial RSS = 3,576 kB, Peak RSS = 4,292 kB, End RSS = 4,272 kB, Server CPU = 287,710.0 ms, Open FDs = 8 settled (100% of 1,945 cycles settled within `baseline + 2` tolerance).
+  - **Source Commit**: `a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec` (`git_dirty: false`)
+  - **Actual Duration**: 600.19s (600,194 ms; target: 600s, zero shortfall).
+  - **Completed Cycles & Matches**: 2,661 cycles (10,644 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
+  - **Request Volume**: 5,790,336 requests (5,758,404 successful operations, 31,932 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 9,647.4 req/s (denominator: actual elapsed duration in seconds).
+  - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.14 ms, p99 = 0.24 ms; Concurrent Burst p50 = 8.68 ms, p95 = 12.80 ms, p99 = 16.61 ms; Total p50 = 0.08 ms, p95 = 10.32 ms, p99 = 13.12 ms, mean = 2.14 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Initial Current RSS (`VmRSS`) = 3,580 kB, End Current RSS (`VmRSS`) = 4,276 kB, Peak Process High-Water Mark (`VmHWM`) = 4,296 kB, Server CPU = 308,810.0 ms, Open FDs = 8 settled (100% of 2,661 cycles settled within `baseline + 2` tolerance).
+  - **Telemetry & Evidence**: Full cycle-level records serialized to report, including per-cycle `VmRSS` series (mean 4,263.7 kB; median 4,264 kB; range 4,212–4,296 kB) and explicit FD cleanup records across all 2,661 cycles.
   - **Report File**: [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json).
 
 - **30-Minute Repeated-Cycle Reliability Test (`--reliability-30m`)**: **PASS** (single measured run on persistent server).
-  - **Source Commit**: `9fdffebbe56458f1a32ef4dd0b4360cf99c38b74` (`git_dirty: false`)
-  - **Actual Duration**: 1800.14s (1,800,142 ms; target: 1800s, zero shortfall).
-  - **Completed Cycles & Matches**: 6,328 cycles (25,312 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
-  - **Request Volume**: 13,769,728 requests (13,693,792 successful operations, 75,936 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
-  - **Throughput**: 7,649.2 req/s (denominator: actual elapsed duration in seconds).
-  - **Round-Trip Latency**: Sequential p50 = 0.08 ms, p95 = 0.22 ms, p99 = 0.34 ms; Concurrent Burst p50 = 11.05 ms, p95 = 16.28 ms, p99 = 25.85 ms; Total p50 = 0.09 ms, p95 = 12.89 ms, p99 = 16.88 ms, mean = 2.77 ms (p95 meets provisional ≤100 ms guidance).
-  - **Resources**: Initial RSS = 3,520 kB, Peak RSS = 4,452 kB, End RSS = 4,452 kB, Server CPU = 902,250.0 ms, Open FDs = 8 settled (100% of 6,328 cycles settled within `baseline + 2` tolerance).
-  - **Leak / Degradation Analysis**: Flat memory (+160 kB peak RSS increase across >9.5M additional requests from smoke to 30m reliability; settled FDs strictly at 8 descriptors across all 6,328 cycles) confirms no memory leaks, file-descriptor leaks, or event-loop degradation on the persistent server process.
+  - **Source Commit**: `a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec` (`git_dirty: false`)
+  - **Actual Duration**: 1800.11s (1,800,113 ms; target: 1800s, zero shortfall).
+  - **Completed Cycles & Matches**: 8,934 cycles (35,736 matches across 4 concurrent matches per cycle; 0 unexpected disconnects, 0 match limit retries).
+  - **Request Volume**: 19,440,384 requests (19,333,176 successful operations, 107,208 expected negative protocol rejections; 0 transport failures, 0 correctness failures).
+  - **Throughput**: 10,799.5 req/s (denominator: actual elapsed duration in seconds).
+  - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.12 ms, p99 = 0.18 ms; Concurrent Burst p50 = 8.29 ms, p95 = 11.21 ms, p99 = 13.31 ms; Total p50 = 0.08 ms, p95 = 9.44 ms, p99 = 11.39 ms, mean = 2.00 ms (p95 meets provisional ≤100 ms guidance).
+  - **Resources**: Initial Current RSS (`VmRSS`) = 3,520 kB, End Current RSS (`VmRSS`) = 4,216 kB, Peak Process High-Water Mark (`VmHWM`) = 4,400 kB, Server CPU = 973,450.0 ms, Open FDs = 8 settled (100% of 8,934 cycles settled within `baseline + 2` tolerance).
+  - **Memory & Resource Telemetry Analysis**: Rather than inferring memory stability by subtracting high-water marks from separate runs, the harness captures the actual per-cycle post-cleanup `VmRSS` trajectory. Across all 8,934 cycles (>19.4M requests over 30 minutes on a persistent server), post-cleanup `VmRSS` remained bounded in a narrow 4,144–4,248 kB envelope (mean 4,199.9 kB, median 4,200.0 kB; the first 50 cycles averaged 4,193.1 kB and the final 50 cycles averaged 4,202.4 kB). The process peak high-water mark (`VmHWM`) reached 4,400 kB during peak 260-connection burst load. Settled file descriptors stabilized at 8 descriptors (within baseline 9 + 2 tolerance) across 100% of completed cycles with zero descriptor leakage. While no finite workload can prove the absence of every theoretically conceivable memory leak, these observed current-RSS trajectory and descriptor-settling series demonstrate bounded steady-state memory and resource behavior under sustained multi-match load.
   - **Report File**: [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json).
 
 ## Proposed mixed64-v1 p95 workload — approval required
