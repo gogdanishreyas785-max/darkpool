@@ -55,7 +55,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | L4 | 64 players/1 match (Functional) | **PASS** | Three repeatable 64-player runs over UNIX sockets (1,683 requests total: 1,671 successful operations + 12 expected protocol rejections, 100% pass; 0 transport/correctness failures). Sequential: p50=0.10 ms, p95=0.17 ms, p99=0.65 ms. Concurrent burst: p50=0.13 ms, p95=0.58 ms, p99=1.32 ms. Verified winner: `InsiderWin`. |
 | L4-Smoke | 64 players, 10-min sustained | **PASS** | 10-minute sustained repeated-match workload (600.04s, 13,271 matches, 7,365,405 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.09 ms, p99=0.14 ms, mean=0.06 ms. Throughput: 12,274.9 req/s. Peak RSS=3,928 kB, CPU=301.1s, FDs=8. Single measured run completed. |
 | L4-Reliability | 64 players, 30-min sustained | **PASS** | 30-minute sustained repeated-match workload (1800.11s, 32,118 matches, 17,825,490 requests, 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.06 ms, p95=0.13 ms, p99=0.21 ms, mean=0.08 ms. Throughput: 9,902.4 req/s. Peak RSS=3,940 kB, CPU=894.9s, FDs=8. Zero socket/memory leaks (+12 kB RSS over 30m). Single measured run completed. |
-| L5 | 2 × 32 concurrent matches | NOT RUN | Untested; multi-match starvation unverified. |
+| L5 | 2 × 32 concurrent matches | **PASS** | Three repeatable 2-match 32-player runs over UNIX sockets with 2 independent moderators (1,758 requests total: 1,719 successful operations, 39 expected rejections, 100% pass; 0 transport/correctness failures). Concurrency overlap and multi-match anti-starvation verified across all runs. Sequential: p50=0.12 ms, p95=0.22 ms, p99=0.60 ms. Concurrent burst: p50=3.15 ms, p95=6.21 ms, p99=7.02 ms. Verified winner: `InsiderWin` for both matches. |
 | L6-Functional | 4 × 64 (256 players / 4 matches) | **PASS** | Three repeatable 4-match runs over UNIX sockets with 4 independent moderators (6,528 requests total, 100% pass; 0 transport/correctness failures). Sequential: p50=0.14 ms, p95=0.33 ms, p99=1.05 ms. Concurrent burst: p50=14.39 ms, p95=22.31 ms, p99=29.32 ms. Verified winner: `InsiderWin`. |
 | L6-Smoke | 4 × 64, 10-min sustained | **PASS** | 10-minute sustained repeated 4-match cycle workload (600.19s, 2,661 cycles, 10,644 matches, 5,790,336 requests: 5,758,404 successful operations, 31,932 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=10.32 ms, p99=13.12 ms, mean=2.14 ms. Throughput: 9,647.4 req/s. Initial VmRSS=3,580 kB, End VmRSS=4,276 kB, Peak VmHWM=4,296 kB, CPU=308.8s, Settled FDs=8 (100% of 2,661 cycles settled within baseline + 2 tolerance). Single measured run completed. |
 | L6-Reliability | 4 × 64, 30-min sustained | **PASS** | 30-minute sustained repeated 4-match cycle workload (1800.11s, 8,934 cycles, 35,736 matches, 19,440,384 requests: 19,333,176 successful operations, 107,208 expected rejections; 0 transport/correctness failures, 0 unexpected disconnects). Latency: p50=0.08 ms, p95=9.44 ms, p99=11.39 ms, mean=2.00 ms. Throughput: 10,799.5 req/s. Initial VmRSS=3,520 kB, End VmRSS=4,216 kB, Peak VmHWM=4,400 kB, CPU=973.5s, Settled FDs=8. Post-cleanup VmRSS series bounded in 4,144–4,248 kB envelope (mean 4,200 kB) across all 8,934 cycles. Single measured run completed. |
@@ -93,7 +93,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | Run 3 | 17 (16P + 1M) | 99 ms | 0.37 / 0.57 / 0.64 ms | 0.73 / 2.82 / 4.29 ms | 0 / 0 | 4,092 kB | 30.0 ms | `InsiderWin` |
 | **Aggregate** | **17** | **247 ms** | **0.29 / 0.52 / 0.64 ms** | **0.70 / 1.71 / 4.29 ms** | **0 / 0 (100% Pass)** | **4,136 kB max** | **80.0 ms total** | **`InsiderWin`** |
 
-*Machine-readable report stored in: [`docs/load_test_16p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_16p_results.json)*
+*Machine-readable report stored in: [`docs/load_test_16p_results.json`](load_test_16p_results.json)*
 
 ### Measured 64-Player Real-Server Load Test Results (L4)
 
@@ -138,7 +138,42 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 | Run 3 | 65 (64P + 1M) | 152 ms | 0.10 / 0.17 / 0.54 ms | 0.14 / 0.39 / 0.46 ms | 0 / 0 | 3,848 kB | 50.0 ms | 73 | `InsiderWin` |
 | **Aggregate** | **65** | **302 ms** | **0.10 / 0.17 / 0.65 ms** | **0.13 / 0.58 / 1.32 ms** | **0 / 0 (100% Pass)** | **3,876 kB max** | **130.0 ms total** | **73 max** | **`InsiderWin`** |
 
-*Machine-readable report stored in: [`docs/load_test_64p_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_results.json)*
+*Machine-readable report stored in: [`docs/load_test_64p_results.json`](load_test_64p_results.json)*
+
+### Measured 2 × 32-Player Concurrent Match Results (L5)
+
+- **Test Commands**:
+  ```bash
+  # Standalone 3-run 2-match 32-player load harness execution over UNIX sockets
+  ./build/darkpool_load_tests_l5 ./build/darkpool_server --runs 3 --out docs/load_test_l5_results.json
+
+  # Automated deterministic regression and anti-starvation selftest suite (10 test cases)
+  ./build/darkpool_load_tests_l5 ./build/darkpool_server --selftest
+
+  # Automated CTest suite execution
+  ctest --test-dir build --output-on-failure -R '^darkpool_load_l5_'
+  ```
+- **Environment**: Linux 6.18.54.1-microsoft-standard-WSL2 (x86_64); CPU: 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz; GCC 11.4.0
+- **Transport**: UNIX-Domain Socket (`SOCK_STREAM`) with non-blocking server epoll loop and bounded client timeouts.
+- **Timing & ACK Boundary**:
+  Timing is captured using `std::chrono::steady_clock` (monotonic clock). The measurement interval begins immediately before the client writes the request frame bytes to the socket and ends immediately when the complete correlated response frame is received and parsed. Intentional phase waits and intervals are excluded from latency measurements.
+- **Workload, Isolation & Anti-Starvation Verification**:
+  Real protocol clients driving 2 concurrent matches (Match 1 and Match 2) driven simultaneously by 2 independent authenticated moderators and 64 players (32 per match), for a total of 66 connected clients over UNIX sockets.
+  - **Role Distribution (N=32 per match)**: Strictly asserted as exactly 4 Insiders, 2 Investigators, and 26 Employees per match (8 Insiders, 4 Investigators, 52 Employees total across both matches).
+  - **Sibling Match Isolation Policies**: Verified that a moderator cannot issue commands to a sibling match (`connection is not a member of target match`), cross-match player votes/actions are strictly rejected (`connection is not a member of target match`), premature starts before 32 players join are rejected (`all configured players must join before start`), and excess 33rd player joins are rejected (`match is full`).
+  - **Anti-Starvation & Concurrency Overlap**: Match 1 and Match 2 run simultaneously with full lifecycle overlap (overlap durations: 227 ms, 184 ms, 209 ms). Neither match starves, stalls, or blocks the progress of the other; both matches progress independently through all 3 rounds to completion with zero timeouts and zero unexpected disconnects (`starvation_verified: true`).
+  - **Concurrent Burst Phase (Round 2)**: 64 simultaneous client threads (32 per match) submitting legal trades (`HOLD`) and votes (`null` - abstain) simultaneously.
+  - **Guaranteed Outcome Verification**: In this deterministic workload, health remains > 0 and all players abstain, guaranteeing `phase == "Finished"` and `outcome == "InsiderWin"` for both concurrent matches.
+  - **Socket & Resource Cleanup**: Verified that all 66 client connections close and server file descriptors settle to baseline open FDs (8 settled vs 8 baseline, bounded within `baseline + 2`).
+
+| Run | Matches × Players | Total Clients | Duration | Overlap | Sequential Latency (p50 / p95 / p99) | Concurrent Latency (p50 / p95 / p99) | Total Latency (p50 / p95 / p99) | Failures | Settled FDs (Base) | Starvation Verified | Verified Winners |
+|---|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| Run 1 | 2 × 32 | 66 | 238 ms | 227 ms | 0.12 / 0.23 / 0.59 ms | 3.12 / 6.07 / 7.02 ms | 0.13 / 3.99 / 6.22 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| Run 2 | 2 × 32 | 66 | 195 ms | 184 ms | 0.12 / 0.22 / 0.60 ms | 3.15 / 6.21 / 7.02 ms | 0.13 / 4.03 / 6.23 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| Run 3 | 2 × 32 | 66 | 220 ms | 209 ms | 0.12 / 0.22 / 0.60 ms | 3.17 / 6.32 / 7.02 ms | 0.13 / 4.06 / 6.24 ms | 0 / 0 | 8 (8) | YES | `InsiderWin` (M1, M2) |
+| **Aggregate** | **2 × 32** | **66** | **653 ms** | **620 ms total** | **0.12 / 0.22 / 0.60 ms** | **3.15 / 6.21 / 7.02 ms** | **0.13 / 4.03 / 6.23 ms** | **0 / 0 (100% Pass)** | **8 (8)** | **YES (100%)** | **`InsiderWin` (Both)** |
+
+*Machine-readable report stored in: [`docs/load_test_l5_results.json`](load_test_l5_results.json)*
 
 ### L4 Sustained Workload Stages (10-Minute Smoke & 30-Minute Reliability)
 
@@ -150,7 +185,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Throughput**: 12,274.9 req/s.
   - **Round-Trip Latency**: p50 = 0.057 ms, p95 = 0.093 ms, p99 = 0.139 ms, mean = 0.062 ms, min = 0.008 ms, max = 24.965 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Peak RSS = 3,928 kB, Server CPU = 301,070.0 ms, Open FDs = 8.
-  - **Report File**: [`docs/load_test_64p_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_smoke_10m_results.json).
+  - **Report File**: [`docs/load_test_64p_smoke_10m_results.json`](load_test_64p_smoke_10m_results.json).
 
 - **30-Minute Repeated-Match Reliability Test (`--reliability-30m`)**: **PASS** (single measured run).
   - **Source Commit**: `154ae9147ee1f8606ff5c323b1b710ed3b421b14`
@@ -161,7 +196,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Round-Trip Latency**: p50 = 0.064 ms, p95 = 0.131 ms, p99 = 0.212 ms, mean = 0.078 ms, min = 0.008 ms, max = 195.422 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Peak RSS = 3,940 kB, Server CPU = 894,870.0 ms, Open FDs = 8.
   - **Leak / Degradation Analysis**: Flat memory (+12 kB RSS increase from smoke to 30m reliability across >10.4M additional requests; exactly 8 open FDs maintained throughout) confirms no memory leaks, file-descriptor leaks, or event-loop degradation.
-  - **Report File**: [`docs/load_test_64p_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_64p_reliability_30m_results.json).
+  - **Report File**: [`docs/load_test_64p_reliability_30m_results.json`](load_test_64p_reliability_30m_results.json).
 
 - **L6 (Four-Match 256-Player Capacity & Sustained Reliability)**: **PASS** (functional concurrent capacity, 10-minute smoke soak, and 30-minute reliability soak verified; see dedicated L6 sections below).
 
@@ -171,7 +206,7 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 ## L6: Four-Match Concurrent Capacity Test (256 Players, 4 Matches, 4 Independent Moderators)
 
 - **Status**: **PASS** (reproducible functional capacity benchmark; sustained long-duration L6 smoke and reliability runs verified separately below).
-- **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_results.json)
+- **Dedicated Machine-Readable Report**: [`docs/load_test_l6_results.json`](load_test_l6_results.json)
 - **Source Commit**: `6f6d748b49d7a5337c4e67f270d8d6307fff0526` (clean checkout, `git_dirty: false`)
 - **Build & Compiler**: Linux Release build (`-DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON`), GCC 11.4.0 (`Linux 6.18.54.1-microsoft-standard-WSL2 x86_64`, 11th Gen Intel(R) Core(TM) i5-1155G7 @ 2.50GHz).
 - **Execution Command**: `./build/darkpool_load_tests_l6 ./build/darkpool_server --runs 3 --out docs/load_test_l6_results.json`
@@ -258,8 +293,8 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Throughput**: 9,647.4 req/s (denominator: actual elapsed duration in seconds).
   - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.14 ms, p99 = 0.24 ms; Concurrent Burst p50 = 8.68 ms, p95 = 12.80 ms, p99 = 16.61 ms; Total p50 = 0.08 ms, p95 = 10.32 ms, p99 = 13.12 ms, mean = 2.14 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Initial Current RSS (`VmRSS`) = 3,580 kB, End Current RSS (`VmRSS`) = 4,276 kB, Peak Process High-Water Mark (`VmHWM`) = 4,296 kB, Server CPU = 308,810.0 ms, Open FDs = 8 settled (100% of 2,661 cycles settled within `baseline + 2` tolerance).
-  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records, SHA-256: `cd5adfe41bddee922215b1ff1072b221a692c9c671af5f9580b1d35f5c1aafb3`). Per-cycle `VmRSS` series: mean 4,263.7 kB; median 4,264 kB; range 4,212–4,296 kB; explicit FD cleanup records verified across all 2,661 cycles.
-  - **Summary Report**: [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json).
+  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records, SHA-256: `cd5adfe41bddee922215b1ff1072b221a692c9c671af5f9580b1d35f5c1aafb3`). Per-cycle `VmRSS` series: mean 4,263.7 kB; median 4,264 kB; range 4,212–4,296 kB; explicit FD cleanup records verified across all 2,661 cycles.
+  - **Summary Report**: [`docs/load_test_l6_smoke_10m_results.json`](load_test_l6_smoke_10m_results.json).
 
 - **30-Minute Repeated-Cycle Reliability Test (`--reliability-30m`)**: **PASS** (single measured run on persistent server).
   - **Source Commit**: `a443d0a349a6ca8436fa9ce3751ae1ac3f7803ec` (`git_dirty: false`)
@@ -270,8 +305,8 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
   - **Round-Trip Latency**: Sequential p50 = 0.07 ms, p95 = 0.12 ms, p99 = 0.18 ms; Concurrent Burst p50 = 8.29 ms, p95 = 11.21 ms, p99 = 13.31 ms; Total p50 = 0.08 ms, p95 = 9.44 ms, p99 = 11.39 ms, mean = 2.00 ms (p95 meets provisional ≤100 ms guidance).
   - **Resources**: Initial Current RSS (`VmRSS`) = 3,520 kB, End Current RSS (`VmRSS`) = 4,216 kB, Peak Process High-Water Mark (`VmHWM`) = 4,400 kB, Server CPU = 973,450.0 ms, Open FDs = 8 settled (100% of 8,934 cycles settled within `baseline + 2` tolerance).
   - **Memory & Resource Telemetry Analysis**: Rather than inferring memory stability by subtracting high-water marks from separate runs, the harness captures the actual per-cycle post-cleanup `VmRSS` trajectory. Across all 8,934 cycles (>19.4M requests over 30 minutes on a persistent server), post-cleanup `VmRSS` remained bounded in a narrow 4,144–4,248 kB envelope (mean 4,199.9 kB, median 4,200.0 kB; the first 50 cycles averaged 4,193.1 kB and the final 50 cycles averaged 4,202.4 kB). The process peak high-water mark (`VmHWM`) reached 4,400 kB during peak 260-connection burst load. Settled file descriptors stabilized at 8 descriptors (within baseline 9 + 2 tolerance) across 100% of completed cycles with zero descriptor leakage. While no finite workload can prove the absence of every theoretically conceivable memory leak, these observed current-RSS trajectory and descriptor-settling series demonstrate bounded steady-state memory and resource behavior under sustained multi-match load.
-  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records, SHA-256: `5262f9b97d226e336d313534efa12477af01c331beaba2e294e26bcc8b4c8ffc`).
-  - **Summary Report**: [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json).
+  - **Telemetry & Evidence**: Full cycle-level records are preserved in [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records, SHA-256: `5262f9b97d226e336d313534efa12477af01c331beaba2e294e26bcc8b4c8ffc`).
+  - **Summary Report**: [`docs/load_test_l6_reliability_30m_results.json`](load_test_l6_reliability_30m_results.json).
 
 *Note: The 10-minute and 30-minute sustained results are single measured benchmark runs on a persistent server process, not repeated multi-run statistical trials.*
 
@@ -279,17 +314,17 @@ The successful Ubuntu 24.04 Release build with warnings-as-errors and full CTest
 
 To maintain repository readability and prevent bloated diffs while ensuring complete cycle-level auditability, sustained benchmark telemetry is organized into two tiers:
 1. **Human-Readable Summary Reports**:
-   - [`docs/load_test_l6_smoke_10m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_smoke_10m_results.json)
-   - [`docs/load_test_l6_reliability_30m_results.json`](file:///c:/darkpool-antigravity/darkpool/docs/load_test_l6_reliability_30m_results.json)
+   - [`docs/load_test_l6_smoke_10m_results.json`](load_test_l6_smoke_10m_results.json)
+   - [`docs/load_test_l6_reliability_30m_results.json`](load_test_l6_reliability_30m_results.json)
    Contain aggregate run metrics, timing percentiles, derived RSS summary statistics (sample count, min, max, mean, median, first/last 50-cycle means), source provenance, and SHA-256 checksums of the detailed evidence files.
 2. **Complete Cycle-Level Evidence**:
-   - [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records)
-   - [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](file:///c:/darkpool-antigravity/darkpool/docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records)
+   - [`docs/evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl`](evidence/load_test_l6_smoke_10m_cycle_evidence.jsonl) (2,661 records)
+   - [`docs/evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl`](evidence/load_test_l6_reliability_30m_cycle_evidence.jsonl) (8,934 records)
    Stored as one complete JSON record per line, preserving every cycle's open FD counts (peak, immediate post-close, settled), settle times, post-cleanup `VmRSS` and `VmHWM` samples, per-cycle request reconciliation, and failure reasons.
 
 #### Running the Evidence Validator
 
-An independent validator tool is provided in [`tools/validate_l6_sustained_evidence.py`](file:///c:/darkpool-antigravity/darkpool/tools/validate_l6_sustained_evidence.py). It parses both summary reports and full cycle evidence files, failing with a non-zero exit code if checksums mismatch, record counts disagree, cycle sequences are non-sequential, required resource samples are missing, FD cleanup thresholds (`settled <= baseline + 2`) are violated, or request counts fail to reconcile:
+An independent validator tool is provided in [`tools/validate_l6_sustained_evidence.py`](../tools/validate_l6_sustained_evidence.py). It parses both summary reports and full cycle evidence files, failing with a non-zero exit code if checksums mismatch, record counts disagree, cycle sequences are non-sequential, required resource samples are missing, FD cleanup thresholds (`settled <= baseline + 2`) are violated, or request counts fail to reconcile:
 
 ```bash
 # Run validator against repository evidence

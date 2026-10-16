@@ -31,3 +31,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
       - name: Run full test suite
         run: ctest --test-dir build --output-on-failure
+      - name: Validate L6 sustained evidence and run validator regression tests
+        run: |
+          python3 tools/validate_l6_sustained_evidence.py
+          python3 tests/test_validate_l6_sustained_evidence.py
