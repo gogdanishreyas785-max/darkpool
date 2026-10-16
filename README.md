@@ -2,11 +2,11 @@
 
 The C++20 engine and coordinator support matches configured for 3–64 active players. Five remains the default and the original baseline is one Insider, one Investigator, and three Employees. The moderator is a separate non-player.
 
-The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server prototype uses nonblocking stream sockets with epoll, supporting local UNIX-domain stream sockets (`/tmp/darkpool.sock`), default localhost TCP (`127.0.0.1:4782`), and explicit non-loopback TCP binding on an assigned RFC 1918 private IPv4 address (`--bind-address`). The LAN TCP transport is unencrypted plaintext. Remote TCP over TLS 1.3, production certificate lifecycle management, and public-Internet deployment remain deferred future work.
+The coordinator supports server-assigned membership, independent matches with different capacities, moderator-controlled event/phase transitions, and player trade, clue, vote, and hint commands. The Linux server prototype uses nonblocking stream sockets with epoll, supporting local UNIX-domain stream sockets (`/tmp/darkpool.sock`), default localhost plaintext TCP (`127.0.0.1:4782`), explicit non-loopback plaintext TCP binding on an assigned RFC 1918 private IPv4 address (`--bind-address`), and a dedicated TLS 1.3 secure listener on port `4783` (AD-S9-01) supporting local-CA and leaf fingerprint pinning. The plaintext LAN TCP transport on port 4782 remains unencrypted; the TLS 1.3 listener on port 4783 enforces encrypted, authenticated communication. Public-Internet deployment, persistent user accounts, and dynamic certificate reload remain deferred future work.
 
 ## Scope and implementation status
 
-- **Transport and CLI:** The server implementation supports nonblocking UNIX-domain stream sockets (`/tmp/darkpool.sock`) and TCP stream sockets defaulting to loopback (`127.0.0.1:4782`), with optional explicit binding to an assigned RFC 1918 private IPv4 address via `--bind-address` (`src/server_main.cpp`), accompanied by an interactive terminal CLI (`src/client_main.cpp`). UNIX sockets feature safe lifecycle management (stale socket file detection/recovery, non-socket file preservation, restrictive 0700 permissions, and signal-driven cleanup). The LAN TCP path is unencrypted plaintext and is strictly restricted to private subnets; it must not be exposed to the public Internet. Remote TCP/TLS 1.3, certificate lifecycle management, and public-Internet deployment remain deferred future work.
+- **Transport and CLI:** The server implementation supports nonblocking UNIX-domain stream sockets (`/tmp/darkpool.sock`), plaintext TCP stream sockets defaulting to loopback (`127.0.0.1:4782`), optional explicit plaintext binding to an assigned RFC 1918 private IPv4 address via `--bind-address`, and a dedicated TLS 1.3 secure listener on port `4783` (`src/server_main.cpp`), accompanied by an interactive terminal CLI (`src/client_main.cpp`). UNIX sockets feature safe lifecycle management (stale socket file detection/recovery, non-socket file preservation, restrictive 0700 permissions, and signal-driven cleanup). The secure TLS 1.3 listener operates on dedicated port 4783 with OpenSSL 3.x, supporting both local-CA certificate verification (`--ca-cert`) and SHA-256 leaf fingerprint pinning (`--server-fingerprint`) with mandatory IP SAN validation and fail-closed semantics. The legacy LAN TCP path on port 4782 is unencrypted plaintext. Public-Internet deployment, dynamic certificate reload, and mutual TLS (mTLS) remain deferred future work.
 - **Valid match sizes:** Valid match sizes are 3–64. Role counts are deterministic: `ceil(N/8)` Insiders, `ceil(N/16)` Investigators, and the remaining Employees. The server shuffles and assigns roles; clients cannot supply roles. Five remains the default.
 - **Event injection and engine separation:** Business-event impacts are injected by the match's creating moderator. The game engine itself has no random source, clock, sockets, epoll, client, server, or persistence; match/session coordination is a separate server module.
 - **Share conservation:** Shares are conserved between players and each match's finite reserve using the approved 20N total / 10N player-held / 10N reserve formula.
@@ -104,7 +104,46 @@ For multiplayer over a trusted private local network (RFC 1918 IPv4), configure 
    ./build/darkpool_client 192.168.1.50 4782 player
    ```
 
-> **Security Warning (LAN Transport)**: The LAN TCP transport is currently unencrypted plaintext without TLS. The moderator token and all gameplay messages traverse the local network in plaintext. Non-loopback binding is restricted strictly to RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and must never be exposed to public or untrusted networks.
+> **Security Warning (Plaintext LAN Transport)**: The plaintext LAN TCP transport on port 4782 is unencrypted without TLS. The moderator token and all gameplay messages traverse the local network in plaintext. Non-loopback binding is restricted strictly to RFC 1918 private subnets (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`) and must never be exposed to public or untrusted networks. For encrypted multi-machine play, use Option D below.
+
+### Option D: Secure Private LAN TCP stream socket (TLS 1.3 on dedicated port 4783)
+
+For encrypted, tamper-resistant multiplayer over a private local network, launch the server with dedicated TLS listener configuration on port `4783` (AD-S9-01):
+
+1. **Launch Server with TLS Listener**:
+   ```sh
+   # On Server Host (substitute 192.168.1.50 with your actual assigned LAN address):
+   export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+   ./build/darkpool_server \
+     --tls-bind-address 192.168.1.50 \
+     --tls-port 4783 \
+     --tls-cert /path/to/server-cert.pem \
+     --tls-key /path/to/server-key.pem
+   ```
+
+2. **Connect Clients using Local CA Mode (Mode 1)**:
+   ```sh
+   # On Moderator Machine:
+   export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+   ./build/darkpool_client --tls --ca-cert /path/to/ca-cert.pem 192.168.1.50 4783 moderator
+
+   # On Player Machines:
+   ./build/darkpool_client --tls --ca-cert /path/to/ca-cert.pem 192.168.1.50 4783 player
+   ```
+
+3. **Connect Clients using Leaf Fingerprint Pinning Mode (Mode 2)**:
+   ```sh
+   # Obtain SHA-256 fingerprint:
+   # openssl x509 -noout -fingerprint -sha256 -in server-cert.pem | tr -d ':' | awk -F= '{print tolower($2)}'
+
+   # On Moderator Machine:
+   export DARKPOOL_MODERATOR_TOKEN="secret-moderator-token"
+   ./build/darkpool_client --tls --server-fingerprint <64-hex-sha256> 192.168.1.50 4783 moderator
+
+   # On Player Machines:
+   ./build/darkpool_client --tls --server-fingerprint <64-hex-sha256> 192.168.1.50 4783 player
+   ```
+
 
 ### LAN Troubleshooting Guide
 

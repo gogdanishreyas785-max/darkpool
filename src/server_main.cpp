@@ -11,6 +11,7 @@ int main() {
 
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
+#include "darkpool/tls_transport.hpp"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -40,6 +41,7 @@ using darkpool::network::json;
 using darkpool::network::OutputQueue;
 
 constexpr std::uint16_t kDefaultPort = 4782;
+constexpr std::uint16_t kDefaultTlsPort = 4783;
 constexpr std::size_t kMaxMatches = 4;
 constexpr std::size_t kMaxPlayersPerMatch = darkpool::kMaxPlayerCount;
 constexpr std::size_t kMaxPlayerConnections = kMaxMatches * kMaxPlayersPerMatch;
@@ -49,6 +51,7 @@ constexpr auto kHandshakeTimeout = std::chrono::seconds(5);
 constexpr int kEpollTimeoutMs = 100;
 
 enum class ClientKind { Unassigned, Player, Moderator };
+enum class TransportType { Plaintext, Tls };
 
 struct TokenBucketRateLimiter {
   static constexpr double kRate = 20.0;     // 20 requests per second (DEC-11)
@@ -77,6 +80,12 @@ struct Connection {
   bool peer_closed{false};
   std::chrono::steady_clock::time_point connected_at{
       std::chrono::steady_clock::now()};
+
+  TransportType transport{TransportType::Plaintext};
+  darkpool::transport::SslPtr ssl{nullptr};
+  bool tls_handshake_done{true};
+  bool tls_want_read{false};
+  bool tls_want_write{false};
 };
 
 struct SocketFileGuard {
@@ -214,6 +223,10 @@ void close_connection(int epoll_fd, int fd, std::map<int, Connection> &clients,
     --moderators;
   coordinator.unregister_session(static_cast<std::uint64_t>(fd));
   (void)epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, nullptr);
+  if (found->second.ssl != nullptr) {
+    (void)SSL_shutdown(found->second.ssl.get());
+    found->second.ssl.reset();
+  }
   (void)close(fd);
   clients.erase(found);
 }
@@ -223,7 +236,9 @@ bool enqueue_echo(int epoll_fd, int fd, Connection &connection,
   try {
     if (!connection.output.append(frame.serialize()))
       return false;
-    return set_events(epoll_fd, fd, !connection.peer_closed, true);
+    const bool writing = true;
+    const bool reading = !connection.peer_closed || connection.tls_want_read;
+    return set_events(epoll_fd, fd, reading, writing);
   } catch (const std::exception &) {
     return false;
   }
@@ -309,6 +324,42 @@ bool process_frame(int epoll_fd, int fd, Connection &connection,
 bool read_client(int epoll_fd, int fd, Connection &connection,
                  std::size_t &players, std::size_t &moderators,
                  darkpool::server::MatchCoordinator &coordinator) {
+  if (connection.transport == TransportType::Tls) {
+    char buffer[4096];
+    while (true) {
+      std::size_t bytes_read = 0;
+      std::string err;
+      const auto status = darkpool::transport::tls_read(
+          connection.ssl.get(), buffer, sizeof(buffer), bytes_read, err);
+      if (status == darkpool::transport::TlsIoStatus::Ok) {
+        try {
+          const auto frames = connection.decoder.feed(
+              std::span<const char>(buffer, bytes_read));
+          for (const auto &frame : frames) {
+            if (!process_frame(epoll_fd, fd, connection, frame, players, moderators,
+                               coordinator))
+              return false;
+          }
+        } catch (const std::exception &) {
+          return false;
+        }
+      } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
+        connection.peer_closed = true;
+        return set_events(epoll_fd, fd, false,
+                          !connection.output.pending().empty());
+      } else if (status == darkpool::transport::TlsIoStatus::WantRead) {
+        connection.tls_want_read = true;
+        return set_events(epoll_fd, fd, true,
+                          connection.tls_want_write || !connection.output.pending().empty());
+      } else if (status == darkpool::transport::TlsIoStatus::WantWrite) {
+        connection.tls_want_write = true;
+        return set_events(epoll_fd, fd, connection.tls_want_read, true);
+      } else {
+        return false;
+      }
+    }
+  }
+
   char buffer[4096];
   while (true) {
     const auto count = recv(fd, buffer, sizeof(buffer), 0);
@@ -339,6 +390,31 @@ bool read_client(int epoll_fd, int fd, Connection &connection,
 }
 
 bool write_client(int epoll_fd, int fd, Connection &connection) {
+  if (connection.transport == TransportType::Tls) {
+    while (!connection.output.pending().empty()) {
+      const auto pending = connection.output.pending();
+      std::size_t bytes_written = 0;
+      std::string err;
+      const auto status = darkpool::transport::tls_write(
+          connection.ssl.get(), pending.data(), pending.size(), bytes_written, err);
+      if (status == darkpool::transport::TlsIoStatus::Ok) {
+        connection.output.consume(bytes_written);
+        connection.tls_want_write = false;
+      } else if (status == darkpool::transport::TlsIoStatus::WantWrite) {
+        connection.tls_want_write = true;
+        return set_events(epoll_fd, fd, connection.tls_want_read, true);
+      } else if (status == darkpool::transport::TlsIoStatus::WantRead) {
+        connection.tls_want_read = true;
+        return set_events(epoll_fd, fd, true,
+                          connection.tls_want_write || !connection.output.pending().empty());
+      } else {
+        return false;
+      }
+    }
+    connection.tls_want_write = false;
+    return set_events(epoll_fd, fd, !connection.peer_closed, false);
+  }
+
   while (!connection.output.pending().empty()) {
     const auto pending = connection.output.pending();
     const auto count = send(fd, pending.data(), pending.size(), MSG_NOSIGNAL);
@@ -366,7 +442,9 @@ bool parse_port(const char *text, std::uint16_t &port) {
 }
 
 void accept_clients(int listener, int epoll_fd,
-                    std::map<int, Connection> &clients) {
+                    std::map<int, Connection> &clients,
+                    bool is_tls,
+                    SSL_CTX *server_ssl_ctx) {
   while (true) {
     const auto client =
         accept4(listener, nullptr, nullptr, SOCK_NONBLOCK | SOCK_CLOEXEC);
@@ -381,14 +459,47 @@ void accept_clients(int listener, int epoll_fd,
     }
     int sndbuf = 16384;
     (void)setsockopt(client, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
-    epoll_event client_event{};
-    client_event.events = static_cast<std::uint32_t>(EPOLLIN) |
-                          static_cast<std::uint32_t>(EPOLLRDHUP);
-    client_event.data.fd = client;
-    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &client_event) == 0) {
-      clients.emplace(client, Connection{});
+
+    if (is_tls) {
+      if (server_ssl_ctx == nullptr) {
+        (void)close(client);
+        continue;
+      }
+      SSL *raw_ssl = SSL_new(server_ssl_ctx);
+      if (raw_ssl == nullptr) {
+        (void)close(client);
+        continue;
+      }
+      darkpool::transport::SslPtr ssl(raw_ssl);
+      if (SSL_set_fd(ssl.get(), client) != 1) {
+        (void)close(client);
+        continue;
+      }
+      SSL_set_accept_state(ssl.get());
+
+      epoll_event client_event{};
+      client_event.events = static_cast<std::uint32_t>(EPOLLIN) |
+                            static_cast<std::uint32_t>(EPOLLRDHUP);
+      client_event.data.fd = client;
+      if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &client_event) == 0) {
+        Connection conn;
+        conn.transport = TransportType::Tls;
+        conn.ssl = std::move(ssl);
+        conn.tls_handshake_done = false;
+        clients.emplace(client, std::move(conn));
+      } else {
+        (void)close(client);
+      }
     } else {
-      (void)close(client);
+      epoll_event client_event{};
+      client_event.events = static_cast<std::uint32_t>(EPOLLIN) |
+                            static_cast<std::uint32_t>(EPOLLRDHUP);
+      client_event.data.fd = client;
+      if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client, &client_event) == 0) {
+        clients.emplace(client, Connection{});
+      } else {
+        (void)close(client);
+      }
     }
   }
 }
@@ -474,6 +585,13 @@ struct ServerConfig {
   bool explicit_bind_address{false};
   bool enable_unix{false};
   std::string unix_path;
+
+  bool enable_tls{false};
+  std::uint16_t tls_port{kDefaultTlsPort};
+  std::string tls_bind_address{"127.0.0.1"};
+  bool explicit_tls_bind_address{false};
+  std::string tls_cert_path;
+  std::string tls_key_path;
 };
 
 bool parse_server_args(int argc, char **argv, ServerConfig &config, std::string &error_msg) {
@@ -497,6 +615,8 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config, std::string 
     } else if (arg == "--no-unix") {
       config.enable_unix = false;
       explicit_unix = true;
+    } else if (arg == "--no-tls") {
+      config.enable_tls = false;
     } else if (arg == "--port" || arg == "-p") {
       if (i + 1 >= argc) {
         error_msg = "missing argument for --port";
@@ -555,6 +675,64 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config, std::string 
       config.unix_path = arg.substr(9);
       config.enable_unix = true;
       explicit_unix = true;
+    } else if (arg == "--tls-bind-address") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --tls-bind-address";
+        return false;
+      }
+      const std::string addr = argv[++i];
+      if (!validate_bind_address(addr, error_msg)) {
+        return false;
+      }
+      config.tls_bind_address = addr;
+      config.explicit_tls_bind_address = true;
+      config.enable_tls = true;
+    } else if (arg.rfind("--tls-bind-address=", 0) == 0) {
+      const std::string addr = std::string(arg.substr(19));
+      if (!validate_bind_address(addr, error_msg)) {
+        return false;
+      }
+      config.tls_bind_address = addr;
+      config.explicit_tls_bind_address = true;
+      config.enable_tls = true;
+    } else if (arg == "--tls-port") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --tls-port";
+        return false;
+      }
+      if (!parse_port(argv[++i], config.tls_port)) {
+        error_msg = "invalid port argument for --tls-port";
+        return false;
+      }
+      config.enable_tls = true;
+    } else if (arg.rfind("--tls-port=", 0) == 0) {
+      std::uint16_t p = 0;
+      if (!parse_port(std::string(arg.substr(11)).c_str(), p)) {
+        error_msg = "invalid port argument for --tls-port";
+        return false;
+      }
+      config.tls_port = p;
+      config.enable_tls = true;
+    } else if (arg == "--tls-cert") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --tls-cert";
+        return false;
+      }
+      config.tls_cert_path = argv[++i];
+      config.enable_tls = true;
+    } else if (arg.rfind("--tls-cert=", 0) == 0) {
+      config.tls_cert_path = std::string(arg.substr(11));
+      config.enable_tls = true;
+    } else if (arg == "--tls-key") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --tls-key";
+        return false;
+      }
+      config.tls_key_path = argv[++i];
+      config.enable_tls = true;
+    } else if (arg.rfind("--tls-key=", 0) == 0) {
+      config.tls_key_path = std::string(arg.substr(10));
+      config.enable_tls = true;
     } else {
       std::uint16_t p = 0;
       if (parse_port(argv[i], p)) {
@@ -568,13 +746,20 @@ bool parse_server_args(int argc, char **argv, ServerConfig &config, std::string 
     }
   }
 
+  if (config.enable_tls) {
+    if (config.tls_cert_path.empty() || config.tls_key_path.empty()) {
+      error_msg = "--tls-cert and --tls-key must be provided together when TLS is enabled";
+      return false;
+    }
+  }
+
   const char *env_path = std::getenv("DARKPOOL_SOCKET_PATH");
   if (!explicit_unix && env_path && env_path[0] != '\0') {
     config.enable_unix = true;
     config.unix_path = env_path;
   }
 
-  return config.enable_tcp || config.enable_unix;
+  return config.enable_tcp || config.enable_unix || config.enable_tls;
 }
 
 } // namespace
@@ -587,6 +772,7 @@ int main(int argc, char **argv) {
       std::cerr << "error: " << arg_error << '\n';
     }
     std::cerr << "usage: darkpool_server [--bind-address <IPv4>] [--port <port>] [--socket <path>] "
+                 "[--tls-bind-address <IPv4>] [--tls-port <port>] [--tls-cert <cert.pem>] [--tls-key <key.pem>] "
                  "[--no-tcp] [--no-unix] [port] [socket_path]\n";
     return 2;
   }
@@ -595,6 +781,30 @@ int main(int argc, char **argv) {
     if (!is_address_assigned_to_local_interface(config.bind_address)) {
       std::cerr << "error: requested bind address " << config.bind_address
                 << " is not assigned to any local network interface\n";
+      return 1;
+    }
+  }
+
+  if (config.enable_tls) {
+    if (!is_address_assigned_to_local_interface(config.tls_bind_address)) {
+      std::cerr << "error: requested TLS bind address " << config.tls_bind_address
+                << " is not assigned to any local network interface\n";
+      return 1;
+    }
+  }
+
+  darkpool::transport::SslCtxPtr server_ssl_ctx;
+  if (config.enable_tls) {
+    darkpool::transport::ServerTlsConfig tls_cfg;
+    tls_cfg.cert_file = config.tls_cert_path;
+    tls_cfg.key_file = config.tls_key_path;
+    tls_cfg.bind_address = config.tls_bind_address;
+    tls_cfg.port = config.tls_port;
+
+    std::string tls_init_err;
+    server_ssl_ctx = darkpool::transport::create_server_ssl_ctx(tls_cfg, tls_init_err);
+    if (server_ssl_ctx == nullptr) {
+      std::cerr << "error: TLS initialization failed: " << tls_init_err << '\n';
       return 1;
     }
   }
@@ -628,6 +838,38 @@ int main(int argc, char **argv) {
     }
   }
 
+  int tls_listener = -1;
+  if (config.enable_tls) {
+    tls_listener =
+        socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+    if (tls_listener < 0) {
+      std::cerr << "tls socket: " << std::strerror(errno) << '\n';
+      if (tcp_listener >= 0) (void)close(tcp_listener);
+      return 1;
+    }
+    int reuse = 1;
+    (void)setsockopt(tls_listener, SOL_SOCKET, SO_REUSEADDR, &reuse,
+                     sizeof(reuse));
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(config.tls_port);
+    if (inet_pton(AF_INET, config.tls_bind_address.c_str(), &address.sin_addr) <= 0) {
+      std::cerr << "tls invalid address: " << config.tls_bind_address << '\n';
+      (void)close(tls_listener);
+      if (tcp_listener >= 0) (void)close(tcp_listener);
+      return 1;
+    }
+    if (bind(tls_listener, reinterpret_cast<sockaddr *>(&address),
+             sizeof(address)) < 0 ||
+        listen(tls_listener, 16) < 0) {
+      std::cerr << "tls bind/listen on " << config.tls_bind_address << ":" << config.tls_port
+                << ": " << std::strerror(errno) << '\n';
+      (void)close(tls_listener);
+      if (tcp_listener >= 0) (void)close(tcp_listener);
+      return 1;
+    }
+  }
+
   int unix_listener = -1;
   SocketFileGuard socket_guard;
   if (config.enable_unix) {
@@ -635,6 +877,8 @@ int main(int argc, char **argv) {
     if (unix_listener < 0) {
       if (tcp_listener >= 0)
         (void)close(tcp_listener);
+      if (tls_listener >= 0)
+        (void)close(tls_listener);
       return 1;
     }
     socket_guard.path = config.unix_path;
@@ -646,6 +890,8 @@ int main(int argc, char **argv) {
     std::cerr << "epoll_create1: " << std::strerror(errno) << '\n';
     if (tcp_listener >= 0)
       (void)close(tcp_listener);
+    if (tls_listener >= 0)
+      (void)close(tls_listener);
     if (unix_listener >= 0)
       (void)close(unix_listener);
     return 1;
@@ -659,6 +905,24 @@ int main(int argc, char **argv) {
       std::cerr << "epoll_ctl tcp listener: " << std::strerror(errno) << '\n';
       (void)close(epoll_fd);
       (void)close(tcp_listener);
+      if (tls_listener >= 0)
+        (void)close(tls_listener);
+      if (unix_listener >= 0)
+        (void)close(unix_listener);
+      return 1;
+    }
+  }
+
+  if (tls_listener >= 0) {
+    epoll_event event{};
+    event.events = static_cast<std::uint32_t>(EPOLLIN);
+    event.data.fd = tls_listener;
+    if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, tls_listener, &event) < 0) {
+      std::cerr << "epoll_ctl tls listener: " << std::strerror(errno) << '\n';
+      (void)close(epoll_fd);
+      if (tcp_listener >= 0)
+        (void)close(tcp_listener);
+      (void)close(tls_listener);
       if (unix_listener >= 0)
         (void)close(unix_listener);
       return 1;
@@ -674,6 +938,8 @@ int main(int argc, char **argv) {
       (void)close(epoll_fd);
       if (tcp_listener >= 0)
         (void)close(tcp_listener);
+      if (tls_listener >= 0)
+        (void)close(tls_listener);
       (void)close(unix_listener);
       return 1;
     }
@@ -705,6 +971,10 @@ int main(int argc, char **argv) {
     std::cout << "darkpool_server listening on " << config.bind_address << ":" << config.tcp_port
               << '\n';
   }
+  if (config.enable_tls) {
+    std::cout << "darkpool_server listening on TLS 1.3 " << config.tls_bind_address << ":" << config.tls_port
+              << '\n';
+  }
   if (config.enable_unix) {
     std::cout << "darkpool_server listening on unix socket " << config.unix_path
               << '\n';
@@ -731,9 +1001,16 @@ int main(int argc, char **argv) {
         should_terminate = true;
         break;
       }
-      if ((tcp_listener >= 0 && fd == tcp_listener) ||
-          (unix_listener >= 0 && fd == unix_listener)) {
-        accept_clients(fd, epoll_fd, clients);
+      if (tcp_listener >= 0 && fd == tcp_listener) {
+        accept_clients(fd, epoll_fd, clients, false, nullptr);
+        continue;
+      }
+      if (tls_listener >= 0 && fd == tls_listener) {
+        accept_clients(fd, epoll_fd, clients, true, server_ssl_ctx.get());
+        continue;
+      }
+      if (unix_listener >= 0 && fd == unix_listener) {
+        accept_clients(fd, epoll_fd, clients, false, nullptr);
         continue;
       }
       const auto found = clients.find(fd);
@@ -745,6 +1022,31 @@ int main(int argc, char **argv) {
                          coordinator);
         continue;
       }
+
+      // If TLS handshake is still in progress, drive it forward
+      if (found->second.transport == TransportType::Tls && !found->second.tls_handshake_done) {
+        bool want_read = false;
+        bool want_write = false;
+        std::string err;
+        const auto status = darkpool::transport::step_tls_handshake(
+            found->second.ssl.get(), true, want_read, want_write, err);
+        if (status == darkpool::transport::TlsHandshakeStatus::Established) {
+          found->second.tls_handshake_done = true;
+          found->second.tls_want_read = false;
+          found->second.tls_want_write = false;
+          (void)set_events(epoll_fd, fd, true, !found->second.output.pending().empty());
+        } else if (status == darkpool::transport::TlsHandshakeStatus::InProgress) {
+          found->second.tls_want_read = want_read;
+          found->second.tls_want_write = want_write;
+          (void)set_events(epoll_fd, fd, want_read, want_write);
+          continue;
+        } else {
+          // Handshake failed (e.g. plaintext sent to TLS port or bad client alert)
+          close_connection(epoll_fd, fd, clients, players, moderators, coordinator);
+          continue;
+        }
+      }
+
       bool keep = true;
       const auto read_or_hangup = static_cast<std::uint32_t>(EPOLLIN) |
                                    static_cast<std::uint32_t>(EPOLLRDHUP) |
@@ -773,8 +1075,10 @@ int main(int argc, char **argv) {
     const auto now = std::chrono::steady_clock::now();
     std::vector<int> expired;
     for (const auto &[client_fd, conn] : clients) {
-      if (conn.kind == ClientKind::Unassigned &&
-          now - conn.connected_at >= kHandshakeTimeout) {
+      const bool handshake_incomplete =
+          (conn.transport == TransportType::Tls && !conn.tls_handshake_done) ||
+          (conn.kind == ClientKind::Unassigned);
+      if (handshake_incomplete && now - conn.connected_at >= kHandshakeTimeout) {
         expired.push_back(client_fd);
       }
     }
@@ -783,14 +1087,21 @@ int main(int argc, char **argv) {
                        coordinator);
     }
   }
-  for (const auto &[client_fd, _] : clients) {
+  for (auto &[client_fd, conn] : clients) {
+    if (conn.ssl != nullptr) {
+      (void)SSL_shutdown(conn.ssl.get());
+      conn.ssl.reset();
+    }
     (void)close(client_fd);
   }
+  clients.clear();
   if (signal_fd >= 0)
     (void)close(signal_fd);
   (void)close(epoll_fd);
   if (tcp_listener >= 0)
     (void)close(tcp_listener);
+  if (tls_listener >= 0)
+    (void)close(tls_listener);
   if (unix_listener >= 0)
     (void)close(unix_listener);
   return exit_status;

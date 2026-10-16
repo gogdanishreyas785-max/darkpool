@@ -98,4 +98,17 @@ Following the merge of PRs #24, #25, and #26, the implementation and verificatio
    - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance remains deferred and `NOT RUN` (requiring two physical networked machines).
 
 5. **Transport security (TLS 1.3) status**:
-   - TLS 1.3, public-Internet deployment, certificate lifecycle, and production client identity remain proposed and deferred future work; they have not been implemented (see architectural design proposal in `docs/s9-transport-security-design.md`).
+   - Approved and implemented in the S9 engineering milestone (`feature/s9-tls13-transport`).
+   - Implements strict TLS 1.3 on a dedicated secure listener (default port 4783) using OpenSSL 3.x, supporting both local-CA verification and SHA-256 leaf fingerprint pinning.
+   - Public-Internet deployment, persistent client accounts, dynamic certificate reload, and mutual TLS (mTLS) remain deferred. See detailed decisions below and specification in `docs/s9-transport-security-design.md`.
+
+## S9 Approved Architectural Decisions (Transport Security & Identity)
+
+The following explicit architectural decisions govern the S9 TLS 1.3 implementation:
+
+| Decision ID | Summary | Approved Decision | Rationale & Scope | Approval |
+|---|---|---|---|---|
+| **AD-S9-01** | Listener Port Topology | Dedicated secure listener on port `4783` by default. Plaintext loopback TCP on port `4782` and UNIX sockets on `/tmp/darkpool.sock` remain operational. Dual-mode plaintext/TLS port is rejected. | Eliminates protocol-sniffing ambiguities on port 4782. Allows simultaneous plaintext development/testing and encrypted LAN gameplay. TLS listener speaks TLS from byte 1 and rejects plaintext safely. | **Approved** |
+| **AD-S9-02** | Moderator & Client Authentication | Server-authenticated TLS 1.3 with existing `DARKPOOL_MODERATOR_TOKEN` transmitted inside the encrypted TLS application channel. Mutual TLS (mTLS) and individual player identity systems are deferred. | Protects moderator tokens and all player data against LAN sniffing without requiring complex client certificate provisioning for casual players. Anonymous player sessions preserved. | **Approved** |
+| **AD-S9-03** | Client Certificate Verification Modes | Dual mode support: (1) Local-CA certificate verification (`--ca-cert <pem>`), and (2) Explicit SHA-256 leaf fingerprint pinning (`--server-fingerprint <64-hex>`). Both modes strictly enforce certificate validity and IP SAN matching. | Local-CA mode supports structured multi-client deployments; fingerprint pinning enables zero-install ad-hoc LAN matches. Both strictly fail closed. `--insecure` is prohibited. | **Approved** |
+| **AD-S9-04** | Certificate Reload Strategy | Dynamic in-process certificate reload is deferred. Certificate/key rotation requires a controlled server restart and corresponding trust/pin update on clients. | Avoids signal-safety hazards and complex asynchronous state replacement in the single-threaded epoll reactor. Controlled restart is appropriate for private LAN deployments. | **Approved** |
