@@ -100,6 +100,7 @@ darkpool::transport::ConnectionDispatchState to_dispatch_state(const Connection 
   return darkpool::transport::ConnectionDispatchState{
       .is_tls = (conn.transport == TransportType::Tls),
       .tls_write_want_read = conn.tls_write_want_read,
+      .tls_write_want_write = conn.tls_write_want_write,
       .tls_read_want_write = conn.tls_read_want_write,
       .peer_closed = conn.peer_closed,
       .has_pending_output = !conn.output.pending().empty()};
@@ -1126,7 +1127,14 @@ int main(int argc, char **argv) {
       }
 
       // Normal write: only if not waiting for cross-direction readiness
-      if (keep && decisions.do_normal_write) {
+      // The read above may have returned SSL_ERROR_WANT_WRITE. Because dispatch
+      // decisions were calculated before the I/O call, do not perform a normal
+      // write using those stale decisions while that SSL_read still needs retry.
+      if (keep && decisions.do_normal_write &&
+          !(found->second.transport == TransportType::Tls &&
+            (found->second.tls_read_want_write ||
+             found->second.tls_write_want_read ||
+             found->second.tls_write_want_write))) {
         keep = write_client(epoll_fd, fd, found->second);
       }
 
