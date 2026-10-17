@@ -55,13 +55,15 @@ Full definitions are in game-rules.md, test-plan.md and protocol.md. The S1 foll
 
 Protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment remain separate decisions where not already approved.
 
-## 3. Deferred
+## 3. Deferred (Historical S0 Scope)
+
+*(Historical context: At the time S0 was approved, TCP/TLS 1.3 was deferred. Private LAN TLS 1.3 has since been implemented and merged in Milestone S9 via PR #28. Public-Internet deployment, persistent accounts, and automated dynamic certificate lifecycle remain deferred).*
 
 TCP/TLS 1.3/certificate lifecycle; real money, feeds, short selling, derivatives, complex auctions; GUI/mobile, public matchmaking, persistent accounts; multi-region/consensus/failover; unsupported advanced anti-cheat/host-root/side-channel claims; worker pool absent measured need; sandboxing absent approved testable requirement.
 
 ## Approval gate (Historical S0 status)
 
-*(Historical context: At the time these initial S0 and S1 decisions were approved, capacity and performance targets were unmeasured design ceilings. The notes below record the historical status at that milestone. For current measured status following subsequent L4/L6 benchmark suites, see [Post-PR #26 implementation status and capacity follow-up](#post-pr-26-implementation-status-and-capacity-follow-up) below.)*
+*(Historical context: At the time these initial S0 and S1 decisions were approved, capacity and performance targets were unmeasured design ceilings. The notes below record the historical status at that milestone. For current measured status following subsequent L4/L6 benchmark suites and S9 security merge, see [Post-PR #28 implementation status, capacity, and security follow-up](#post-pr-28-implementation-status-capacity-and-security-follow-up) below.)*
 
 The original S0 proposals are not approvals by themselves. The explicit later user follow-ups approve DEC-02 and DEC-20 for variable-size matches. Other proposals remain governed by their individual status. At the time of this approval gate, capacity and performance remained unmeasured targets.
 
@@ -75,9 +77,9 @@ Still open after S1: protocol encoding/ACKs and duplicate policy; local authenti
 
 Approved: 3–64 active players per match; moderator excluded; five remains the default; role counts follow DEC-02 using safe integer arithmetic. Multiple Insiders form a team: health zero gives an immediate Insider-team win; eliminating one Insider does not end the match while another remains; eliminating the last Insider with positive health gives Employees the win; surviving round three with any Insider active gives the Insider team the win. Every Investigator gets an independent once-per-match private binary role clue with same-target retry idempotency. These are approved game rules. In this historical milestone, four concurrent 64-player matches and a 256-player server remained unverified until end-to-end load and isolation testing (subsequently validated in L6; see below).
 
-## Post-PR #26 implementation status and capacity follow-up
+## Post-PR #28 implementation status, capacity, and security follow-up
 
-Following the merge of PRs #24, #25, and #26, the implementation and verification status has advanced beyond the initial unverified design ceilings. This section provides the authoritative current status:
+Following the merge of PRs #24, #25, #26, and #28 (Milestone S9), the implementation and verification status has advanced beyond the initial unverified design ceilings. This section provides the authoritative current status:
 
 1. **Initial capacity decisions versus measured evidence**:
    - At the time of the original S0 and S1 decisions, 64 players per match and four matches per process (REQ-07, DEC-20) were theoretical design ceilings and had not yet been measured.
@@ -98,7 +100,7 @@ Following the merge of PRs #24, #25, and #26, the implementation and verificatio
    - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance remains deferred and `NOT RUN` (requiring two physical networked machines).
 
 5. **Transport security (TLS 1.3) status**:
-   - Approved and implemented in the S9 engineering milestone (`feature/s9-tls13-transport`).
+   - Approved and implemented in the S9 engineering milestone (merged to `main` via PR #28).
    - Implements strict TLS 1.3 on a dedicated secure listener (default port 4783) using OpenSSL 3.x, supporting both local-CA verification and SHA-256 leaf fingerprint pinning.
    - Public-Internet deployment, persistent client accounts, dynamic certificate reload, and mutual TLS (mTLS) remain deferred. See detailed decisions below and specification in `docs/s9-transport-security-design.md`.
 
