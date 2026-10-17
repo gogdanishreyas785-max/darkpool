@@ -9,10 +9,12 @@ int main() {
 
 #else
 
+#include "darkpool/reactor_dispatch.hpp"
 #include "darkpool/tls_transport.hpp"
 #include "darkpool/network.hpp"
 
 #include <arpa/inet.h>
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
@@ -20,6 +22,7 @@ int main() {
 #include <fstream>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <string>
@@ -187,6 +190,22 @@ struct FrameResult {
   bool ok() const noexcept { return status == FrameReadStatus::Success && frame.has_value(); }
 };
 
+enum class FrameWriteStatus {
+  Sent,
+  Timeout,
+  PeerClosed,
+  TransportError,
+  TlsError
+};
+
+struct FrameWriteResult {
+  FrameWriteStatus status{FrameWriteStatus::Timeout};
+  std::size_t bytes_written{0};
+  std::string error_message{};
+
+  bool ok() const noexcept { return status == FrameWriteStatus::Sent; }
+};
+
 struct TlsClientConnection {
   int fd{-1};
   darkpool::transport::SslCtxPtr ctx;
@@ -203,7 +222,7 @@ struct TlsClientConnection {
     }
   }
 
-  bool send_frame(const json& payload, int timeout_ms = 5000) {
+  FrameWriteResult send_frame_detailed(const json& payload, int timeout_ms = 5000) {
     const std::string bytes = Frame(payload).serialize();
     std::size_t offset = 0;
     const auto start = std::chrono::steady_clock::now();
@@ -211,7 +230,7 @@ struct TlsClientConnection {
     while (offset < bytes.size()) {
       const auto now = std::chrono::steady_clock::now();
       if (now >= deadline) {
-        return false;
+        return {FrameWriteStatus::Timeout, offset, "Write deadline expired under socket backpressure"};
       }
       const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
       std::size_t written = 0;
@@ -224,12 +243,26 @@ struct TlsClientConnection {
                  status == darkpool::transport::TlsIoStatus::WantRead) {
         pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN), 0};
         const int wait_ms = static_cast<int>(std::clamp<long long>(remaining_ms, 1, 100));
-        (void)poll(&pfd, 1, wait_ms);
+        const int p = poll(&pfd, 1, wait_ms);
+        if (p > 0) {
+          if ((pfd.revents & POLLHUP) != 0) {
+            return {FrameWriteStatus::PeerClosed, offset, "Socket POLLHUP detected during write poll"};
+          }
+          if ((pfd.revents & (POLLERR | POLLNVAL)) != 0) {
+            return {FrameWriteStatus::TransportError, offset, "Socket POLLERR/POLLNVAL detected during write poll"};
+          }
+        }
+      } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
+        return {FrameWriteStatus::PeerClosed, offset, "Clean TLS close_notify received during write"};
       } else {
-        return false;
+        return {FrameWriteStatus::TransportError, offset, err.empty() ? "Transport error during write" : err};
       }
     }
-    return true;
+    return {FrameWriteStatus::Sent, offset, ""};
+  }
+
+  bool send_frame(const json& payload, int timeout_ms = 5000) {
+    return send_frame_detailed(payload, timeout_ms).ok();
   }
 
   FrameResult receive_frame_detailed(int timeout_ms = 5000) {
@@ -715,53 +748,103 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto slow_conn = slow_client->receive_frame();
   CHECK(slow_conn.has_value());
 
-  // 3. Flood unread responses from slow client with finite deadline
-  const auto flood_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-  bool evicted = false;
-  for (int i = 0; i < 6000 && std::chrono::steady_clock::now() < flood_deadline; ++i) {
-    if (!slow_client->send_frame(json{{"type", "status"}}, 200)) {
-      evicted = true;
-      break;
-    }
-  }
+  // 3. Flood unread responses from slow client CONCURRENTLY using a bounded background worker thread
+  std::atomic<bool> stop_flood{false};
+  std::atomic<bool> worker_saw_eviction{false};
+  std::atomic<int> frames_sent{0};
+  std::string worker_eviction_reason;
+  std::mutex worker_mutex;
 
-  // 4. Concurrently, healthy sibling participants and moderator start and advance the match
+  struct ThreadJoiner {
+    std::thread& t;
+    ~ThreadJoiner() {
+      if (t.joinable()) {
+        t.join();
+      }
+    }
+  };
+
+  std::thread flood_worker([&]() {
+    const auto flood_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    // Send 1024-byte payload frames to drive the 64 KiB queue to overflow deterministically
+    const json flood_payload = json{{"type", "flood"}, {"payload", std::string(1024, 'x')}};
+    for (int i = 0; i < 4000 && !stop_flood.load() && std::chrono::steady_clock::now() < flood_deadline; ++i) {
+      const auto write_res = slow_client->send_frame_detailed(flood_payload, 200);
+      if (write_res.status == FrameWriteStatus::Sent) {
+        frames_sent.fetch_add(1);
+      } else if (write_res.status == FrameWriteStatus::Timeout) {
+        // Socket backpressure: write deadline expired without socket closure.
+        // Under flow control, backpressure does NOT indicate disconnection.
+        // Throttle slightly and continue attempting.
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      } else if (write_res.status == FrameWriteStatus::PeerClosed ||
+                 write_res.status == FrameWriteStatus::TransportError) {
+        // Genuine peer disconnect or transport error established
+        std::lock_guard<std::mutex> lock(worker_mutex);
+        worker_saw_eviction.store(true);
+        worker_eviction_reason = write_res.error_message;
+        break;
+      } else {
+        std::lock_guard<std::mutex> lock(worker_mutex);
+        worker_eviction_reason = write_res.error_message;
+        break;
+      }
+    }
+  });
+  ThreadJoiner joiner{flood_worker};
+
+  // 4. Concurrently, while flood_worker is actively sending queries to back up the slow client's output queue,
+  //    healthy sibling participants and moderator start and advance the match
   CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}}));
-  auto start_resp = mod->receive_frame();
+  auto start_resp = mod->receive_frame(3000);
   CHECK(start_resp.has_value());
   CHECK(start_resp->value("ok", false) == true);
   CHECK(start_resp->value("phase", "") == "AwaitingEvent");
 
   CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}));
-  auto pub_resp = mod->receive_frame();
+  auto pub_resp = mod->receive_frame(3000);
   CHECK(pub_resp.has_value());
   CHECK(pub_resp->value("ok", false) == true);
   CHECK(pub_resp->value("phase", "") == "Discussion");
 
   CHECK(p1->send_frame(json{{"type", "match_status"}, {"match_id", match_id}}));
-  auto p1_status = p1->receive_frame();
+  auto p1_status = p1->receive_frame(3000);
   CHECK(p1_status.has_value());
   CHECK(p1_status->value("phase", "") == "Discussion");
 
-  // 5. Verify slow client eviction within finite deadline (timeout NEVER counts as eviction)
+  // 5. Allow flood worker to complete driving queue overflow eviction if not already done, then join
+  const auto wait_eviction_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!worker_saw_eviction.load() && std::chrono::steady_clock::now() < wait_eviction_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  stop_flood.store(true);
+  if (flood_worker.joinable()) {
+    flood_worker.join();
+  }
+
+  bool evicted = worker_saw_eviction.load();
   if (!evicted) {
     const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
     while (std::chrono::steady_clock::now() < drain_deadline) {
-      auto res = slow_client->receive_frame_detailed(200);
+      auto res = slow_client->receive_frame_detailed(100);
       if (res.status == FrameReadStatus::CleanClose ||
           res.status == FrameReadStatus::TransportError) {
         evicted = true;
         break;
       }
       if (res.status == FrameReadStatus::Timeout) {
-        if (!slow_client->send_frame(json{{"type", "status"}}, 200)) {
+        const auto w_res = slow_client->send_frame_detailed(json{{"type", "status"}}, 100);
+        if (w_res.status == FrameWriteStatus::PeerClosed ||
+            w_res.status == FrameWriteStatus::TransportError) {
           evicted = true;
           break;
         }
+        // Notice: If w_res.status == FrameWriteStatus::Timeout, it is backpressure, NOT eviction!
       }
     }
   }
   CHECK(evicted);
+  CHECK(frames_sent.load() > 0);
 
   // 6. Cleanup client connections and verify server descriptors settle back to baseline
   slow_client.reset();
@@ -1615,11 +1698,73 @@ void test_transport_level_cross_direction_io(const darkpool::transport::Ephemera
   BIO_free(c_net);
 }
 
+void test_reactor_dispatch_state_and_decisions() {
+  using darkpool::transport::ConnectionDispatchState;
+  using darkpool::transport::evaluate_reactor_dispatch;
+  using darkpool::transport::compute_reactor_epoll_interest;
+
+  // 1. Pending write requires read readiness (tls_write_want_read):
+  // Reactor must resume write on EPOLLIN, suppress normal read and normal write,
+  // and register interest for read ONLY (no busy-spin on EPOLLOUT).
+  ConnectionDispatchState w_conn{};
+  w_conn.is_tls = true;
+  w_conn.tls_write_want_read = true;
+  w_conn.tls_read_want_write = false;
+  w_conn.peer_closed = false;
+  w_conn.has_pending_output = true;
+
+  auto w_interest = compute_reactor_epoll_interest(w_conn);
+  CHECK(w_interest.want_read == true);
+  CHECK(w_interest.want_write == false); // Guarantees zero spinloop on EPOLLOUT
+
+  auto w_decisions = evaluate_reactor_dispatch(w_conn, static_cast<std::uint32_t>(EPOLLIN));
+  CHECK(w_decisions.do_resume_tls_write == true);
+  CHECK(w_decisions.do_normal_read == false);
+  CHECK(w_decisions.do_normal_write == false);
+  CHECK(w_decisions.do_resume_tls_read == false);
+
+  // 2. Pending read requires write readiness (tls_read_want_write):
+  // Reactor must resume read on EPOLLOUT, suppress normal write and normal read,
+  // and register interest for write ONLY.
+  ConnectionDispatchState r_conn{};
+  r_conn.is_tls = true;
+  r_conn.tls_write_want_read = false;
+  r_conn.tls_read_want_write = true;
+  r_conn.peer_closed = false;
+  r_conn.has_pending_output = false;
+
+  auto r_interest = compute_reactor_epoll_interest(r_conn);
+  CHECK(r_interest.want_read == false);
+  CHECK(r_interest.want_write == true);
+
+  auto r_decisions = evaluate_reactor_dispatch(r_conn, static_cast<std::uint32_t>(EPOLLOUT));
+  CHECK(r_decisions.do_resume_tls_read == true);
+  CHECK(r_decisions.do_normal_read == false);
+  CHECK(r_decisions.do_normal_write == false);
+  CHECK(r_decisions.do_resume_tls_write == false);
+
+  // 3. Normal idle and busy interest registrations
+  ConnectionDispatchState n_conn{};
+  n_conn.is_tls = true;
+  n_conn.has_pending_output = false;
+  auto n_interest = compute_reactor_epoll_interest(n_conn);
+  CHECK(n_interest.want_read == true);
+  CHECK(n_interest.want_write == false);
+
+  n_conn.has_pending_output = true;
+  n_interest = compute_reactor_epoll_interest(n_conn);
+  CHECK(n_interest.want_read == true);
+  CHECK(n_interest.want_write == true);
+}
+
 void test_scenario_24_reactor_cross_direction_and_key_update(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   CHECK(certs != nullptr);
 
-  // Run transport-level deterministic verification of WantRead, WantWrite, and cross-direction retry
+  // 1. Direct unit verification of production reactor dispatch decisions and epoll interest
+  test_reactor_dispatch_state_and_decisions();
+
+  // 2. Run transport-level deterministic verification of WantRead, WantWrite, and cross-direction retry
   test_transport_level_cross_direction_io(*certs);
 
   const auto port = reserve_port();

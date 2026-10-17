@@ -129,6 +129,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND darkpool_tls_integration_tests $<TARGET_FILE:darkpool_server>)
   set_tests_properties(darkpool_tls_integration_tests PROPERTIES TIMEOUT 180)
 
+  add_executable(darkpool_reactor_dispatch_tests tests/reactor_dispatch_tests.cpp)
+  target_link_libraries(darkpool_reactor_dispatch_tests PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_reactor_dispatch_tests)
+  add_test(NAME darkpool_reactor_dispatch_tests
+    COMMAND darkpool_reactor_dispatch_tests)
+  set_tests_properties(darkpool_reactor_dispatch_tests PROPERTIES TIMEOUT 20)
+
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
   target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)
   darkpool_enable_warnings(darkpool_load_tests)

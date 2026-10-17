@@ -11,6 +11,7 @@ int main() {
 
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
+#include "darkpool/reactor_dispatch.hpp"
 #include "darkpool/tls_transport.hpp"
 
 #include <arpa/inet.h>
@@ -94,6 +95,15 @@ struct Connection {
   bool tls_write_want_read{false};
   bool tls_write_want_write{false};
 };
+
+darkpool::transport::ConnectionDispatchState to_dispatch_state(const Connection &conn) noexcept {
+  return darkpool::transport::ConnectionDispatchState{
+      .is_tls = (conn.transport == TransportType::Tls),
+      .tls_write_want_read = conn.tls_write_want_read,
+      .tls_read_want_write = conn.tls_read_want_write,
+      .peer_closed = conn.peer_closed,
+      .has_pending_output = !conn.output.pending().empty()};
+}
 
 struct SocketFileGuard {
   std::string path;
@@ -231,28 +241,9 @@ bool update_connection_events(int epoll_fd, int fd, Connection &connection) {
                       connection.tls_handshake_want_write);
   }
 
-  bool reading = false;
-  bool writing = false;
-
-  // Read readiness requirements
-  if (!connection.peer_closed) {
-    if (connection.tls_read_want_write) {
-      writing = true; // SSL_read needs write readiness to resume
-    } else {
-      reading = true; // normal read or tls_read_want_read
-    }
-  }
-
-  // Write readiness requirements
-  if (!connection.output.pending().empty()) {
-    if (connection.tls_write_want_read) {
-      reading = true; // SSL_write needs read readiness to resume; DO NOT set writing (prevents spin)
-    } else {
-      writing = true; // normal write or tls_write_want_write
-    }
-  }
-
-  return set_events(epoll_fd, fd, reading, writing);
+  const auto state = to_dispatch_state(connection);
+  const auto interest = darkpool::transport::compute_reactor_epoll_interest(state);
+  return set_events(epoll_fd, fd, interest.want_read, interest.want_write);
 }
 
 void close_connection(int epoll_fd, int fd, std::map<int, Connection> &clients,
@@ -1101,42 +1092,35 @@ int main(int argc, char **argv) {
       }
 
       bool keep = true;
-      const auto read_or_hangup = static_cast<std::uint32_t>(EPOLLIN) |
-                                   static_cast<std::uint32_t>(EPOLLRDHUP) |
-                                   static_cast<std::uint32_t>(EPOLLHUP);
-
-      const bool initial_write_want_read = (found->second.transport == TransportType::Tls) && found->second.tls_write_want_read;
-      const bool initial_read_want_write = (found->second.transport == TransportType::Tls) && found->second.tls_read_want_write;
+      const auto state = to_dispatch_state(found->second);
+      const auto decisions = darkpool::transport::evaluate_reactor_dispatch(state, flags);
 
       // Cross-direction resume:
       // If a pending TLS write was waiting for read readiness (SSL_ERROR_WANT_READ) and read readiness fired:
-      if (initial_write_want_read && (flags & read_or_hangup) != 0U) {
+      if (decisions.do_resume_tls_write) {
         keep = write_client(epoll_fd, fd, found->second);
       }
 
       // Normal read: only if not waiting for cross-direction readiness
-      if (keep && !initial_write_want_read && !initial_read_want_write && (flags & read_or_hangup) != 0U) {
+      if (keep && decisions.do_normal_read) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
 
       // Cross-direction resume:
       // If a pending TLS read was waiting for write readiness (SSL_ERROR_WANT_WRITE) and write readiness fired:
-      if (keep && initial_read_want_write && (flags & EPOLLOUT) != 0U) {
+      if (keep && decisions.do_resume_tls_read) {
         keep = read_client(epoll_fd, fd, found->second, players, moderators,
                            coordinator);
       }
 
-      if (keep && (flags & (EPOLLRDHUP | EPOLLHUP)) != 0U &&
-          !found->second.peer_closed) {
+      if (keep && decisions.do_mark_peer_closed) {
         found->second.peer_closed = true;
         keep = update_connection_events(epoll_fd, fd, found->second);
       }
 
       // Normal write: only if not waiting for cross-direction readiness
-      if (keep && !initial_read_want_write && !initial_write_want_read &&
-          ((flags & EPOLLOUT) != 0U || found->second.peer_closed) &&
-          !found->second.output.pending().empty()) {
+      if (keep && decisions.do_normal_write) {
         keep = write_client(epoll_fd, fd, found->second);
       }
 
