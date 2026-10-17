@@ -200,23 +200,36 @@ void test_closed_peer_dispatch() {
 }
 
 void test_pending_write_want_write_dispatch() {
-  // Scenario: A TLS connection has pending output and is waiting for write readiness (EPOLLOUT)
+  // Scenario: SSL_write returned WANT_WRITE. OpenSSL requires retrying that
+  // exact write before performing any other TLS I/O on this connection.
   ConnectionDispatchState conn{};
   conn.is_tls = true;
-  conn.tls_write_want_read = false;
-  conn.tls_read_want_write = false;
+  conn.tls_write_want_write = true;
   conn.peer_closed = false;
   conn.has_pending_output = true;
 
   const auto interest = compute_reactor_epoll_interest(conn);
-  CHECK(interest.want_read == true);   // Still interested in incoming requests
-  CHECK(interest.want_write == true);  // Wants write readiness to flush output
+  CHECK(interest.want_read == false);  // Do not read and append to a pending write
+  CHECK(interest.want_write == true);  // Retry only when the socket is writable
 
-  // On EPOLLOUT: triggers write
+  const auto d_in = evaluate_reactor_dispatch(conn, static_cast<std::uint32_t>(EPOLLIN));
+  CHECK(d_in.do_resume_tls_write == false);
+  CHECK(d_in.do_normal_read == false);
+  CHECK(d_in.do_resume_tls_read == false);
+  CHECK(d_in.do_normal_write == false);
+
   const auto d_out = evaluate_reactor_dispatch(conn, static_cast<std::uint32_t>(EPOLLOUT));
-  CHECK(d_out.do_normal_write == true);
-  CHECK(d_out.do_resume_tls_write == false);
+  CHECK(d_out.do_resume_tls_write == true);
+  CHECK(d_out.do_normal_read == false);
   CHECK(d_out.do_resume_tls_read == false);
+  CHECK(d_out.do_normal_write == false);
+
+  const auto d_both = evaluate_reactor_dispatch(
+      conn, static_cast<std::uint32_t>(EPOLLIN | EPOLLOUT));
+  CHECK(d_both.do_resume_tls_write == true);
+  CHECK(d_both.do_normal_read == false);
+  CHECK(d_both.do_resume_tls_read == false);
+  CHECK(d_both.do_normal_write == false);
 }
 
 void test_pending_read_want_read_dispatch() {
