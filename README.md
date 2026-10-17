@@ -32,7 +32,18 @@ Configure with warnings-as-errors using `-DDARKPOOL_WARNINGS_AS_ERRORS=ON`.
 
 Moderator connections require an authentication secret supplied via the `DARKPOOL_MODERATOR_TOKEN` environment variable on both the server and the moderator client. If the server does not have `DARKPOOL_MODERATOR_TOKEN` set, it fails closed and rejects all moderator connection attempts. Players connect without a token.
 
-> **Security Scope Note**: The server binds to local UNIX domain sockets and defaults to loopback (`127.0.0.1:4782`), with optional explicit non-loopback binding to an assigned RFC 1918 private IPv4 address (`--bind-address`). This transport is unencrypted plaintext and does not implement TLS 1.3 or production-ready transport authentication; authentication tokens and gameplay messages travel in plaintext over the local socket, loopback, or private LAN connection. TLS 1.3, production certificate lifecycle management, and public-Internet deployment remain deferred future work. The private LAN feature must not be exposed to public or untrusted networks and is not public-Internet-ready.
+> **Security & Transport Architecture Note**: DARKPOOL provides three distinct transport endpoints:
+> 1. **Local UNIX-domain stream socket**: `/tmp/darkpool.sock` for high-performance single-host IPC.
+> 2. **Plaintext TCP stream socket**: defaults to loopback (`127.0.0.1:4782`), with optional explicit non-loopback binding to an assigned RFC 1918 private IPv4 address (`--bind-address`). **Warning**: Port 4782 is unencrypted plaintext; moderator tokens and gameplay messages travel across the network in plaintext. It must never be exposed to public or untrusted networks.
+> 3. **Secure TLS 1.3 TCP stream socket**: dedicated listener on port `4783` (AD-S9-01) backed by OpenSSL 3.x, enforcing TLS 1.3 as the minimum and only allowed protocol version, with zero silent fallback to plaintext.
+>
+> Supported TLS client verification modes:
+> - **Local CA verification** (`--ca-cert <path>`): validates server certificate chain against a trusted local CA.
+> - **SHA-256 leaf fingerprint pinning** (`--server-fingerprint <64-hex>`): validates the SHA-256 digest of the server leaf certificate directly.
+>
+> Both verification modes strictly enforce certificate validity periods and IP Subject Alternative Name (SAN) matching against the target address.
+>
+> **Deferred Scope**: Public Internet deployment is unsupported. Mutual TLS (mTLS) for players, persistent player accounts, and dynamic in-process certificate reload remain deferred future milestones.
 
 On Linux, run the server and clients in separate terminals:
 
@@ -233,9 +244,9 @@ For encrypted, tamper-resistant multiplayer over a private local network, launch
 
 The following items are explicitly tracked as separate future milestones and are **not** implemented in this phase:
 
-1. **Remote Internet Play over TLS 1.3**: Encrypted transport layer replacing plaintext TCP sockets for public internet deployment.
-2. **Production-Grade Client/Player Authentication**: Individual cryptographically verified player identities, credentials, and token management.
-3. **Certificate Lifecycle & Rotation**: Automated ACME/Let's Encrypt certificate issuance, renewal, and dynamic TLS reload.
+1. **Public Internet Deployment**: Wide-area public routing, DNS FQDN SAN validation, public Web PKI, and internet-facing edge firewalling (private LAN TLS 1.3 on port 4783 is implemented in S9).
+2. **Mutual TLS (mTLS) & Persistent Player Identities**: Cryptographic client certificates, persistent player accounts, and credential databases (session-scoped anonymous player identities and in-channel moderator tokens are currently used).
+3. **Dynamic In-Process Certificate Reload & Automated Lifecycle**: Live certificate reload without restarting the server process and automated ACME/Let's Encrypt renewal (certificate rotation is currently restart-based).
 4. **Public Deployment & Operational Monitoring**: Prometheus metrics export, Grafana dashboards, health-check endpoints, and paging/alerting.
 5. **Service Packaging & Supervision**: Systemd unit files, process supervision, auto-restart policies, rollback procedures, and hardening profiles.
 6. **Durable Match Persistence**: State journaling and crash-recovery to resume active matches across process restarts.
