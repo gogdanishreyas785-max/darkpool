@@ -79,12 +79,20 @@ darkpool_enable_warnings(darkpool_cli_tests)
 add_test(NAME darkpool_cli_tests COMMAND darkpool_cli_tests)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(OpenSSL 3.0 REQUIRED COMPONENTS SSL Crypto)
+
+  add_library(darkpool_tls_transport src/tls_transport.cpp)
+  target_include_directories(darkpool_tls_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(darkpool_tls_transport PUBLIC cxx_std_20)
+  target_link_libraries(darkpool_tls_transport PUBLIC darkpool_network OpenSSL::SSL OpenSSL::Crypto)
+  darkpool_enable_warnings(darkpool_tls_transport)
+
   add_executable(darkpool_server src/server_main.cpp)
-  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator)
+  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_tls_transport)
   darkpool_enable_warnings(darkpool_server)
 
   add_executable(darkpool_client src/client_main.cpp)
-  target_link_libraries(darkpool_client PRIVATE darkpool_cli)
+  target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_tls_transport)
   darkpool_enable_warnings(darkpool_client)
 
   add_executable(darkpool_network_integration_tests tests/network_integration_tests.cpp)
@@ -113,6 +121,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_lan_binding_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> lan-binding)
   set_tests_properties(darkpool_lan_binding_tests PROPERTIES TIMEOUT 30)
+
+  add_executable(darkpool_tls_integration_tests tests/tls_integration_tests.cpp)
+  target_link_libraries(darkpool_tls_integration_tests PRIVATE darkpool_tls_transport darkpool_network)
+  darkpool_enable_warnings(darkpool_tls_integration_tests)
+  add_test(NAME darkpool_tls_integration_tests
+    COMMAND darkpool_tls_integration_tests $<TARGET_FILE:darkpool_server>)
+  set_tests_properties(darkpool_tls_integration_tests PROPERTIES TIMEOUT 180)
+
+  add_executable(darkpool_reactor_dispatch_tests tests/reactor_dispatch_tests.cpp)
+  target_link_libraries(darkpool_reactor_dispatch_tests PRIVATE darkpool_network)
+  darkpool_enable_warnings(darkpool_reactor_dispatch_tests)
+  add_test(NAME darkpool_reactor_dispatch_tests
+    COMMAND darkpool_reactor_dispatch_tests)
+  set_tests_properties(darkpool_reactor_dispatch_tests PROPERTIES TIMEOUT 20)
 
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
   target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)
@@ -207,6 +229,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_l8_regression
     COMMAND darkpool_load_tests_l8 $<TARGET_FILE:darkpool_server> --selftest)
   set_tests_properties(darkpool_load_l8_regression PROPERTIES TIMEOUT 60)
+
+  add_executable(darkpool_load_tests_tls tests/load_test_tls_harness.cpp)
+  target_link_libraries(darkpool_load_tests_tls PRIVATE darkpool_tls_transport darkpool_network)
+  darkpool_enable_warnings(darkpool_load_tests_tls)
+  if(DARKPOOL_GIT_COMMIT)
+    target_compile_definitions(darkpool_load_tests_tls PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
+  endif()
+  add_test(NAME darkpool_load_tls_functional
+    COMMAND darkpool_load_tests_tls $<TARGET_FILE:darkpool_server>)
+  set_tests_properties(darkpool_load_tls_functional PROPERTIES TIMEOUT 180)
 
   option(DARKPOOL_ENABLE_SUSTAINED_TESTS "Enable 10-minute and 30-minute sustained load tests in CTest" OFF)
   if(DARKPOOL_ENABLE_SUSTAINED_TESTS)
