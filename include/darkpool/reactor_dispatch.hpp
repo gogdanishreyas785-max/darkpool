@@ -10,6 +10,7 @@ namespace darkpool::transport {
 struct ConnectionDispatchState {
   bool is_tls{false};
   bool tls_write_want_read{false};
+  bool tls_write_want_write{false};
   bool tls_read_want_write{false};
   bool peer_closed{false};
   bool has_pending_output{false};
@@ -32,17 +33,21 @@ struct DispatchDecisions {
       static_cast<std::uint32_t>(EPOLLHUP);
 
   const bool initial_write_want_read = conn.is_tls && conn.tls_write_want_read;
+  const bool initial_write_want_write = conn.is_tls && conn.tls_write_want_write;
   const bool initial_read_want_write = conn.is_tls && conn.tls_read_want_write;
 
   DispatchDecisions d{};
 
-  // Cross-direction resume: pending write was waiting for read readiness
-  if (initial_write_want_read && (epoll_flags & read_or_hangup) != 0U) {
+  // Resume the exact pending SSL_write operation only on the readiness it requested.
+  if ((initial_write_want_read && (epoll_flags & read_or_hangup) != 0U) ||
+      (initial_write_want_write && (epoll_flags & EPOLLOUT) != 0U)) {
     d.do_resume_tls_write = true;
   }
 
-  // Normal read: only if not waiting for cross-direction readiness
-  if (!initial_write_want_read && !initial_read_want_write && (epoll_flags & read_or_hangup) != 0U) {
+  // Do not start any other TLS I/O while an SSL_write retry is outstanding.
+  // Likewise, a pending SSL_read that returned WANT_WRITE must be resumed first.
+  if (!initial_write_want_read && !initial_write_want_write &&
+      !initial_read_want_write && (epoll_flags & read_or_hangup) != 0U) {
     d.do_normal_read = true;
   }
 
@@ -57,6 +62,7 @@ struct DispatchDecisions {
 
   // Normal write: only if not waiting for cross-direction readiness
   if (!initial_read_want_write && !initial_write_want_read &&
+      !initial_write_want_write &&
       ((epoll_flags & EPOLLOUT) != 0U || conn.peer_closed) &&
       conn.has_pending_output) {
     d.do_normal_write = true;
@@ -72,28 +78,17 @@ struct ReactorEpollInterest {
 
 [[nodiscard]] constexpr ReactorEpollInterest compute_reactor_epoll_interest(
     const ConnectionDispatchState& conn) noexcept {
-  bool reading = false;
-  bool writing = false;
-
-  // Read readiness requirements
-  if (!conn.peer_closed) {
-    if (conn.is_tls && conn.tls_read_want_write) {
-      writing = true; // SSL_read needs write readiness to resume
-    } else {
-      reading = true; // normal read or tls_read_want_read
-    }
+  // A suspended OpenSSL operation has exclusive ownership of the SSL object
+  // until that exact operation is retried. Register only the readiness it needs;
+  // doing other TLS I/O here can violate OpenSSL's retry contract.
+  if (conn.is_tls && conn.tls_write_want_read) {
+    return ReactorEpollInterest{true, false};
+  }
+  if (conn.is_tls && (conn.tls_write_want_write || conn.tls_read_want_write)) {
+    return ReactorEpollInterest{false, true};
   }
 
-  // Write readiness requirements
-  if (conn.has_pending_output) {
-    if (conn.is_tls && conn.tls_write_want_read) {
-      reading = true; // SSL_write needs read readiness to resume; DO NOT set writing (prevents spin)
-    } else {
-      writing = true; // normal write or tls_write_want_write
-    }
-  }
-
-  return ReactorEpollInterest{reading, writing};
+  return ReactorEpollInterest{!conn.peer_closed, conn.has_pending_output};
 }
 
 }  // namespace darkpool::transport
