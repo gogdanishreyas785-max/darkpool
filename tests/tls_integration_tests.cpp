@@ -40,15 +40,60 @@ using darkpool::network::json;
 using darkpool::transport::EphemeralCertBundle;
 using darkpool::transport::generate_ephemeral_certs;
 
+#include <signal.h>
+
 int g_failures = 0;
+int g_current_scenario_id = 0;
+const char* g_current_scenario_name = "none";
+const char* g_current_operation = "idle";
+
+void set_operation(const char* op) noexcept {
+  g_current_operation = op;
+}
+
+static inline void safe_write_str(int fd, const char* s, std::size_t len) noexcept {
+  const ssize_t w = ::write(fd, s, len);
+  (void)w;
+}
+
+void sigterm_handler(int sig) noexcept {
+  const char prefix[] = "\n*** TIMEOUT / INTERRUPTED BY SIGNAL *** Last scenario: [";
+  safe_write_str(STDERR_FILENO, prefix, sizeof(prefix) - 1);
+  if (g_current_scenario_name != nullptr) {
+    safe_write_str(STDERR_FILENO, g_current_scenario_name, std::strlen(g_current_scenario_name));
+  }
+  const char mid[] = "] | Last operation: [";
+  safe_write_str(STDERR_FILENO, mid, sizeof(mid) - 1);
+  if (g_current_operation != nullptr) {
+    safe_write_str(STDERR_FILENO, g_current_operation, std::strlen(g_current_operation));
+  }
+  const char suffix[] = "]\n";
+  safe_write_str(STDERR_FILENO, suffix, sizeof(suffix) - 1);
+  _exit(128 + sig);
+}
 
 void check(bool condition, const char* expression, int line) {
   if (!condition) {
     ++g_failures;
-    std::cerr << "FAIL line " << line << ": " << expression << '\n';
+    std::cerr << "FAIL [Scenario " << g_current_scenario_id << " (" << g_current_scenario_name
+              << ") | op: " << g_current_operation << "] line " << line << ": " << expression << std::endl;
   }
 }
 #define CHECK(value) check(static_cast<bool>(value), #value, __LINE__)
+
+template <typename Func>
+void run_scenario(int id, const char* name, const char* desc, Func&& func) {
+  g_current_scenario_id = id;
+  g_current_scenario_name = name;
+  set_operation("start");
+  std::cerr << "[SCENARIO " << id << " START] " << name << " - " << desc << std::endl;
+  const auto start = std::chrono::steady_clock::now();
+  func();
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::steady_clock::now() - start).count();
+  set_operation("completed");
+  std::cerr << "[SCENARIO " << id << " PASS] " << name << " (" << elapsed_ms << " ms)" << std::endl;
+}
 
 std::size_t count_open_fds() {
   std::size_t count = 0;
@@ -117,6 +162,7 @@ pid_t start_tls_server(
     const char* token_env = "test-moderator-token",
     const std::string& bind_ip = "127.0.0.1",
     std::string* server_stdout_path = nullptr) {
+  set_operation("server startup");
   const auto child = fork();
   if (child < 0) return -1;
   if (child == 0) {
@@ -160,6 +206,7 @@ pid_t start_tls_server(
 }
 
 void stop_server(pid_t child) {
+  set_operation("server cleanup");
   if (child > 0) {
     (void)kill(child, SIGTERM);
     int status = 0;
@@ -251,6 +298,7 @@ struct TlsClientConnection {
   }
 
   FrameWriteResult resume_frame(int timeout_ms = 5000) {
+    set_operation("frame transmission");
     if (write_cursor.abandoned) {
       return {FrameWriteStatus::TransportError, write_cursor.offset,
               "Connection stream was abandoned due to prior unrecoverable error"};
@@ -278,11 +326,14 @@ struct TlsClientConnection {
 
       if (status == darkpool::transport::TlsIoStatus::Ok) {
         write_cursor.offset += written;
+      } else if (status == darkpool::transport::TlsIoStatus::WantWrite ||
+                 status == darkpool::transport::TlsIoStatus::WantRead) {
+        const short poll_events = static_cast<short>(
+            ((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN)
 #ifdef POLLRDHUP
-        const short poll_events = static_cast<short>(((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN) | POLLRDHUP);
-#else
-        const short poll_events = static_cast<short>((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN);
+            | POLLRDHUP
 #endif
+        );
         pollfd pfd{fd, poll_events, 0};
         const int wait_ms = static_cast<int>(std::clamp<long long>(remaining_ms, 1, 100));
         const int p = poll(&pfd, 1, wait_ms);
@@ -344,6 +395,7 @@ struct TlsClientConnection {
   }
 
   FrameResult receive_frame_detailed(int timeout_ms = 5000) {
+    set_operation("response receipt");
     char header[4];
     std::size_t header_offset = 0;
     const auto start = std::chrono::steady_clock::now();
@@ -423,6 +475,7 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
     std::uint16_t port,
     const darkpool::transport::ClientTlsConfig& config,
     int rcvbuf = 0) {
+  set_operation("tls client connect/handshake");
   std::string err;
   auto ctx = darkpool::transport::create_client_ssl_ctx(config, err);
   if (ctx == nullptr) {
@@ -471,7 +524,10 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
     pollfd pfd{fd, static_cast<short>((want_read ? POLLIN : 0) | (want_write ? POLLOUT : 0)), 0};
     (void)poll(&pfd, 1, p_timeout);
   }
-  (void)fcntl(fd, F_SETFL, flags);
+  // Keep socket in nonblocking mode for accurate timeout loops and WANT_READ/WANT_WRITE handling
+  (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  const int post_hs_flags = fcntl(fd, F_GETFL, 0);
+  CHECK(post_hs_flags >= 0 && (post_hs_flags & O_NONBLOCK) != 0);
 
   // Strict post-handshake verification
   X509* peer_cert = SSL_get_peer_certificate(ssl.get());
@@ -2008,39 +2064,52 @@ int main(int argc, char** argv) {
   const char* server_path = argv[1];
   const std::string subtest = (argc >= 3) ? argv[2] : "all";
 
-  std::cout << "Running DARKPOOL S9 TLS 1.3 Integration Tests (subtest: " << subtest << ")...\n";
+  struct sigaction sa{};
+  sa.sa_handler = sigterm_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = static_cast<int>(SA_RESETHAND);
+  (void)sigaction(SIGTERM, &sa, nullptr);
+  (void)sigaction(SIGINT, &sa, nullptr);
 
-  if (subtest == "all" || subtest == "valid-ca") test_scenario_01_valid_ca(server_path);
-  if (subtest == "all" || subtest == "valid-fingerprint") test_scenario_02_valid_fingerprint(server_path);
-  if (subtest == "all" || subtest == "untrusted-ca") test_scenario_03_untrusted_ca(server_path);
-  if (subtest == "all" || subtest == "incorrect-fingerprint") test_scenario_04_incorrect_fingerprint(server_path);
-  if (subtest == "all" || subtest == "mismatched-san") test_scenario_05_mismatched_ip_san(server_path);
-  if (subtest == "all" || subtest == "expired-cert") test_scenario_06_expired_cert(server_path);
-  if (subtest == "all" || subtest == "reject-tls12") test_scenario_07_reject_tls12(server_path);
-  if (subtest == "all" || subtest == "reject-plaintext") test_scenario_08_reject_plaintext_on_tls_port(server_path);
-  if (subtest == "all" || subtest == "handshake-stall") test_scenario_09_handshake_stall_timeout(server_path);
-  if (subtest == "all" || subtest == "coalesced-frames") test_scenario_10_coalesced_frames(server_path);
-  if (subtest == "all" || subtest == "slow-reader") test_scenario_11_slow_reader_bounds(server_path);
-  if (subtest == "all" || subtest == "flood-limiting") test_scenario_12_flood_rate_limiting(server_path);
-  if (subtest == "all" || subtest == "secret-redaction") test_scenario_13_secret_redaction(server_path);
-  if (subtest == "all" || subtest == "gameplay") test_scenario_14_complete_match_gameplay(server_path);
-  if (subtest == "all" || subtest == "isolation") test_scenario_15_concurrent_match_isolation(server_path);
-  if (subtest == "all" || subtest == "cleanup") test_scenario_16_disconnect_cleanup(server_path);
-  if (subtest == "all" || subtest == "ca-leaf-fingerprint") test_scenario_17_ca_signed_leaf_fingerprint_mode(server_path);
-  if (subtest == "all" || subtest == "not-yet-valid") test_scenario_18_not_yet_valid_cert_rejection(server_path);
-  if (subtest == "all" || subtest == "invalid-eku") test_scenario_19_invalid_server_eku_rejection(server_path);
-  if (subtest == "all" || subtest == "cert-rotation") test_scenario_20_cert_rotation_pin_update(server_path);
-  if (subtest == "all" || subtest == "key-permissions") test_scenario_21_strict_key_permissions(server_path);
-  if (subtest == "all" || subtest == "cli-exclusivity") test_scenario_22_cli_mutual_exclusivity(server_path);
-  if (subtest == "all" || subtest == "unexpected-eof") test_scenario_23_truncated_tls_termination(server_path);
-  if (subtest == "all" || subtest == "cross-direction") test_scenario_24_reactor_cross_direction_and_key_update(server_path);
-  if (subtest == "all" || subtest == "write-cursor") test_scenario_25_write_cursor_semantics(server_path);
+  std::cout << "Running DARKPOOL S9 TLS 1.3 Integration Tests (subtest: " << subtest << ")...\n" << std::flush;
+
+  auto maybe_run = [&](int id, const char* key, const char* name, auto&& fn) {
+    if (subtest == "all" || subtest == key) {
+      run_scenario(id, key, name, [&]() { fn(server_path); });
+    }
+  };
+
+  maybe_run(1, "valid-ca", "Valid TLS 1.3 handshake with trusted local CA and matching IP SAN", test_scenario_01_valid_ca);
+  maybe_run(2, "valid-fingerprint", "Valid TLS 1.3 handshake in fingerprint mode with self-signed leaf", test_scenario_02_valid_fingerprint);
+  maybe_run(3, "untrusted-ca", "Rejection of untrusted CA root", test_scenario_03_untrusted_ca);
+  maybe_run(4, "incorrect-fingerprint", "Rejection of incorrect leaf fingerprint", test_scenario_04_incorrect_fingerprint);
+  maybe_run(5, "mismatched-san", "Rejection of mismatched IP SAN", test_scenario_05_mismatched_ip_san);
+  maybe_run(6, "expired-cert", "Rejection of expired certificate", test_scenario_06_expired_cert);
+  maybe_run(7, "reject-tls12", "Rejection of TLS 1.2 and earlier protocols", test_scenario_07_reject_tls12);
+  maybe_run(8, "reject-plaintext", "Rejection of plaintext traffic on TLS port", test_scenario_08_reject_plaintext_on_tls_port);
+  maybe_run(9, "handshake-stall", "Handshake stall timeout and cleanup", test_scenario_09_handshake_stall_timeout);
+  maybe_run(10, "coalesced-frames", "Fragmented TLS records and coalesced application frames", test_scenario_10_coalesced_frames);
+  maybe_run(11, "slow-reader", "Slow-reader output queue bounding and concurrent match progression", test_scenario_11_slow_reader_bounds);
+  maybe_run(12, "flood-limiting", "Flood rate limiting over TLS with state-mutation verification", test_scenario_12_flood_rate_limiting);
+  maybe_run(13, "secret-redaction", "Secret redaction in server and client diagnostics", test_scenario_13_secret_redaction);
+  maybe_run(14, "gameplay", "Complete 5-player match gameplay over TLS", test_scenario_14_complete_match_gameplay);
+  maybe_run(15, "isolation", "Multiple TLS clients and concurrent match isolation", test_scenario_15_concurrent_match_isolation);
+  maybe_run(16, "cleanup", "Disconnect and shutdown cleanup", test_scenario_16_disconnect_cleanup);
+  maybe_run(17, "ca-leaf-fingerprint", "Valid TLS 1.3 in fingerprint mode with CA-signed leaf", test_scenario_17_ca_signed_leaf_fingerprint_mode);
+  maybe_run(18, "not-yet-valid", "Fingerprint mode with not-yet-valid certificate rejection", test_scenario_18_not_yet_valid_cert_rejection);
+  maybe_run(19, "invalid-eku", "Invalid server certificate usage / EKU rejection", test_scenario_19_invalid_server_eku_rejection);
+  maybe_run(20, "cert-rotation", "Certificate rotation and pin update", test_scenario_20_cert_rotation_pin_update);
+  maybe_run(21, "key-permissions", "Strict private key file permissions", test_scenario_21_strict_key_permissions);
+  maybe_run(22, "cli-exclusivity", "Mutually exclusive CLI verification options", test_scenario_22_cli_mutual_exclusivity);
+  maybe_run(23, "unexpected-eof", "Truncated / unexpected TLS termination (EOF without close_notify)", test_scenario_23_truncated_tls_termination);
+  maybe_run(24, "cross-direction", "Reactor state machine cross-direction readiness & KeyUpdate", test_scenario_24_reactor_cross_direction_and_key_update);
+  maybe_run(25, "write-cursor", "Persistent TLS FrameWriteCursor and resumable partial writes", test_scenario_25_write_cursor_semantics);
 
   if (g_failures > 0) {
-    std::cerr << "FAIL: " << g_failures << " assertions failed\n";
+    std::cerr << "FAIL: " << g_failures << " assertions failed\n" << std::flush;
     return 1;
   }
-  std::cout << "PASS: All S9 TLS 1.3 integration tests passed cleanly!\n";
+  std::cout << "PASS: All S9 TLS 1.3 integration tests passed cleanly!\n" << std::flush;
   return 0;
 }
 
