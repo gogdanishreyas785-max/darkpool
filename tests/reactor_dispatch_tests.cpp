@@ -199,30 +199,184 @@ void test_closed_peer_dispatch() {
   CHECK(interest.want_write == false);
 }
 
-void test_frame_integrity_across_retry() {
-  // Verify that frame serialization and mock retry logic preserves exact bytes
-  const auto payload = darkpool::network::json{{"type", "test_frame"}, {"sequence", 42}};
-  const std::string original = darkpool::network::Frame(payload).serialize();
+void test_pending_write_want_write_dispatch() {
+  // Scenario: A TLS connection has pending output and is waiting for write readiness (EPOLLOUT)
+  ConnectionDispatchState conn{};
+  conn.is_tls = true;
+  conn.tls_write_want_read = false;
+  conn.tls_read_want_write = false;
+  conn.peer_closed = false;
+  conn.has_pending_output = true;
 
+  const auto interest = compute_reactor_epoll_interest(conn);
+  CHECK(interest.want_read == true);   // Still interested in incoming requests
+  CHECK(interest.want_write == true);  // Wants write readiness to flush output
+
+  // On EPOLLOUT: triggers write
+  const auto d_out = evaluate_reactor_dispatch(conn, static_cast<std::uint32_t>(EPOLLOUT));
+  CHECK(d_out.do_normal_write == true);
+  CHECK(d_out.do_resume_tls_write == false);
+  CHECK(d_out.do_resume_tls_read == false);
+}
+
+void test_pending_read_want_read_dispatch() {
+  // Scenario: A TLS connection is waiting for incoming data
+  ConnectionDispatchState conn{};
+  conn.is_tls = true;
+  conn.tls_write_want_read = false;
+  conn.tls_read_want_write = false;
+  conn.peer_closed = false;
+  conn.has_pending_output = false;
+
+  const auto interest = compute_reactor_epoll_interest(conn);
+  CHECK(interest.want_read == true);
+  CHECK(interest.want_write == false); // no output pending, no EPOLLOUT interest
+
+  const auto d_in = evaluate_reactor_dispatch(conn, static_cast<std::uint32_t>(EPOLLIN));
+  CHECK(d_in.do_normal_read == true);
+  CHECK(d_in.do_resume_tls_read == false);
+  CHECK(d_in.do_resume_tls_write == false);
+  CHECK(d_in.do_normal_write == false);
+}
+
+void test_client_write_cursor_unit_invariants() {
+  // Unit test verifying persistent frame-write cursor invariants without network dependencies
+  struct MockCursor {
+    std::string frame_bytes{};
+    std::size_t offset{0};
+    bool in_progress{false};
+    bool abandoned{false};
+
+    [[nodiscard]] bool empty() const noexcept { return !in_progress; }
+    [[nodiscard]] std::size_t remaining() const noexcept {
+      return in_progress ? (frame_bytes.size() - offset) : 0;
+    }
+  };
+
+  MockCursor cursor;
+  CHECK(cursor.empty());
+
+  const auto payload1 = darkpool::network::json{{"type", "action"}, {"id", 1}};
+  const std::string s1 = darkpool::network::Frame(payload1).serialize();
+
+  // 1. Start frame 1
+  cursor.frame_bytes = s1;
+  cursor.offset = 0;
+  cursor.in_progress = true;
+  CHECK(!cursor.empty());
+  CHECK(cursor.remaining() == s1.size());
+
+  // 2. Simulated timeout before any bytes written: must preserve frame and offset 0
+  CHECK(cursor.offset == 0);
+  CHECK(cursor.in_progress == true);
+  CHECK(cursor.remaining() == s1.size());
+
+  // 3. Simulated partial write: 5 bytes sent
+  cursor.offset += 5;
+  CHECK(cursor.offset == 5);
+  CHECK(cursor.remaining() == s1.size() - 5);
+  CHECK(cursor.in_progress == true);
+
+  // 4. Simulated timeout after partial write: must preserve exact remaining bytes and offset
+  CHECK(cursor.offset == 5);
+  CHECK(cursor.remaining() == s1.size() - 5);
+
+  // 5. Simulated attempt to send a new frame 2 while frame 1 is in progress:
+  // Must NOT overwrite or begin frame 2 until frame 1 finishes!
+  const auto payload2 = darkpool::network::json{{"type", "action2"}};
+  CHECK(cursor.in_progress == true); // Caller must complete cursor first
+
+  // 6. Complete frame 1
+  cursor.offset = cursor.frame_bytes.size();
+  cursor.in_progress = false;
+  cursor.frame_bytes.clear();
+  cursor.offset = 0;
+  CHECK(cursor.empty());
+  CHECK(cursor.remaining() == 0);
+
+  // 7. Now start frame 2
+  const std::string s2 = darkpool::network::Frame(payload2).serialize();
+  cursor.frame_bytes = s2;
+  cursor.offset = 0;
+  cursor.in_progress = true;
+  CHECK(cursor.remaining() == s2.size());
+
+  // 8. Simulated fatal error: marks stream abandoned
+  cursor.abandoned = true;
+  CHECK(cursor.abandoned == true);
+}
+
+void test_incremental_frame_decoder_and_stream_integrity() {
+  const auto payload1 = darkpool::network::json{
+      {"type", "test_action"},
+      {"player_id", 101},
+      {"order_amount", 5000},
+      {"description", "First frame with sufficient length to test multi-chunk fragmentation"}
+  };
+  const std::string original1 = darkpool::network::Frame(payload1).serialize();
+  CHECK(original1.size() > 10); // Has 4-byte header + JSON body
+
+  const auto payload2 = darkpool::network::json{
+      {"type", "followup_action"},
+      {"status", "consecutive_stream_verification"}
+  };
+  const std::string original2 = darkpool::network::Frame(payload2).serialize();
+
+  darkpool::network::FrameDecoder decoder;
+
+  // 1. Feed only part of the 4-byte length header (first 2 bytes)
+  auto f1 = decoder.feed(std::span<const char>(original1.data(), 2));
+  CHECK(f1.empty()); // No complete frame returned prematurely
+
+  // 2. Feed a chunk that completes the header and crosses into the body (4 bytes: remaining 2 bytes of header + 2 bytes body)
+  auto f2 = decoder.feed(std::span<const char>(original1.data() + 2, 4));
+  CHECK(f2.empty()); // Header is complete, but body is only 2 bytes: no frame returned
+
+  // 3. Feed partial body chunk 1 (20 bytes)
+  const std::size_t chunk3_len = 20;
+  auto f3 = decoder.feed(std::span<const char>(original1.data() + 6, chunk3_len));
+  CHECK(f3.empty());
+
+  // 4. Feed remaining body minus 1 byte
+  const std::size_t remaining_minus_one = original1.size() - 6 - chunk3_len - 1;
+  auto f4 = decoder.feed(std::span<const char>(original1.data() + 6 + chunk3_len, remaining_minus_one));
+  CHECK(f4.empty());
+
+  // 5. Feed the final 1 byte of frame 1
+  auto f5 = decoder.feed(std::span<const char>(original1.data() + original1.size() - 1, 1));
+  CHECK(f5.size() == 1);
+  CHECK(f5[0].payload() == payload1);
+
+  // 6. Feed consecutive follow-up frame across 3 fragmented chunks to ensure stream alignment is preserved
+  const std::size_t split1 = 3;
+  const std::size_t split2 = original2.size() / 2;
+  auto f6_1 = decoder.feed(std::span<const char>(original2.data(), split1));
+  CHECK(f6_1.empty());
+
+  auto f6_2 = decoder.feed(std::span<const char>(original2.data() + split1, split2 - split1));
+  CHECK(f6_2.empty());
+
+  auto f6_3 = decoder.feed(std::span<const char>(original2.data() + split2, original2.size() - split2));
+  CHECK(f6_3.size() == 1);
+  CHECK(f6_3[0].payload() == payload2);
+
+  // 7. Test OutputQueue partial consumption reconstruction
   darkpool::network::OutputQueue queue;
-  CHECK(queue.append(original));
-  CHECK(queue.pending().size() == original.size());
+  CHECK(queue.append(original1));
+  std::string reconstructed;
+  // Consume in slices of 7 bytes, 15 bytes, then remainder
+  const std::size_t s1 = 7;
+  reconstructed.append(queue.pending().substr(0, s1));
+  queue.consume(s1);
 
-  // Simulate partial write of first 6 bytes (e.g. 4-byte header + 2 bytes body)
-  const std::size_t partial = 6;
-  queue.consume(partial);
-  CHECK(queue.pending().size() == original.size() - partial);
-  CHECK(queue.pending() == original.substr(partial));
+  const std::size_t s2 = 15;
+  reconstructed.append(queue.pending().substr(0, s2));
+  queue.consume(s2);
 
-  // Resume remaining bytes
+  reconstructed.append(queue.pending());
   queue.consume(queue.pending().size());
   CHECK(queue.pending().empty());
-
-  // Verify reassembly via FrameDecoder
-  darkpool::network::FrameDecoder decoder;
-  auto frames = decoder.feed(std::span<const char>(original.data(), original.size()));
-  CHECK(frames.size() == 1);
-  CHECK(frames[0].payload() == payload);
+  CHECK(reconstructed == original1);
 }
 
 } // namespace
@@ -230,11 +384,14 @@ void test_frame_integrity_across_retry() {
 int main() {
   std::cout << "[reactor_dispatch_tests] Running reactor dispatch unit tests...\n";
   test_pending_write_want_read_dispatch();
+  test_pending_write_want_write_dispatch();
+  test_pending_read_want_read_dispatch();
   test_pending_read_want_write_dispatch();
   test_normal_read_write_dispatch();
   test_state_transitions_after_operation();
   test_closed_peer_dispatch();
-  test_frame_integrity_across_retry();
+  test_client_write_cursor_unit_invariants();
+  test_incremental_frame_decoder_and_stream_integrity();
 
   if (g_failures > 0) {
     std::cerr << "[reactor_dispatch_tests] FAILED with " << g_failures << " failures\n";

@@ -269,8 +269,12 @@ void close_connection(int epoll_fd, int fd, std::map<int, Connection> &clients,
 bool enqueue_echo(int epoll_fd, int fd, Connection &connection,
                   const Frame &frame) {
   try {
-    if (!connection.output.append(frame.serialize()))
+    if (!connection.output.append(frame.serialize())) {
+      std::cerr << "[server] connection " << fd << " evicted: output queue overflow ("
+                << connection.output.pending().size() << " bytes queued, limit "
+                << darkpool::network::kMaxQueuedBytes << ")\n";
       return false;
+    }
     return update_connection_events(epoll_fd, fd, connection);
   } catch (const std::exception &) {
     return false;
@@ -375,7 +379,8 @@ bool read_client(int epoll_fd, int fd, Connection &connection,
                                coordinator))
               return false;
           }
-        } catch (const std::exception &) {
+        } catch (const std::exception &e) {
+          std::cerr << "[server] connection " << fd << " closed: framing error: " << e.what() << "\n";
           return false;
         }
       } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
@@ -1086,6 +1091,7 @@ int main(int argc, char **argv) {
           continue;
         } else {
           // Handshake failed (e.g. plaintext sent to TLS port or bad client alert)
+          std::cerr << "[server] connection " << fd << " closed: handshake failure\n";
           close_connection(epoll_fd, fd, clients, players, moderators, coordinator);
           continue;
         }

@@ -86,12 +86,15 @@ std::uint16_t reserve_port() {
   return ntohs(address.sin_port);
 }
 
-int connect_tcp(std::uint16_t port, int max_attempts = 80) {
+int connect_tcp(std::uint16_t port, int max_attempts = 80, int rcvbuf = 0) {
   for (int attempt = 0; attempt < max_attempts; ++attempt) {
     const int fd = socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (fd >= 0) {
       int one = 1;
       (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+      if (rcvbuf > 0) {
+        (void)setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
+      }
       sockaddr_in addr{};
       addr.sin_family = AF_INET;
       addr.sin_port = htons(port);
@@ -206,10 +209,23 @@ struct FrameWriteResult {
   bool ok() const noexcept { return status == FrameWriteStatus::Sent; }
 };
 
+struct FrameWriteCursor {
+  std::string frame_bytes{};
+  std::size_t offset{0};
+  bool in_progress{false};
+  bool abandoned{false};
+
+  [[nodiscard]] bool empty() const noexcept { return !in_progress; }
+  [[nodiscard]] std::size_t remaining() const noexcept {
+    return in_progress ? (frame_bytes.size() - offset) : 0;
+  }
+};
+
 struct TlsClientConnection {
   int fd{-1};
   darkpool::transport::SslCtxPtr ctx;
   darkpool::transport::SslPtr ssl;
+  FrameWriteCursor write_cursor{};
 
   ~TlsClientConnection() {
     if (ssl != nullptr) {
@@ -222,43 +238,105 @@ struct TlsClientConnection {
     }
   }
 
-  FrameWriteResult send_frame_detailed(const json& payload, int timeout_ms = 5000) {
-    const std::string bytes = Frame(payload).serialize();
-    std::size_t offset = 0;
+  [[nodiscard]] bool has_pending_frame() const noexcept {
+    return write_cursor.in_progress;
+  }
+
+  [[nodiscard]] std::size_t pending_frame_offset() const noexcept {
+    return write_cursor.offset;
+  }
+
+  [[nodiscard]] std::size_t pending_frame_remaining() const noexcept {
+    return write_cursor.remaining();
+  }
+
+  FrameWriteResult resume_frame(int timeout_ms = 5000) {
+    if (write_cursor.abandoned) {
+      return {FrameWriteStatus::TransportError, write_cursor.offset,
+              "Connection stream was abandoned due to prior unrecoverable error"};
+    }
+    if (!write_cursor.in_progress) {
+      return {FrameWriteStatus::Sent, 0, ""};
+    }
+
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = start + std::chrono::milliseconds(timeout_ms);
-    while (offset < bytes.size()) {
+    while (write_cursor.offset < write_cursor.frame_bytes.size()) {
       const auto now = std::chrono::steady_clock::now();
       if (now >= deadline) {
-        return {FrameWriteStatus::Timeout, offset, "Write deadline expired under socket backpressure"};
+        return {FrameWriteStatus::Timeout, write_cursor.offset,
+                "Write deadline expired under socket backpressure"};
       }
-      const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
+      const auto remaining_ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
       std::size_t written = 0;
       std::string err;
+      const char* data_ptr = write_cursor.frame_bytes.data() + write_cursor.offset;
+      const std::size_t remaining_bytes = write_cursor.frame_bytes.size() - write_cursor.offset;
       const auto status = darkpool::transport::tls_write(
-          ssl.get(), bytes.data() + offset, bytes.size() - offset, written, err);
+          ssl.get(), data_ptr, remaining_bytes, written, err);
+
       if (status == darkpool::transport::TlsIoStatus::Ok) {
-        offset += written;
-      } else if (status == darkpool::transport::TlsIoStatus::WantWrite ||
-                 status == darkpool::transport::TlsIoStatus::WantRead) {
-        pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN), 0};
+        write_cursor.offset += written;
+#ifdef POLLRDHUP
+        const short poll_events = static_cast<short>(((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN) | POLLRDHUP);
+#else
+        const short poll_events = static_cast<short>((status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN);
+#endif
+        pollfd pfd{fd, poll_events, 0};
         const int wait_ms = static_cast<int>(std::clamp<long long>(remaining_ms, 1, 100));
         const int p = poll(&pfd, 1, wait_ms);
         if (p > 0) {
+#ifdef POLLRDHUP
+          if ((pfd.revents & (POLLHUP | POLLRDHUP)) != 0) {
+#else
           if ((pfd.revents & POLLHUP) != 0) {
-            return {FrameWriteStatus::PeerClosed, offset, "Socket POLLHUP detected during write poll"};
+#endif
+            write_cursor.abandoned = true;
+            return {FrameWriteStatus::PeerClosed, write_cursor.offset,
+                    "Socket peer closure detected during write poll"};
           }
           if ((pfd.revents & (POLLERR | POLLNVAL)) != 0) {
-            return {FrameWriteStatus::TransportError, offset, "Socket POLLERR/POLLNVAL detected during write poll"};
+            write_cursor.abandoned = true;
+            return {FrameWriteStatus::TransportError, write_cursor.offset,
+                    "Socket POLLERR/POLLNVAL detected during write poll"};
           }
         }
       } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
-        return {FrameWriteStatus::PeerClosed, offset, "Clean TLS close_notify received during write"};
+        write_cursor.abandoned = true;
+        return {FrameWriteStatus::PeerClosed, write_cursor.offset,
+                "Clean TLS close_notify received during write"};
       } else {
-        return {FrameWriteStatus::TransportError, offset, err.empty() ? "Transport error during write" : err};
+        write_cursor.abandoned = true;
+        return {FrameWriteStatus::TransportError, write_cursor.offset,
+                err.empty() ? "Transport error during write" : err};
       }
     }
-    return {FrameWriteStatus::Sent, offset, ""};
+
+    const std::size_t total_written = write_cursor.frame_bytes.size();
+    write_cursor.in_progress = false;
+    write_cursor.frame_bytes.clear();
+    write_cursor.offset = 0;
+    return {FrameWriteStatus::Sent, total_written, ""};
+  }
+
+  FrameWriteResult send_frame_detailed(const json& payload, int timeout_ms = 5000) {
+    if (write_cursor.abandoned) {
+      return {FrameWriteStatus::TransportError, write_cursor.offset,
+              "Connection stream was abandoned due to prior unrecoverable error"};
+    }
+    // If a frame write is already in progress, resume that pending frame!
+    // Do NOT serialize or begin another frame while bytes from the previous frame remain outstanding.
+    if (write_cursor.in_progress) {
+      return resume_frame(timeout_ms);
+    }
+
+    // Now start the new frame: serialize exactly once into write_cursor
+    write_cursor.frame_bytes = Frame(payload).serialize();
+    write_cursor.offset = 0;
+    write_cursor.in_progress = true;
+
+    return resume_frame(timeout_ms);
   }
 
   bool send_frame(const json& payload, int timeout_ms = 5000) {
@@ -343,13 +421,14 @@ struct TlsClientConnection {
 
 std::unique_ptr<TlsClientConnection> connect_tls_client(
     std::uint16_t port,
-    const darkpool::transport::ClientTlsConfig& config) {
+    const darkpool::transport::ClientTlsConfig& config,
+    int rcvbuf = 0) {
   std::string err;
   auto ctx = darkpool::transport::create_client_ssl_ctx(config, err);
   if (ctx == nullptr) {
     return nullptr;
   }
-  const int fd = connect_tcp(port);
+  const int fd = connect_tcp(port, 80, rcvbuf);
   if (fd < 0) {
     return nullptr;
   }
@@ -696,17 +775,22 @@ void test_scenario_10_coalesced_frames(const char* server_path) {
 // --------------------------------------------------------------------------
 // Scenario 11: Slow-reader output queue bounds over TLS (drives queue >64 KiB)
 // --------------------------------------------------------------------------
-// --------------------------------------------------------------------------
-// Scenario 11: Slow-reader output queue bounds over TLS (drives queue >64 KiB)
-// --------------------------------------------------------------------------
 void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
+
+  const std::string server_log_path = certs->temp_dir_path + "/server_scenario11.log";
+  std::string log_arg = server_log_path;
+
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path,
+                                      certs->server_key_pem_path, "mod-token", "127.0.0.1", &log_arg);
   CHECK(child > 0);
   ServerSubprocessGuard server_guard{child};
 
-  // Wait for server listener to initialize before capturing baseline open FDs
+  // 1. Establish deterministic baseline: verify server is listening via a TCP probe, then capture baseline open FDs
+  const int probe_fd = connect_tcp(port, 80);
+  CHECK(probe_fd >= 0);
+  (void)::close(probe_fd);
   std::this_thread::sleep_for(std::chrono::milliseconds(50));
   const auto initial_server_fds = count_open_fds_pid(child);
   CHECK(initial_server_fds.has_value());
@@ -716,7 +800,7 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   client_cfg.ca_file = certs->ca_cert_pem_path;
   client_cfg.target_ip = "127.0.0.1";
 
-  // 1. Setup healthy sibling match participants
+  // 2. Setup healthy sibling match participants
   auto mod = connect_tls_client(port, client_cfg);
   CHECK(mod != nullptr);
   CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
@@ -739,8 +823,8 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   CHECK(p3->send_frame(json{{"type", "connect"}, {"role", "player"}})); (void)p3->receive_frame();
   CHECK(p3->send_frame(json{{"type", "join_match"}, {"match_id", match_id}})); (void)p3->receive_frame();
 
-  // 2. Slow client connects as an independent connection over TLS
-  auto slow_client = connect_tls_client(port, client_cfg);
+  // 3. Slow client connects as an independent connection over TLS with constrained receive buffer
+  auto slow_client = connect_tls_client(port, client_cfg, 2048);
   CHECK(slow_client != nullptr);
   int rcvbuf = 2048;
   (void)setsockopt(slow_client->fd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
@@ -748,10 +832,12 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   auto slow_conn = slow_client->receive_frame();
   CHECK(slow_conn.has_value());
 
-  // 3. Flood unread responses from slow client CONCURRENTLY using a bounded background worker thread
+  // 4. Concurrency & Flood worker synchronization primitives
   std::atomic<bool> stop_flood{false};
+  std::atomic<bool> phase_b_active{false};
+  std::atomic<bool> worker_active_barrier{false};
   std::atomic<bool> worker_saw_eviction{false};
-  std::atomic<int> frames_sent{0};
+  std::atomic<int> completed_frames{0};
   std::string worker_eviction_reason;
   std::mutex worker_mutex;
 
@@ -764,19 +850,25 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
     }
   };
 
+  const json flood_payload = json{{"type", "match_status"}, {"match_id", match_id}};
+
   std::thread flood_worker([&]() {
-    const auto flood_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    // Send 1024-byte payload frames to drive the 64 KiB queue to overflow deterministically
-    const json flood_payload = json{{"type", "flood"}, {"payload", std::string(1024, 'x')}};
-    for (int i = 0; i < 4000 && !stop_flood.load() && std::chrono::steady_clock::now() < flood_deadline; ++i) {
+    const auto flood_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    while (!stop_flood.load() && std::chrono::steady_clock::now() < flood_deadline) {
       const auto write_res = slow_client->send_frame_detailed(flood_payload, 200);
       if (write_res.status == FrameWriteStatus::Sent) {
-        frames_sent.fetch_add(1);
+        const int cnt = completed_frames.fetch_add(1) + 1;
+        if (cnt >= 2) {
+          worker_active_barrier.store(true);
+        }
+        if (!phase_b_active.load()) {
+          // Pacing during Phase A to ensure match progression runs concurrently without premature queue overflow
+          std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
       } else if (write_res.status == FrameWriteStatus::Timeout) {
         // Socket backpressure: write deadline expired without socket closure.
         // Under flow control, backpressure does NOT indicate disconnection.
-        // Throttle slightly and continue attempting.
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
       } else if (write_res.status == FrameWriteStatus::PeerClosed ||
                  write_res.status == FrameWriteStatus::TransportError) {
         // Genuine peer disconnect or transport error established
@@ -793,8 +885,18 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   });
   ThreadJoiner joiner{flood_worker};
 
-  // 4. Concurrently, while flood_worker is actively sending queries to back up the slow client's output queue,
-  //    healthy sibling participants and moderator start and advance the match
+  // Phase A: Concurrent sibling-progress verification
+  // Wait on synchronization barrier until worker has completed whole valid frames
+  const auto barrier_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  while (!worker_active_barrier.load() && std::chrono::steady_clock::now() < barrier_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(worker_active_barrier.load());
+
+  // Capture baseline completed frames immediately before moderator operations begin
+  const int baseline_frames = completed_frames.load();
+
+  // Concurrently, while flood_worker is actively sending queries:
   CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}}));
   auto start_resp = mod->receive_frame(3000);
   CHECK(start_resp.has_value());
@@ -812,8 +914,20 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   CHECK(p1_status.has_value());
   CHECK(p1_status->value("phase", "") == "Discussion");
 
-  // 5. Allow flood worker to complete driving queue overflow eviction if not already done, then join
-  const auto wait_eviction_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  // Verify that flood traffic was actively occurring during this sequence
+  const auto phase_a_progress_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1000);
+  while (completed_frames.load() <= baseline_frames && std::chrono::steady_clock::now() < phase_a_progress_deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+  }
+  const int post_phase_a_frames = completed_frames.load();
+  CHECK(post_phase_a_frames > baseline_frames);
+  CHECK(!worker_saw_eviction.load());
+
+  // Phase B: Queue-pressure and eviction verification
+  // Signal worker to flood at sustained full speed to exhaust server's 64 KiB queue
+  phase_b_active.store(true);
+
+  const auto wait_eviction_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(12);
   while (!worker_saw_eviction.load() && std::chrono::steady_clock::now() < wait_eviction_deadline) {
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
@@ -833,18 +947,36 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
         break;
       }
       if (res.status == FrameReadStatus::Timeout) {
-        const auto w_res = slow_client->send_frame_detailed(json{{"type", "status"}}, 100);
+        const auto w_res = slow_client->send_frame_detailed(flood_payload, 100);
         if (w_res.status == FrameWriteStatus::PeerClosed ||
             w_res.status == FrameWriteStatus::TransportError) {
           evicted = true;
           break;
         }
-        // Notice: If w_res.status == FrameWriteStatus::Timeout, it is backpressure, NOT eviction!
       }
     }
   }
   CHECK(evicted);
-  CHECK(frames_sent.load() > 0);
+  // Verify defensible traffic volume: at least 500 completed frames sent to exhaust 64 KiB queue
+  CHECK(completed_frames.load() >= 500);
+
+  // 5. Verify server-side affirmative eviction diagnostic in server log
+  std::string server_log_contents;
+  const auto log_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (std::chrono::steady_clock::now() < log_deadline) {
+    std::ifstream log_file(server_log_path);
+    if (log_file.is_open()) {
+      std::stringstream ss;
+      ss << log_file.rdbuf();
+      server_log_contents = ss.str();
+      if (server_log_contents.find("evicted: output queue overflow") != std::string::npos) {
+        break;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  CHECK(server_log_contents.find("evicted: output queue overflow") != std::string::npos);
+  CHECK(server_log_contents.find("framing error") == std::string::npos);
 
   // 6. Cleanup client connections and verify server descriptors settle back to baseline
   slow_client.reset();
@@ -1808,6 +1940,64 @@ void test_scenario_24_reactor_cross_direction_and_key_update(const char* server_
   }
 }
 
+// --------------------------------------------------------------------------
+// Scenario 25: Persistent TLS FrameWriteCursor and Resumable Partial Writes
+// --------------------------------------------------------------------------
+void test_scenario_25_write_cursor_semantics(const char* server_path) {
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path);
+  CHECK(child > 0);
+  ServerSubprocessGuard server_guard{child};
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  auto client = connect_tls_client(port, client_cfg);
+  CHECK(client != nullptr);
+
+  // 1. Fully successful frame completes with exact byte count
+  const json f1 = json{{"type", "connect"}, {"role", "player"}};
+  const std::string s1 = Frame(f1).serialize();
+  const auto res1 = client->send_frame_detailed(f1, 5000);
+  CHECK(res1.status == FrameWriteStatus::Sent);
+  CHECK(res1.bytes_written == s1.size());
+  CHECK(!client->has_pending_frame());
+  CHECK(client->pending_frame_remaining() == 0);
+  auto r1 = client->receive_frame(2000);
+  CHECK(r1.has_value());
+
+  // 2. Test persistent write cursor under synthetic partial progress
+  // Manually arm client's write_cursor to simulate a partially transmitted frame
+  const json f2 = json{{"type", "status"}, {"padding", std::string(300, 'z')}};
+  const std::string s2 = Frame(f2).serialize();
+  client->write_cursor.frame_bytes = s2;
+  client->write_cursor.offset = 0; // ready to transmit
+  client->write_cursor.in_progress = true;
+
+  CHECK(client->has_pending_frame());
+  CHECK(client->pending_frame_offset() == 0);
+  CHECK(client->pending_frame_remaining() == s2.size());
+
+  // A call to send_frame_detailed with a DIFFERENT payload f3:
+  // MUST NOT send f3, MUST resume and complete the in-progress frame f2 first!
+  const json f3 = json{{"type", "should_not_interrupt_f2"}};
+  const auto res2 = client->send_frame_detailed(f3, 5000);
+  CHECK(res2.status == FrameWriteStatus::Sent);
+  CHECK(res2.bytes_written == s2.size());
+  CHECK(!client->has_pending_frame());
+  auto r2 = client->receive_frame(2000);
+  CHECK(r2.has_value());
+
+  // 3. Test abandoned stream: fatal connection error rejects subsequent writes
+  client->write_cursor.abandoned = true;
+  const auto res_err = client->send_frame_detailed(f1, 100);
+  CHECK(res_err.status == FrameWriteStatus::TransportError);
+  CHECK(res_err.error_message.find("abandoned") != std::string::npos);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1844,6 +2034,7 @@ int main(int argc, char** argv) {
   if (subtest == "all" || subtest == "cli-exclusivity") test_scenario_22_cli_mutual_exclusivity(server_path);
   if (subtest == "all" || subtest == "unexpected-eof") test_scenario_23_truncated_tls_termination(server_path);
   if (subtest == "all" || subtest == "cross-direction") test_scenario_24_reactor_cross_direction_and_key_update(server_path);
+  if (subtest == "all" || subtest == "write-cursor") test_scenario_25_write_cursor_semantics(server_path);
 
   if (g_failures > 0) {
     std::cerr << "FAIL: " << g_failures << " assertions failed\n";
