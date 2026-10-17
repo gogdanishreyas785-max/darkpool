@@ -8,7 +8,7 @@ No claim is made against compromised host/root or all timing side channels.
 
 ## Boundaries and actors
 
-Boundaries: local client to UNIX socket/parser; authenticated session to match router/state; player output to moderator/audit records; future remote client to deferred TCP/TLS adapter.
+Boundaries: local client to UNIX socket/parser; authenticated session to match router/state; player output to moderator/audit records; encrypted LAN client to TLS 1.3 adapter (port 4783); future remote client to deferred public Internet deployment.
 
 Actors: buggy/malicious client, abusive local process, same-UID process, slow/disconnected client, authorized moderator, host administrator/root. Restrictive socket permissions and least privilege are required. Peer credentials identify OS account, not a distinct human if processes share UID; local auth policy needs approval.
 

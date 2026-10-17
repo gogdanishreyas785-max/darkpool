@@ -309,7 +309,7 @@ The CLI client provides additive secure flags while preserving all existing plai
 
 ## 9. Verification Matrix
 
-The S9 automated verification suite covers 24 comprehensive integration scenarios registered with CTest:
+The S9 automated verification suite covers 25 comprehensive integration scenarios registered with CTest:
 
 1. **T-S9-01:** Valid TLS 1.3 handshake with trusted local CA and matching IP SAN.
 2. **T-S9-02:** Valid TLS 1.3 handshake in fingerprint-pinning mode with self-signed leaf.
@@ -321,7 +321,7 @@ The S9 automated verification suite covers 24 comprehensive integration scenario
 8. **T-S9-08:** Rejection of plaintext traffic sent to the TLS listener (clean teardown without fallback).
 9. **T-S9-09:** Handshake stall timeout (slowloris connection evicted at 5.0s; baseline FDs settle cleanly).
 10. **T-S9-10:** Fragmented TLS records and multiple coalesced application frames reassembled cleanly.
-11. **T-S9-11:** Slow-reader output queue bounding (64 KiB client buffer limit enforced over TLS, eviction verified, sibling match succeeds).
+11. **T-S9-11:** Slow-reader output queue bounding (64 KiB client buffer limit enforced over TLS, affirmative server-side queue eviction verified, concurrent sibling match progression verified).
 12. **T-S9-12:** Request flood rate limiting over TLS (20 req/s, burst 40 enforced; verified zero state mutation on authoritative state; sibling match isolated).
 13. **T-S9-13:** Secret redaction in server and client diagnostics.
 14. **T-S9-14:** Complete 5-player end-to-end match gameplay through terminal victory over secure transport.
@@ -335,6 +335,7 @@ The S9 automated verification suite covers 24 comprehensive integration scenario
 22. **T-S9-22:** Mutually exclusive verification CLI flags (`--ca-cert` and `--server-fingerprint` rejected).
 23. **T-S9-23:** Truncated / unexpected TLS termination (EOF without close_notify alert treated as error; reactor remains responsive).
 24. **T-S9-24:** Reactor state machine cross-direction readiness and TLS 1.3 KeyUpdate.
+25. **T-S9-25:** Persistent frame-write cursor retry and timeout resilience (incomplete frame resumes from saved cursor offset; timeouts and backpressure preserve pending state without starting a new frame or corrupting the stream; typed outcomes distinguish timeout from peer closure).
 
 ---
 
@@ -343,9 +344,9 @@ The S9 automated verification suite covers 24 comprehensive integration scenario
 - [x] Formal review and written approval of S9 specification (`docs/s9-transport-security-design.md`).
 - [x] Explicit consensus on Decisions AD-S9-01 through AD-S9-08 recorded in `docs/DECISIONS.md`.
 - [x] OpenSSL 3.x integrated into CMake build system.
-- [x] Implementation branch created: `feature/s9-tls13-transport`.
+- [x] Implementation merged to main via PR #28 (`feature/s9-tls13-transport`).
 - [x] Nonblocking TLS state machine integrated into epoll reactor with TCP_NODELAY.
 - [x] Client CLI updated with CA and fingerprint validation modes and mutual exclusivity.
-- [x] Full automated test matrix (24 scenarios) executed and passing via CTest.
+- [x] Full automated test matrix (25 scenarios) executed and passing via CTest.
 - [x] Corrected benchmark harness executed with descriptor leak fix and Plaintext TCP baseline on port 4782.
 - [ ] Physical two-computer cross-network LAN acceptance test: **NOT RUN** (remains deferred; requires two physical machines).
