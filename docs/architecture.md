@@ -27,7 +27,7 @@ The approved per-match player range is 3–64, with five as the default; the mod
 
 Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
 
-The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance remains untested (`NOT RUN`), and remote TLS 1.3 deployment remains deferred.
+The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance remains untested (`NOT RUN`), and remote public-Internet deployment remains deferred (private LAN TLS 1.3 on port 4783 is implemented in S9).
 
 ## Proposed repository layout
 

@@ -482,11 +482,17 @@ Phase lengths, workload mix/jitter, ACK semantics, and repeat count are proposal
 
 ## S9 Transport Security Verification & Benchmarks
 
-The S9 transport security milestone implements server-authenticated TLS 1.3 transport over dedicated TCP port 4783 using OpenSSL 3.x. Verification encompasses 24 automated integration and security-negative test scenarios, as well as a dedicated 3-run performance benchmark measuring 5-player, 64-player, and 256-player concurrent workloads across Plaintext TCP (port 4782) and TLS 1.3 (port 4783), compared against the historical UNIX domain socket baseline.
+The S9 transport security milestone implements server-authenticated TLS 1.3 transport over dedicated TCP port 4783 using OpenSSL 3.x. Verification encompasses 25 automated live integration and security-negative test scenarios in `darkpool_tls_integration_tests`, dedicated unit-level reactor dispatch and incremental decoder tests in `darkpool_reactor_dispatch_tests`, as well as a dedicated 3-run performance benchmark measuring 5-player, 64-player, and 256-player concurrent workloads across Plaintext TCP (port 4782) and TLS 1.3 (port 4783), compared against the historical UNIX domain socket baseline.
+
+### Distinct Test Tiers in S9 Verification
+To ensure high test fidelity without false confidence, S9 separates verification into three distinct test tiers:
+1. **Unit-Level Reactor & State Tests (`darkpool_reactor_dispatch_tests`)**: Verifies state transition matrices, readiness interest computation (`compute_reactor_epoll_interest`), suppression of normal I/O during pending cross-direction operations, incremental multi-chunk frame decoding, and `FrameWriteCursor` state invariants without network dependencies.
+2. **Transport-Level Deterministic BIO Tests (`test_transport_level_cross_direction_io`)**: Uses OpenSSL memory BIOs and an injectable filter BIO to deterministically verify `SSL_ERROR_WANT_READ` and `SSL_ERROR_WANT_WRITE` retry contracts and KeyUpdate handshakes without timing jitter or socket scheduling artifacts.
+3. **Live TLS Integration & Security Suite (`darkpool_tls_integration_tests`)**: Executes 25 end-to-end integration scenarios against a live non-blocking `darkpool_server` subprocess over loopback TCP, validating real OpenSSL handshakes, certificate rejection policies, socket flow control, rate limiting, and write-cursor retry semantics.
 
 ### S9 Automated Functional & Security Test Suite (`darkpool_tls_integration_tests`)
 
-All 24 test scenarios are registered with CTest and pass deterministically:
+All 25 test scenarios are executed within the `darkpool_tls_integration_tests` CTest target and pass deterministically:
 
 | ID | Scenario Description | Expected Outcome | Result |
 |:---|:---|:---|:---:|
@@ -500,7 +506,7 @@ All 24 test scenarios are registered with CTest and pass deterministically:
 | S9-08 | Rejection of plaintext traffic sent to TLS listener | Handshake parse failure, connection terminated, no fallback | PASS |
 | S9-09 | Handshake stall timeout (5-second monotonic deadline) | Stalled socket evicted by epoll reactor within deadline | PASS |
 | S9-10 | Fragmented TLS records and coalesced application frames | Decoder handles byte streams and multi-frame boundaries | PASS |
-| S9-11 | Slow-reader and output queue bounds | Output queue driven past 64 KiB boundary, slow client evicted, resources cleaned up, healthy sibling match succeeds | PASS |
+| S9-11 | Slow-reader and output queue bounds | Client receive buffer constrained prior to connect; flood drives server output queue past 64 KiB; server affirmatively logs queue overflow eviction; healthy sibling match progression verified concurrently via barrier synchronization | PASS |
 | S9-12 | Flood rate limiting over TLS (20 req/s, burst 40) | Over-burst rejected, zero state mutation on authoritative state, sibling match isolated | PASS |
 | S9-13 | Secret redaction in server and client diagnostics | Moderator token, passwords, private keys never logged | PASS |
 | S9-14 | Complete match gameplay over TLS (5 players, all phases) | Moderator auth, player joins, private roles, Investigator clue, trading, voting, transitions to Finished | PASS |
@@ -514,6 +520,7 @@ All 24 test scenarios are registered with CTest and pass deterministically:
 | S9-22 | Mutually exclusive CLI verification options | Supplying both `--ca-cert` and `--server-fingerprint` is rejected with exit code 2 | PASS |
 | S9-23 | Truncated / unexpected TLS termination | Abrupt TCP close without TLS close_notify alert is treated as error; reactor remains responsive | PASS |
 | S9-24 | Reactor state machine cross-direction readiness & KeyUpdate | Cross-direction WANT_READ / WANT_WRITE handled without busy spin; TLS 1.3 KeyUpdate handled cleanly | PASS |
+| S9-25 | Persistent frame-write cursor retry and timeout resilience | Protects the invariant that an incomplete frame write under socket backpressure or timeouts must resume from its saved cursor offset instead of serializing a new frame or inserting headers mid-stream; distinguishes flow-control timeouts from peer disconnections | PASS |
 
 ### S9 TLS 1.3 Performance Benchmark Results (`docs/load_test_tls_results.json`)
 
