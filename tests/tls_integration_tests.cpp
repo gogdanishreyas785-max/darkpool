@@ -42,49 +42,30 @@ using darkpool::transport::generate_ephemeral_certs;
 
 #include <signal.h>
 
-int g_failures = 0;
-int g_current_scenario_id = 0;
-const char* g_current_scenario_name = "none";
-const char* g_current_operation = "idle";
+std::atomic<int> g_failures{0};
+std::atomic<int> g_current_scenario_id{0};
+std::atomic<const char*> g_current_scenario_name{"none"};
+std::atomic<const char*> g_current_operation{"idle"};
 
 void set_operation(const char* op) noexcept {
-  g_current_operation = op;
-}
-
-static inline void safe_write_str(int fd, const char* s, std::size_t len) noexcept {
-  const ssize_t w = ::write(fd, s, len);
-  (void)w;
-}
-
-void sigterm_handler(int sig) noexcept {
-  const char prefix[] = "\n*** TIMEOUT / INTERRUPTED BY SIGNAL *** Last scenario: [";
-  safe_write_str(STDERR_FILENO, prefix, sizeof(prefix) - 1);
-  if (g_current_scenario_name != nullptr) {
-    safe_write_str(STDERR_FILENO, g_current_scenario_name, std::strlen(g_current_scenario_name));
-  }
-  const char mid[] = "] | Last operation: [";
-  safe_write_str(STDERR_FILENO, mid, sizeof(mid) - 1);
-  if (g_current_operation != nullptr) {
-    safe_write_str(STDERR_FILENO, g_current_operation, std::strlen(g_current_operation));
-  }
-  const char suffix[] = "]\n";
-  safe_write_str(STDERR_FILENO, suffix, sizeof(suffix) - 1);
-  _exit(128 + sig);
+  g_current_operation.store(op, std::memory_order_relaxed);
 }
 
 void check(bool condition, const char* expression, int line) {
   if (!condition) {
-    ++g_failures;
-    std::cerr << "FAIL [Scenario " << g_current_scenario_id << " (" << g_current_scenario_name
-              << ") | op: " << g_current_operation << "] line " << line << ": " << expression << std::endl;
+    g_failures.fetch_add(1, std::memory_order_relaxed);
+    std::cerr << "FAIL [Scenario " << g_current_scenario_id.load(std::memory_order_relaxed)
+              << " (" << g_current_scenario_name.load(std::memory_order_relaxed)
+              << ") | op: " << g_current_operation.load(std::memory_order_relaxed)
+              << "] line " << line << ": " << expression << std::endl;
   }
 }
 #define CHECK(value) check(static_cast<bool>(value), #value, __LINE__)
 
 template <typename Func>
 void run_scenario(int id, const char* name, const char* desc, Func&& func) {
-  g_current_scenario_id = id;
-  g_current_scenario_name = name;
+  g_current_scenario_id.store(id, std::memory_order_relaxed);
+  g_current_scenario_name.store(name, std::memory_order_relaxed);
   set_operation("start");
   std::cerr << "[SCENARIO " << id << " START] " << name << " - " << desc << std::endl;
   const auto start = std::chrono::steady_clock::now();
@@ -208,9 +189,26 @@ pid_t start_tls_server(
 void stop_server(pid_t child) {
   set_operation("server cleanup");
   if (child > 0) {
-    (void)kill(child, SIGTERM);
+    if (kill(child, SIGTERM) != 0) {
+      if (errno == ESRCH) {
+        return;
+      }
+    }
     int status = 0;
-    (void)waitpid(child, &status, 0);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    bool terminated = false;
+    while (std::chrono::steady_clock::now() < deadline) {
+      const pid_t w = waitpid(child, &status, WNOHANG);
+      if (w == child || (w < 0 && errno == ECHILD)) {
+        terminated = true;
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    if (!terminated) {
+      (void)kill(child, SIGKILL);
+      (void)waitpid(child, &status, 0);
+    }
   }
 }
 
@@ -337,7 +335,13 @@ struct TlsClientConnection {
         pollfd pfd{fd, poll_events, 0};
         const int wait_ms = static_cast<int>(std::clamp<long long>(remaining_ms, 1, 100));
         const int p = poll(&pfd, 1, wait_ms);
-        if (p > 0) {
+        if (p < 0) {
+          if (errno != EINTR) {
+            write_cursor.abandoned = true;
+            return {FrameWriteStatus::TransportError, write_cursor.offset,
+                    std::string("Socket poll system call error during write: ") + std::strerror(errno)};
+          }
+        } else if (p > 0) {
 #ifdef POLLRDHUP
           if ((pfd.revents & (POLLHUP | POLLRDHUP)) != 0) {
 #else
@@ -415,7 +419,11 @@ struct TlsClientConnection {
                  status == darkpool::transport::TlsIoStatus::WantWrite) {
         const int remaining = std::clamp(static_cast<int>(timeout_ms - elapsed), 1, 100);
         pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
-        (void)poll(&pfd, 1, remaining);
+        const int p = poll(&pfd, 1, remaining);
+        if (p < 0 && errno != EINTR) {
+          return {FrameReadStatus::TransportError, std::nullopt,
+                  std::string("Socket poll system call error during header read: ") + std::strerror(errno)};
+        }
       } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
         return {FrameReadStatus::CleanClose, std::nullopt, "Clean TLS close_notify received"};
       } else {
@@ -451,7 +459,11 @@ struct TlsClientConnection {
                  status == darkpool::transport::TlsIoStatus::WantWrite) {
         const int remaining = std::clamp(static_cast<int>(timeout_ms - elapsed), 1, 100);
         pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
-        (void)poll(&pfd, 1, remaining);
+        const int p = poll(&pfd, 1, remaining);
+        if (p < 0 && errno != EINTR) {
+          return {FrameReadStatus::TransportError, std::nullopt,
+                  std::string("Socket poll system call error during body read: ") + std::strerror(errno)};
+        }
       } else if (status == darkpool::transport::TlsIoStatus::PeerClosed) {
         return {FrameReadStatus::CleanClose, std::nullopt, "Clean TLS close_notify received during body read"};
       } else {
@@ -498,8 +510,11 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
     return nullptr;
   }
 
-  int flags = fcntl(fd, F_GETFL, 0);
-  (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  const int flags = fcntl(fd, F_GETFL, 0);
+  CHECK(flags >= 0);
+  if (flags >= 0) {
+    (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (true) {
     const auto now = std::chrono::steady_clock::now();
@@ -522,10 +537,16 @@ std::unique_ptr<TlsClientConnection> connect_tls_client(
       return nullptr;
     }
     pollfd pfd{fd, static_cast<short>((want_read ? POLLIN : 0) | (want_write ? POLLOUT : 0)), 0};
-    (void)poll(&pfd, 1, p_timeout);
+    const int p = poll(&pfd, 1, p_timeout);
+    if (p < 0 && errno != EINTR) {
+      (void)close(fd);
+      return nullptr;
+    }
   }
   // Keep socket in nonblocking mode for accurate timeout loops and WANT_READ/WANT_WRITE handling
-  (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  if (flags >= 0) {
+    (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+  }
   const int post_hs_flags = fcntl(fd, F_GETFL, 0);
   CHECK(post_hs_flags >= 0 && (post_hs_flags & O_NONBLOCK) != 0);
 
@@ -2064,13 +2085,6 @@ int main(int argc, char** argv) {
   const char* server_path = argv[1];
   const std::string subtest = (argc >= 3) ? argv[2] : "all";
 
-  struct sigaction sa{};
-  sa.sa_handler = sigterm_handler;
-  sigemptyset(&sa.sa_mask);
-  sa.sa_flags = static_cast<int>(SA_RESETHAND);
-  (void)sigaction(SIGTERM, &sa, nullptr);
-  (void)sigaction(SIGINT, &sa, nullptr);
-
   std::cout << "Running DARKPOOL S9 TLS 1.3 Integration Tests (subtest: " << subtest << ")...\n" << std::flush;
 
   auto maybe_run = [&](int id, const char* key, const char* name, auto&& fn) {
@@ -2105,8 +2119,8 @@ int main(int argc, char** argv) {
   maybe_run(24, "cross-direction", "Reactor state machine cross-direction readiness & KeyUpdate", test_scenario_24_reactor_cross_direction_and_key_update);
   maybe_run(25, "write-cursor", "Persistent TLS FrameWriteCursor and resumable partial writes", test_scenario_25_write_cursor_semantics);
 
-  if (g_failures > 0) {
-    std::cerr << "FAIL: " << g_failures << " assertions failed\n" << std::flush;
+  if (g_failures.load() > 0) {
+    std::cerr << "FAIL: " << g_failures.load() << " assertions failed\n" << std::flush;
     return 1;
   }
   std::cout << "PASS: All S9 TLS 1.3 integration tests passed cleanly!\n" << std::flush;
