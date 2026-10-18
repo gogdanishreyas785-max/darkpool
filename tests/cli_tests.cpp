@@ -597,6 +597,86 @@ void test_stage4_cli_quantity_and_research() {
   CHECK(fmt.find("Liquidity      : 45%") != std::string::npos);
 }
 
+void test_voting_reporting_and_admission_token_cli() {
+  ClientState player(ClientRole::Player);
+
+  // 1. Voting resolution notification when no majority reached
+  const auto no_majority = json{
+    {"type", "server_event"},
+    {"event", "vote_resolved"},
+    {"match_id", 1},
+    {"eliminated_player", nullptr},
+    {"votes_received", 0},
+    {"votes_cast", 1},
+    {"votes_submitted", 1},
+    {"votes_abstained", 0},
+    {"votes_missing", 3},
+    {"eligible_voters", 4},
+    {"outcome", "None"}
+  };
+  const auto fmt_no_maj = player.format_response(no_majority);
+  CHECK(fmt_no_maj.find("Elimination    : None (tie or no majority reached)") != std::string::npos);
+  CHECK(fmt_no_maj.find("Votes Submitted: 1 / 4") != std::string::npos);
+  CHECK(fmt_no_maj.find("Explicit Abstentions: 0") != std::string::npos);
+  CHECK(fmt_no_maj.find("Missing Votes  : 3") != std::string::npos);
+  // Must NOT claim "Votes Received : 0"
+  CHECK(fmt_no_maj.find("Votes Received : 0") == std::string::npos);
+
+  // 2. Voting resolution response when strict majority eliminates a candidate
+  const auto maj = json{
+    {"type", "vote_resolution"},
+    {"match_id", 1},
+    {"eliminated_player", 2},
+    {"votes_received", 3},
+    {"votes_cast", 4},
+    {"votes_submitted", 4},
+    {"votes_abstained", 1},
+    {"votes_missing", 0},
+    {"eligible_voters", 4},
+    {"outcome", "None"}
+  };
+  const auto fmt_maj = player.format_response(maj);
+  CHECK(fmt_maj.find("Player 2 WAS ELIMINATED!") != std::string::npos);
+  CHECK(fmt_maj.find("Votes Received : 3 / 4") != std::string::npos);
+  CHECK(fmt_maj.find("Votes Submitted: 4 / 4") != std::string::npos);
+
+  // 3. Matches list formatting
+  const auto matches = json{
+    {"type", "matches_list"},
+    {"matches", json::array({
+      {{"match_id", 1}, {"phase", "Lobby"}, {"player_count", 4}, {"joined_players", 1}, {"open_lobby", false}},
+      {{"match_id", 2}, {"phase", "Discussion"}, {"player_count", 5}, {"joined_players", 5}, {"open_lobby", true}}
+    })}
+  };
+  const auto fmt_matches = player.format_response(matches);
+  CHECK(fmt_matches.find("Match #1: Phase=Lobby | Players: 1/4 | Mode: Protected") != std::string::npos);
+  CHECK(fmt_matches.find("Match #2: Phase=Discussion | Players: 5/5 | Mode: Open Lobby") != std::string::npos);
+
+  // 4. Token enrollment command and response formatting
+  auto r = player.process_input("enroll 1 test-secret");
+  CHECK(r.send_frame);
+  CHECK(r.payload["type"] == "get_match_token");
+  CHECK(r.payload["match_id"] == 1U);
+  CHECK(r.payload["enrollment_token"] == "test-secret");
+
+  const auto tok_res = json{
+    {"type", "match_token_result"},
+    {"ok", true},
+    {"match_id", 1},
+    {"join_token", "sec-tok-123"}
+  };
+  const auto fmt_tok = player.format_response(tok_res);
+  CHECK(fmt_tok.find("[TOKEN ENROLLED]") != std::string::npos);
+  CHECK(fmt_tok.find("Match #1") != std::string::npos);
+
+  // 5. Join command auto behavior
+  r = player.process_input("join 1 auto");
+  CHECK(r.send_frame);
+  CHECK(r.payload["type"] == "join_match");
+  CHECK(r.payload["match_id"] == 1U);
+  CHECK(r.payload["join_token"] == "sec-tok-123");
+}
+
 } // namespace
 
 int main() {
@@ -606,6 +686,7 @@ int main() {
   test_stage2_cli_events_and_snapshots();
   test_stage3_cli_commands_and_events();
   test_stage4_cli_quantity_and_research();
+  test_voting_reporting_and_admission_token_cli();
 
   if (failures != 0) {
     std::cerr << failures << " CLI test(s) failed!\n";

@@ -249,6 +249,8 @@ setup_client() {
   fi
   printf '%s\n' "$server_ip" > "$DATA_DIR/server-ip"
   chmod 600 "$DATA_DIR/server-ip"
+  printf '%s\n' "$ssh_user" > "$DATA_DIR/server-ssh-user"
+  chmod 600 "$DATA_DIR/server-ssh-user"
   build_and_test
   printf '\nClient setup complete (%s). Launch with: bash scripts/run_tls_client.sh %s\n' "$role" "$role"
   if [[ "$role" == player ]]; then printf 'Player setup does not retrieve the moderator token.\n'; fi

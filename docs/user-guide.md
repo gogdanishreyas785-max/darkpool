@@ -156,23 +156,23 @@ bash scripts/setup_tls_lan.sh client 192.168.1.50
 
 To configure a moderator using the local username, pass moderator as the second argument.
 
-The setup script retrieves the public CA certificate over SSH. Moderator setup also retrieves the moderator authentication credential; player setup does not. Restrict SSH access to trusted users.
+The setup script retrieves the public CA certificate over SSH and saves the server SSH username for token synchronization. Moderator setup also retrieves the moderator authentication credential; player setup does not. The player launcher copies only match-token files over SSH/SCP, not the moderator credential. Restrict SSH access to trusted users and verify the SSH host-key fingerprint on first connection.
 
 ### C. Start clients and join the match
 
-On the moderator computer:
+On the moderator computer, launch the moderator client:
 
 ~~~bash
 bash scripts/run_tls_client.sh moderator
 ~~~
 
-On every player computer:
+Create the protected match before launching the player clients. The server launcher stores the generated join token in `~/.darkpool/tokens` with owner-only permissions. Then, on each player computer, launch the player client:
 
 ~~~bash
 bash scripts/run_tls_client.sh player
 ~~~
 
-Create the match in the moderator terminal, then have each player join the displayed match ID using the match's join token. **The current scripts automate TLS trust and moderator setup, but do not automatically distribute a newly created match's join token to every player.** The moderator must securely share that match-specific token with intended players until automated match enrollment is implemented. Do not confuse it with the moderator authentication token; players must never receive the moderator credential.
+The player launcher synchronizes token files from the server over SSH/SCP using the SSH account saved during client setup. In the player CLI, use `join` or `join <match_id>`; manual token entry remains a fallback. If the player client was launched before the moderator created the match, exit and relaunch it to synchronize the new token. Never confuse the match join token with the moderator authentication token; players must never receive the moderator credential.
 
 There is no fixed number of participating computers. The server limits are four concurrent matches, 3–64 players per match, up to 256 player connections, and up to four moderator connections total.
 
@@ -281,7 +281,7 @@ Public information includes current phase and round, company health, stock price
 For a protected match, the standard operator sequence is:
 
 1. Enter **create 5** (or another capacity from 3 to 64).
-2. Share the displayed match ID and match join token privately with intended players.
+2. Share the match ID with intended players. The standard launchers store/synchronize join tokens automatically; when using the LAN launchers, create the match before launching the player client. If running binaries directly or if synchronization fails, securely share the token privately.
 3. Wait until all configured players have successfully joined.
 4. Enter **start**.
 5. Enter **event <impact>**, for example **event -1**, to begin Round 1.
@@ -322,7 +322,7 @@ Enter **help** in a player terminal.
 
 | Command | Meaning / restrictions |
 |---|---|
-| **join <match_id> <token>** | Join a protected match using its exact ID and token. For a token supplied through a supported environment variable, or for an open lobby, use **join [match_id]**. |
+| **join <match_id> <token>** | Join a protected match with its exact ID and token. With launcher-managed token storage, use **join** or **join <match_id>**; open lobbies also need no token. |
 | **status [match_id]** | View the public board and current phase. |
 | **hint** (also **intel** or **insider_hint**) | Insider only. Privately inspect current event impact. |
 | **research / scout** | During Discussion: spend 10 credits for a private coarse direction signal; one use per player per match. |
@@ -346,11 +346,13 @@ Three different things should not be confused:
 
 1. **TLS trust material** (the public CA certificate): lets a TLS client verify that it is connecting to the configured DARKPOOL server.
 2. **Moderator authentication token** (DARKPOOL_MODERATOR_TOKEN): authenticates an operator session with moderator privileges. The LAN setup transfers it only during moderator setup; player machines must not receive it.
-3. **Match join token**: a secret generated when a protected match is created. It authorizes joining that specific match while its lobby is open.
+3. **Match join token**: a secret generated when a protected match is created. It authorizes joining that specific match while its lobby is open. The launchers store it in owner-only files under `~/.darkpool/tokens`.
 
 The player CLI accepts the match token directly as **join <match_id> <token>**. It also recognizes DARKPOOL_PLAYER_TOKEN and DARKPOOL_JOIN_TOKEN in the client process environment. The moderator-side create command recognizes DARKPOOL_MATCH_JOIN_TOKEN and DARKPOOL_PLAYER_TOKEN for a custom token, but normally generates a secure random token automatically.
 
-The setup scripts **do not currently transfer a new match's join token to all player clients automatically**. The moderator must share the match ID and token through a private trusted channel. Keep it limited to intended players. Use an open lobby only if you intentionally want to disable match-token admission.
+The local launcher enables token storage so players can use **join** or **join <match_id>** without manual token entry. For TLS LAN play, the server launcher stores tokens under `~/.darkpool/tokens`; the player launcher synchronizes them over SSH/SCP using the server SSH account recorded during setup. Create the protected match before launching the players, or restart a player launcher after creating the match. If synchronization fails, securely share the match ID and token through a private trusted channel. Never share the moderator credential with players.
+
+An optional in-band enrollment command is also available when the server and client are configured with the same pre-shared `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`. The standard setup scripts do not configure this shared enrollment secret automatically. Use an open lobby only if you intentionally want to disable match-token admission.
 
 ## 9. Communication library and code map
 
@@ -418,7 +420,7 @@ For deeper implementation and design details, see Architecture, Protocol, Threat
 | Connection refused | Start the server first, confirm it is still running, then check address and port. Local clients should use the local launcher; remote clients need the server's reachable private IP. |
 | TLS certificate or identity mismatch | The client address may not match the IP SAN or the CA may be wrong. Rerun setup with the actual server IP, then rerun client setup. Do not disable certificate verification. |
 | SSH bootstrap fails | Confirm SSH is running, the remote username is correct, the account can log in, TCP 22 is allowed from the private subnet, and the SSH host key is expected. |
-| Invalid or missing match join token | For a protected match, use the token printed when that match was created: join <match_id> <token>. TLS setup does not distribute the match token to players automatically. Open lobbies do not require it. |
+| Invalid or missing match join token | For a protected match, ensure the token is available locally. On LAN, launch or restart the player script after the moderator creates the match so it can sync via SSH/SCP. When running binaries directly, use join <match_id> <token>. Open lobbies do not require a token. |
 | Match is not joinable | A match can only be joined while it remains in Lobby. The moderator must create a new match if the game has already started. |
 | Start fails or still waiting for players | Every configured seat must be joined. The moderator does not count as a player; verify each player's MATCH JOINED response and use status. |
 | Command rejected for wrong phase | Use status to inspect the current phase. Submit trades during Trading, clues during Clue, and votes during Voting. |

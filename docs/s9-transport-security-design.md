@@ -350,3 +350,20 @@ The S9 automated verification suite covers 25 comprehensive integration scenario
 - [x] Full automated test matrix (25 scenarios) executed and passing via CTest.
 - [x] Corrected benchmark harness executed with descriptor leak fix and Plaintext TCP baseline on port 4782.
 - [x] Physical two-computer cross-network LAN acceptance test: **PASS (Operator-reported)** for 5-player plaintext LAN baseline (October 17, 2026; see docs/test-plan.md). Multi-machine manual TLS 1.3 verification remains a future milestone.
+
+
+---
+
+## 11. Automated Match-Token Provisioning and Secret-Ballot Reporting
+
+### 11.1 Token storage and transport
+
+TLS 1.3 protects game messages in transit and the configured CA validation authenticates the server to clients. Match admission remains a separate application-layer check. The default launchers enable token storage only on the server process and save protected-match tokens beneath `~/.darkpool/tokens`, using a `0700` directory and `0600` token files. The token store rejects files with unexpected ownership, unsafe permissions, or a symbolic-link path.
+
+For multi-computer use, client setup retrieves the public CA certificate over authenticated SSH and records the server SSH account. Once the moderator creates a protected match, the player launcher synchronizes match-token files over SSH/SCP. Players do not receive the moderator authentication token. The player launcher synchronizes at startup; launch it after the match is created or restart it to obtain a newly created token.
+
+The optional `get_match_token` protocol command supports an alternative in-band flow using a pre-shared `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`. It is not configured by the standard launcher scripts. Anyone holding that shared enrollment secret can request join tokens for joinable protected matches, so it must be distributed only to trusted player clients. Token distribution should not be confused with moderator authorization or individual player identity.
+
+### 11.2 Secret-ballot resolution reporting
+
+Voting resolution separates participation counts from the elimination decision: `eligible_voters`, `votes_cast`/`votes_submitted`, `votes_abstained`, `votes_missing`, and `votes_received`. The public resolution event does not reveal individual voter IDs or ballot targets. The engine's internal canonical event trace can contain vote submissions, so it must not be exposed to players or copied into public logs.

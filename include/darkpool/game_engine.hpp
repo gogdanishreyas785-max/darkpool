@@ -186,6 +186,9 @@ struct MarketResolution {
 struct VoteResult {
   std::optional<PlayerId> eliminated;
   std::uint32_t eligible_voters{};
+  std::uint32_t votes_cast{};
+  std::uint32_t votes_abstained{};
+  std::uint32_t votes_missing{};
   std::uint32_t votes_received{};
   Outcome outcome{Outcome::None};
 };
