@@ -1,6 +1,6 @@
 # DARKPOOL User, Game, and Operator Guide
 
-This is the canonical guide for installing, starting, and playing DARKPOOL. It describes the current implementation and does not present unfinished roadmap features as supported behavior.
+This is the canonical guide for installing, starting, and playing DARKPOOL. It describes the current implementation and does not present unfinished roadmap features as supported behavior. Commands are case-insensitive. Optional arguments are shown in brackets; type help in a moderator or player terminal to display its built-in command list.
 
 - New players and moderators: start with Quick setup.
 - Rules and strategy: read How the game works.
@@ -87,7 +87,7 @@ A protected match is created by default. The moderator terminal prints the match
 join 1 <MATCH_JOIN_TOKEN>
 ~~~
 
-Replace the placeholder with the exact token printed for that match. Every player must join before the moderator starts the match. See Match tokens and access control for the difference between a match join token and the moderator authentication token.
+Replace the placeholder with the exact token printed for that match. Every player must join before the moderator starts the match. See [Match tokens and access control](#8-match-tokens-and-access-control) for the difference between a match join token and the moderator authentication token.
 
 To create an open lobby without a match join token, use:
 
@@ -104,7 +104,7 @@ start
 event -1
 ~~~
 
-The event impact may be any integer from -2 through +2. This starts the first round's Discussion phase. Read How the game works for the rest of the round sequence.
+The event impact may be any integer from -2 through +2. This starts the first round's Discussion phase. Read [How the game works](#4-how-the-game-works) for the rest of the round sequence.
 
 ## 3. Option B: multiple computers over a private LAN
 
@@ -235,7 +235,7 @@ At match start, each player has 100 fictional credits and 10 shares. Company hea
 - Share supply is conserved. Buys draw from the finite reserve; sells return shares to it. Sells do not expand the reserve available for same-round buy allocation.
 - Company health responds to event impact and the direction of executed net trading demand. Stock price is calculated by the implemented deterministic market model using event impact, demand, health, sentiment, volatility, and liquidity, and is clamped to 1–100. Market indicators are shown on the public snapshot.
 
-Full details are in Game rules and Market model proposal.
+Full details are in [Game rules](game-rules.md) and [Market model proposal](market-model-proposal.md).
 
 ### Special actions
 
@@ -324,7 +324,7 @@ Enter **help** in a player terminal.
 |---|---|
 | **join [match_id] [token]** | Join a match (default ID 1). Protected matches require their exact join token unless a supported token environment variable is set. |
 | **status [match_id]** | View the public board and current phase. |
-| **hint** | Insider only. Privately inspect current event impact. |
+| **hint** (also **intel** or **insider_hint**) | Insider only. Privately inspect current event impact. |
 | **research / scout** | During Discussion: spend 10 credits for a private coarse direction signal; one use per player per match. |
 | **trade BUY [quantity]** | Submit a buy order; quantity defaults to one share. |
 | **trade SELL [quantity]** | Submit a sell order; quantity defaults to one share. |
@@ -332,13 +332,13 @@ Enter **help** in a player terminal.
 | **buy [quantity]** | Shortcut for trade BUY. |
 | **sell [quantity]** | Shortcut for trade SELL. |
 | **hold** | Shortcut for trade HOLD. |
-| **clue <target_id>** | Investigator only, during Clue. Secretly investigate an active target; one clue per match. |
+| **clue / investigate <target_id>** | Investigator only, during Clue. Secretly investigate an active target; one clue per match. |
 | **vote <target_id>** | During Voting, cast a vote to eliminate that player ID. |
 | **vote abstain** or **vote 0** | Submit an explicit abstention. |
 | **help** | Display player commands. |
 | **quit / exit** | Disconnect this client. |
 
-Quantities must be positive integers. You cannot choose your role, vote for yourself, vote for an inactive player, or target an inactive player with a clue.
+Quantities must be positive integers. You cannot choose your role, vote for yourself, vote for an inactive player, or target an inactive player with a clue. Typing event, trade, clue, or vote without its required argument opens an interactive prompt. Raw JSON lines beginning with an opening brace are passed directly to the server for advanced debugging; normal players should use the documented commands.
 
 ## 8. Match tokens and access control
 
