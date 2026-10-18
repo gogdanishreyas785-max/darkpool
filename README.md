@@ -156,26 +156,44 @@ For encrypted, tamper-resistant multiplayer over a private local network, launch
    ```
 
 
-### Automated TLS LAN Setup (Recommended)
+### Automated Setup: One Machine or Any Number of LAN Machines
 
-For encrypted multi-machine play, the repository now includes a one-command setup/bootstrap workflow. It installs build dependencies, builds and tests DARKPOOL, creates or reuses the private LAN CA and server certificate, and distributes trust material over authenticated SSH. It transfers the moderator token only when setting up the moderator client; players do not need that token.
+#### Option A — Entire game on one machine
 
-On the server machine:
+To run the server, moderator, and all players on the same Ubuntu/Debian machine, no LAN address, TLS certificate transfer, or SSH provisioning is needed:
+
+    bash scripts/setup_local.sh
+    bash scripts/run_local_server.sh
+
+Then open separate terminals on that machine:
+
+    bash scripts/run_local_client.sh moderator
+    bash scripts/run_local_client.sh player
+
+Run the player command once per seat (3–64 players in a match). Create the match in the moderator terminal, join each player, and start the game. See [the setup guide](docs/tls-lan-quickstart.md) for details.
+
+#### Option B — Private LAN with TLS 1.3
+
+On the server machine, run once:
 
     bash scripts/setup_tls_lan.sh server
     bash scripts/run_tls_server.sh
 
-On each player/client machine (replace the address and SSH username):
+On every machine that will run a client, repeat the appropriate setup command using the server's private LAN IPv4 address and the Linux username permitted to SSH to the server:
 
     bash scripts/setup_tls_lan.sh client 192.168.1.50 SERVER_SSH_USER player
     bash scripts/run_tls_client.sh player
 
-On the moderator machine, use the moderator role:
+On the moderator machine, use \`moderator\` instead of \`player\` in both commands:
 
     bash scripts/setup_tls_lan.sh client 192.168.1.50 SERVER_SSH_USER moderator
     bash scripts/run_tls_client.sh moderator
 
-The scripts use the standard SSH host-key check and SSH login; no manual certificate, fingerprint, or token copy/paste is needed. Full instructions and troubleshooting are in [docs/tls-lan-quickstart.md](docs/tls-lan-quickstart.md).
+There is **no two-machine limit or fixed client-machine count** in these scripts. Repeat the client setup on as many participating machines as needed, and launch multiple client processes on any one of them for multiple player seats. The script obtains the CA certificate over SSH and downloads the moderator token only for moderator setup; it avoids manual certificate and token copy/paste. Standard SSH login and host-key verification remain required.
+
+**Capacity note:** the implementation allows 3–64 players per match, up to four concurrent matches, and up to 256 player connections plus four moderator connections across the server. Physical machine count is not a setting and does not override these server limits.
+
+The scripts install build dependencies, build Release binaries with warnings-as-errors, and run the TLS integration test. Build parallelism defaults to two jobs; set \`DARKPOOL_BUILD_JOBS=1\` for a memory-constrained VM. Full instructions and troubleshooting are in [docs/tls-lan-quickstart.md](docs/tls-lan-quickstart.md).
 
 ### LAN Troubleshooting Guide
 
