@@ -6,6 +6,8 @@ This is the scripted path for running DARKPOOL across separate Ubuntu/Debian mac
 
 Clone the DARKPOOL repository, or update an existing checkout so all machines use the same revision. Run the commands below from the repository root. The setup script installs the required build packages (CMake, a C++ compiler, OpenSSL development libraries, Git, and OpenSSH), builds Release binaries with warnings-as-errors, and runs the TLS integration test.
 
+Builds default to two parallel jobs to avoid excessive memory use on VMs. On a memory-constrained machine, prefix the setup command with `DARKPOOL_BUILD_JOBS=1`; increase this value if the host has spare memory. The variable is honored in both server and client setup modes.
+
 ## 2. On the server machine: one setup command
 
     bash scripts/setup_tls_lan.sh server
