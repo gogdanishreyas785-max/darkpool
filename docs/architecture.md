@@ -1,69 +1,87 @@
-# Proposed C++20 architecture
+# DARKPOOL Current Architecture
 
-## System design
+This document describes the implementation in the repository, not a proposed future layout. User-facing installation and game operation are in the [User Guide](user-guide.md).
 
-One authoritative server process owns official game state. The implementation connects local and trusted LAN client processes through nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`), configurable plaintext TCP stream sockets (defaulting to localhost `127.0.0.1:4782`, or explicitly bound to an assigned RFC 1918 private IPv4 address via `--bind-address`), and a dedicated TLS 1.3 secure listener on port `4783` (supporting local-CA and fingerprint-pinning verification via OpenSSL 3.x), all monitored by epoll (`src/server_main.cpp`), with an interactive client CLI (`src/client_main.cpp`). Remote public-Internet deployment, dynamic certificate reload, and production client PKI remain deferred future work. The server authenticates sessions, validates actions, routes requests to independent matches, applies transitions, and emits authorized events. Use a modular daemon, not service-per-match.
+## System overview
 
-Flow: client processes → UNIX domain / localhost TCP / private LAN TCP / TLS 1.3 stream transport → nonblocking framing/epoll connection manager → session/auth manager → match router → independent Match state machines → bounded output queues and clients.
+DARKPOOL is a Linux C++20 server/client application with a deterministic game engine, match coordinator, and communications library. The authoritative server owns role assignment, match membership, action validation, market/vote resolution, deadlines, and public/private event routing.
 
-One event loop owns mutations initially; no thread per client. Optional workers only for measured CPU-heavy tasks, returning results to the owner loop. Workers never mutate matches. Use monotonic deadlines via timerfd or a deadline heap.
+Supported transports:
 
-## Components
+- **UNIX-domain stream socket** (default /tmp/darkpool.sock) for processes on the same Linux machine.
+- **Plaintext TCP** (default loopback port 4782; non-loopback binding, when enabled, is restricted to an assigned RFC 1918 private IPv4 address). This is not encrypted and must not be used on untrusted networks.
+- **TLS 1.3 TCP** on the configured TLS listener (default port 4783), using OpenSSL 3.x and client verification by local CA or SHA-256 server-leaf fingerprint.
 
-- **Transport adapter:** Implemented using nonblocking UNIX domain stream sockets (`/tmp/darkpool.sock`), configurable plaintext TCP stream sockets (default: `127.0.0.1:4782`; optional `--bind-address <IPv4>` restricted to local assigned RFC 1918 private addresses), and a dedicated TLS 1.3 secure listener on port `4783` (AD-S9-01) with OpenSSL 3.x in `include/darkpool/tls_transport.hpp` and `src/tls_transport.cpp`; remote public-internet deployment remains deferred. No game rules in transport.
-- **Connection manager:** connection IDs, framing, lifecycle, bounded input/output queues, rates, backpressure, disconnects.
-- **Protocol:** versioned envelope, schema/length validation, request correlation, error codes.
-- **Session manager:** server-assigned identity, authentication, permissions, reconnect/cleanup.
-- **Match manager:** create/find/close, enforce caps, associate sessions and matches.
-- **Game engine / Match:** roles, phases/deadlines, events, trades, clue, votes, company state, win rules; all authoritative.
-- **Event/audit log:** important transitions and security events; separate from player output and redact by audience.
-- **Timer/metrics/config:** monotonic deadlines, limits and bounded observability.
+The Linux server uses nonblocking I/O and epoll. It does not create a thread per client. A single server event loop serializes coordinator state changes; bounded queues and per-connection rate limits protect the loop from unbounded output and request floods.
 
-Each Match owns membership, roles, phases, deadlines, company state, trades, clue, chat routing, votes and logs. A request needs authenticated membership and legal phase/role. Match state never retains client-buffer pointers. No slow client, match fan-out, log write, or expensive computation may block the loop.
+## Runtime request path
 
-## Isolation and targets
+~~~text
+Terminal command
+    |
+    v
+src/cli.cpp (parse command -> JSON request)
+    |
+    v
+ClientConnection
+    |
+    +-- UNIX-domain socket
+    +-- TCP stream
+    +-- TLS 1.3 over TCP
+    |
+    v
+Frame / FrameDecoder / OutputQueue
+    |
+    v
+ServerRuntime (epoll, connection lifecycle, limits)
+    |
+    v
+src/server_main.cpp (session authentication and wiring)
+    |
+    v
+MatchCoordinator (authorization, match routing, timers, notifications)
+    |
+    v
+Match / game_engine.cpp (authoritative deterministic rules)
+    |
+    v
+Response + audience-filtered event notifications
+~~~
 
-The approved per-match player range is 3–64, with five as the default; the moderator is outside that count. The server coordinator permits at most four matches (`kMaxMatches = 4`). The server configuration in `src/server_main.cpp` enforces explicit capacity ceilings: up to 256 player connections (`kMaxPlayerConnections = 256`) and four independent authenticated moderator connections (`kMaxModerators = 4`), allowing up to 260 total concurrent connections (`kMaxConnections = 260`). Each active match is independently owned and controlled by its dedicated moderator connection. Initial S0 proposals envisioned 1 moderator and 257 connections; this was superseded in the L6 multi-match implementation to enable independent moderator sessions per match.
+## CMake targets
 
-Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
+| Target | Source modules | Responsibility |
+|---|---|---|
+| darkpool_engine | src/game_engine.cpp | Deterministic game rules and canonical state; no sockets or timer ownership. |
+| darkpool_communications | src/network.cpp; Linux additionally includes socket/TLS and client/server runtime sources | Message framing, stream decoding, socket connection primitives, TLS 1.3, nonblocking I/O. |
+| darkpool_coordinator | src/match_coordinator.cpp | Session/match routing, join-token enforcement, action authorization, phase timers, market/vote transitions, notifications. |
+| darkpool_cli | src/cli.cpp | Human commands and response formatting. |
+| darkpool_server | src/server_main.cpp | Linux server configuration, listeners, session authentication, and event-loop wiring. |
+| darkpool_client | src/client_main.cpp | Terminal client, connection options, and interactive request/notification handling. |
 
-The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance for the 5-player baseline was completed on October 17, 2026 (see `docs/test-plan.md`), while remote public-Internet deployment remains deferred (private LAN TLS 1.3 on port 4783 is implemented in S9).
+## Communication library
 
-## Proposed repository layout
+The CMake target darkpool_communications is defined in CMakeLists.txt.
 
-    darkpool/
-      CMakeLists.txt
-      README.md
-      docs/ (requirements, game-rules, protocol, architecture, threat-model, test-plan, DECISIONS)
-      include/darkpool/ (protocol.hpp, transport.hpp, session.hpp, match.hpp, match_manager.hpp, audit_log.hpp)
-      include/darkpool/game/ (rules.hpp, state.hpp, action.hpp)
-      src/server_main.cpp
-      src/client_main.cpp
-      src/transport/ (transport_unix.cpp, connection_manager.cpp)
-      src/protocol/protocol.cpp
-      src/session/session_manager.cpp
-      src/match/ (match.cpp, match_manager.cpp)
-      src/game/ (rules.cpp, state.cpp)
-      src/security/audit_log.cpp
-      tests/unit/
-      tests/integration/
-      tests/isolation/
-      tests/security/
-      tests/load/
-      scripts/run_local_demo.sh
-      scripts/run_load_test.sh
+- include/darkpool/network.hpp / src/network.cpp: JSON payloads framed as a 4-byte big-endian length followed by JSON bytes. FrameDecoder handles fragmented/coalesced stream reads. Payload limit is 4 KiB; OutputQueue bounds pending output to 64 KiB.
+- include/darkpool/socket_primitives.hpp / src/socket_primitives.cpp: TCP and UNIX-domain socket creation/connect, private-address validation, and safe UNIX socket path lifecycle.
+- include/darkpool/tls_transport.hpp / src/tls_transport.cpp: TLS 1.3 contexts and nonblocking OpenSSL I/O; certificate validity, key usage, and IP SAN checks; CA verification or fingerprint pinning.
+- include/darkpool/server_runtime.hpp / src/server_runtime.cpp: epoll-based nonblocking server I/O, handshake/read/write progression, connection lifecycle, rate limits, bounded output, multicast, and broadcast.
+- include/darkpool/client_runtime.hpp / src/client_runtime.cpp: client transport adapters, frame send/receive, and asynchronous notification polling.
+- include/darkpool/reactor_dispatch.hpp: helper for scheduling normal and resumed TLS operations according to epoll readiness.
 
-Create modules as implementation requires, not as empty placeholder code. CMake selects C++20 and documents supported Ubuntu compiler/kernel.
+The framing layer does not invent message types or game rules. The coordinator validates message semantics and the engine applies rules.
 
-## Future transport & deferred roadmap
+## Authoritative game state
 
-Keep game and session interfaces transport-neutral. The following items remain deferred future milestones:
-- Remote internet play over public FQDNs / public Web PKI (private LAN TLS 1.3 on port 4783 is implemented in S9)
-- Production client persistent authentication and credential lifecycle (mTLS deferred per AD-S9-02)
-- Dynamic in-process TLS certificate reloading (deferred per AD-S9-04; restart rotation implemented)
-- Operational monitoring, Prometheus metrics, and systemd supervision
-- Durable crash-recovery and transaction persistence
-- Release packaging and archive generation (deferred until explicitly requested)
-- Physical two-computer cross-network LAN acceptance test (completed for 5-player plaintext baseline on October 17, 2026; multi-machine TLS 1.3 and large-scale physical LAN load testing remain future work)
+- Matches contain 3–64 player seats, default five; the moderator is a separate connection.
+- Role counts are derived from match capacity and shuffled on the server. Clients cannot supply roles or seat IDs.
+- Up to four matches can coexist; configured limits allow up to 256 player connections and four moderator connections total.
+- The moderator chooses the signed business-event impact for each round. Discussion, Trading, Clue, transition, and Voting timers then drive normal phase progression.
+- Private role, hint, clue, and research information is audience-filtered. Canonical/replay state contains secrets and must not be sent to players.
 
-Single-process initial design does not provide automatic failover. Adding new transports must preserve core game engine rules and determinism.
+## Security boundaries and limits
+
+TLS authenticates the server to the client and protects bytes in transit; it does not replace application authorization. The moderator credential authenticates moderator sessions. Protected matches have separate match join tokens. Current setup scripts do not automatically distribute each new match token to all player clients; see the [User Guide](user-guide.md#8-match-tokens-and-access-control).
+
+Public-Internet deployment, persistent player accounts, mutual TLS player identity, durable crash recovery, and dynamic in-process certificate reload are not currently supported. For deployment commands, see the [User Guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan).
