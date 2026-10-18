@@ -349,4 +349,4 @@ The S9 automated verification suite covers 25 comprehensive integration scenario
 - [x] Client CLI updated with CA and fingerprint validation modes and mutual exclusivity.
 - [x] Full automated test matrix (25 scenarios) executed and passing via CTest.
 - [x] Corrected benchmark harness executed with descriptor leak fix and Plaintext TCP baseline on port 4782.
-- [ ] Physical two-computer cross-network LAN acceptance test: **NOT RUN** (remains deferred; requires two physical machines).
+- [x] Physical two-computer cross-network LAN acceptance test: **PASS (Operator-reported)** for 5-player plaintext LAN baseline (October 17, 2026; see docs/test-plan.md). Multi-machine manual TLS 1.3 verification remains a future milestone.

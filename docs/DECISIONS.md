@@ -97,7 +97,7 @@ Following the merge of PRs #24, #25, #26, and #28 (Milestone S9), the implementa
 
 4. **Private LAN TCP transport**:
    - The server supports non-loopback TCP binding on an assigned RFC 1918 private IPv4 address via `--bind-address` (PR #26).
-   - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance remains deferred and `NOT RUN` (requiring two physical networked machines).
+   - This transport is unencrypted plaintext without TLS. Physical cross-device two-computer LAN acceptance for the 5-player baseline was completed on October 17, 2026 (see `docs/test-plan.md`). Multi-machine TLS 1.3 manual verification and public Internet deployment remain deferred.
 
 5. **Transport security (TLS 1.3) status**:
    - Approved and implemented in the S9 engineering milestone (merged to `main` via PR #28).

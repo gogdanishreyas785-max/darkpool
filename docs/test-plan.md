@@ -557,9 +557,111 @@ To isolate TLS cryptographic and protocol overhead from TCP transport difference
    - Sockets now use `SOCK_CLOEXEC` exclusively, all non-standard inherited descriptors (> 2) are closed upon child process launch, and server process open descriptors are sampled by directly inspecting `/proc/<server_pid>/fd`.
    - The settle helper enforces an explicit tolerance of **0** (`sample_settled_open_fds(..., 0, 3000ms)`), verifying that server child open descriptors settle back to the exact initial baseline of **6** across all 18 runs, with parent harness descriptors cleanly returning to baseline. Zero descriptor leaks.
 
-### Physical Two-Computer LAN Acceptance Status
+## LAN Acceptance Test
 
-The physical two-computer private LAN acceptance test across separate physical machines remains **`NOT RUN`** (hardware environment not available in this test execution). Automated coverage is verified via loopback TCP and local interface bindings.
+### Acceptance Metadata and Overview
+
+- **Test Date:** October 17, 2026
+- **Tested Application Revision:** `5479dad55341e36d94fb7a7b29847993a12cc037` (verified on October 17, 2026; distinct from subsequent documentation changes)
+- **Evidence History & Repository State:** During acceptance on October 17, 2026, the operator executed the full CTest suite on the Ubuntu test host (Computer A) and recorded the console output in `evidence/lan-acceptance.txt`. The operator created a local commit (`f6f1219d63cb44f321a7a0a806b0747df56425ee`, *docs: record successful LAN acceptance test*) adding that file on the test machine. However, because HTTPS authentication to GitHub failed, that commit was not pushed to the remote repository. The current checkout is on branch `main` at revision `5479dad55341e36d94fb7a7b29847993a12cc037` and does not contain the local evidence commit or the evidence file. The documentation therefore records the verified results supplied from the test execution without creating broken links or claiming the file is committed locally.
+- **Physical Test Topology:** Two independent computers (Computer A and Computer B) running Ubuntu Linux connected over a trusted private local network (RFC 1918 private IPv4 subnet).
+- **Tested Operational Transport:** Plaintext TCP stream socket on port `4782` explicitly bound to Computer A's assigned RFC 1918 private IPv4 address (`--bind-address`).
+
+### Automated CTest Verification
+
+The automated regression and integration test suite was executed on Computer A against the exact application revision under test (`5479dad55341e36d94fb7a7b29847993a12cc037`).
+
+- **Total CTest Targets:** 32 tests
+- **Tests Passed:** 32 tests (100% pass rate)
+- **Tests Failed:** 0 tests
+- **Total CTest Execution Runtime:** 84.83 seconds
+- **Reported Test Log:** `evidence/lan-acceptance.txt` (generated and committed on the Ubuntu test machine; absent from this checkout as the commit was not pushed)
+
+The 32 executed and passed CTest targets verified from `CMakeLists.txt` and the test output are:
+- `darkpool_engine_tests`
+- `darkpool_network_tests`
+- `darkpool_coordinator_tests`
+- `darkpool_cli_tests`
+- `darkpool_network_integration_tests`
+- `darkpool_timeout_tests`
+- `darkpool_auth_tests`
+- `darkpool_gameplay_e2e_tests`
+- `darkpool_variable_gameplay_e2e_tests`
+- `darkpool_min_player_tests`
+- `darkpool_malformed_tcp_tests`
+- `darkpool_unix_socket_tests`
+- `darkpool_lan_binding_tests`
+- `darkpool_tls_integration_tests`
+- `darkpool_reactor_dispatch_tests`
+- `darkpool_load_tests`
+- `darkpool_load_regression_tests`
+- `darkpool_load_l1_functional`
+- `darkpool_load_l3_functional`
+- `darkpool_load_64p_functional`
+- `darkpool_load_64p_regression`
+- `darkpool_load_64p_semantic_regression`
+- `darkpool_load_l5_functional`
+- `darkpool_load_l5_regression`
+- `darkpool_load_l6_functional`
+- `darkpool_load_l6_regression`
+- `darkpool_load_l6_sustained_short`
+- `darkpool_load_l7_functional`
+- `darkpool_load_l7_regression`
+- `darkpool_load_l8_functional`
+- `darkpool_load_l8_regression`
+- `darkpool_load_tls_functional`
+
+### Manual Two-Computer LAN Acceptance Verification
+
+Following the automated suite, an end-to-end interactive multiplayer session was conducted across two independent physical hosts on the trusted LAN.
+
+#### Reported Workflow Execution Steps
+1. **Physical Network Connection:** Computer A and Computer B were connected to the same trusted Wi-Fi / Ethernet subnet.
+2. **Build Prerequisites:** Standard Ubuntu build dependencies (CMake >= 3.20, C++20 compiler, OpenSSL 3.x) were verified on both machines.
+3. **Application Revision:** Both computers checked out and built application revision `5479dad55341e36d94fb7a7b29847993a12cc037`.
+4. **Interface Address Discovery:** An assigned private IPv4 address on Computer A (RFC 1918) was identified using `ip -4 addr show`.
+5. **LAN Network Reachability:** Network reachability from Computer B to Computer A's private IP was confirmed.
+6. **Binary Compilation:** DARKPOOL built cleanly in Release mode on both machines.
+7. **Automated Baseline Verification:** Full CTest suite passed cleanly on Computer A (32/32 passed, 84.83s).
+8. **Subnet Firewall Rule:** Server host firewall (UFW) was configured to allow inbound TCP traffic on port 4782 restricted strictly to the local subnet.
+9. **Server Process Startup:** The server was launched on Computer A bound to its private IPv4 address on TCP port 4782 with `DARKPOOL_MODERATOR_TOKEN` set.
+10. **Remote TCP Connectivity:** Computer B connected successfully to Computer A on port 4782 across the LAN.
+11. **Moderator Authentication:** Moderator client connected from Computer B, presented the required token, and authenticated successfully.
+12. **Match Creation & Player Joins:** Moderator created Match 1 (5 players); five player clients connected across the hosts and joined Match 1, receiving server-assigned private roles.
+13. **Match Initialization & Event Publication:** Moderator started the match and published event `0`; phase advanced to `Discussion`.
+14. **Insider Hint Delivery:** Private Insider event hint was delivered exclusively to the Insider client terminal.
+15. **Trading Phase & Market Resolution:** Moderator opened trading; all five players submitted `hold`; moderator resolved the market.
+16. **Investigator Clue Verification:** Investigator submitted a private clue request for a target player; clue was delivered privately and restricted to once per match.
+17. **Voting Phase & Vote Resolution:** Moderator opened voting; players submitted elimination votes; resolution completed as expected.
+18. **Round 2 Progression:** Round 2 executed through all phases (event publication, trading, clue, and voting) without errors.
+19. **Round 3 Progression & Victory Declaration:** Round 3 completed through all phase transitions; the server declared a final outcome.
+20. **Graceful Client & Server Shutdown:** All clients disconnected; server process stopped cleanly without hung sockets or descriptor leaks.
+21. **Firewall Rule Teardown:** The temporary port 4782 UFW firewall rule was removed from Computer A.
+
+The operator reported that all 21 steps completed successfully without errors or unexpected behavior.
+
+#### Evidence Limitation Notice
+> [!NOTE]
+> The automated CTest console output (32/32 tests passed, 84.83s runtime) was recorded in `evidence/lan-acceptance.txt` and committed locally on the Ubuntu test machine (`f6f1219`), but that commit was not pushed to GitHub due to an HTTPS authentication failure and is not present in this repository checkout. Furthermore, the test output records automated CTest results and does not contain a packet capture, wire trace, or machine-generated log transcript of the manual two-computer gameplay session. The manual two-computer LAN verification sequence above is an operator-reported acceptance exercise and is distinguished accordingly.
+
+### Scope and Deployment Boundaries
+
+- **Validated Configuration:** This acceptance test validates application revision `5479dad55341e36d94fb7a7b29847993a12cc037` in the specific tested configuration: a five-player match running over unencrypted plaintext TCP on port 4782 within a trusted RFC 1918 private LAN.
+- **Transport Security Distinction:** Port `4782` operates in plaintext. Moderator authentication tokens and gameplay messages traverse the network unencrypted. Successful moderator authentication on port 4782 does not encrypt or protect communication against on-path LAN observers. Encrypted, authenticated LAN communication requires the TLS 1.3 listener on port `4783` (AD-S9-01). While automated TLS integration and load tests passed in CTest (`darkpool_tls_integration_tests` and `darkpool_load_tls_functional`), TLS 1.3 was not manually exercised in this two-computer session.
+- **No Universal Environment Guarantee:** This test demonstrates interoperability between the two tested Ubuntu systems on the tested subnet. It does not guarantee functionality across arbitrary network topologies, restrictive guest Wi-Fi access points with client isolation enabled, conflicting split-tunnel VPNs, or unconfigured host firewalls.
+- **Public Internet Deployment is Unsupported:** Public Internet deployment, public DNS FQDN validation, and router port-forwarding of plaintext port 4782 are strictly out of scope, unsupported, and remain deferred future work. Port 4782 must never be exposed to public or untrusted networks.
+
+### Acceptance Status Summary
+
+| Area | Status | Evidence / Source |
+|---|:---:|---|
+| Automated CTest Suite | **PASS** | 32/32 tests passed (84.83s), 0 failures; recorded in `evidence/lan-acceptance.txt` on Ubuntu test machine (unpushed commit `f6f1219`) |
+| Manual Two-Computer LAN Session | **PASS (Operator-Reported)** | 21/21 steps completed across Computer A & B on port 4782; 5 players, 3 complete rounds, clean shutdown |
+| Physical Two-Computer TLS 1.3 (Port 4783) | **NOT RUN (Manual)** | Automated TLS tests pass (`darkpool_tls_integration_tests`, `darkpool_load_tls_functional`); physical multi-machine TLS manual session remains a separate exercise |
+| Multi-Machine Large-Scale Load (64–256 Players) | **NOT RUN (Physical LAN)** | Single-host Linux capacity verified in L4/L6; physical multi-computer cluster load testing remains future work |
+| Public Internet Deployment | **DEFERRED** | Unsupported; non-loopback binding restricted strictly to RFC 1918 private IPv4 addresses |
+
+
 
 ## Metrics and reporting
 

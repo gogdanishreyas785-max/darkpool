@@ -27,7 +27,7 @@ The approved per-match player range is 3–64, with five as the default; the mod
 
 Match IDs route requests but server-side session membership authorizes them. A match timeout or message surge must not stall another match. Bound frames, queues, rates, connections, matches, players and per-event work; safe disconnect/reconnect behavior follows approved policy.
 
-The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance remains untested (`NOT RUN`), and remote public-Internet deployment remains deferred (private LAN TLS 1.3 on port 4783 is implemented in S9).
+The product configuration maximum is 64 active players per match and four concurrent matches (up to 256 active players plus four moderators, 260 total connections). Capacity and reliability for this architecture have been established under reproducible single-host Linux benchmark suites: L4 verified 64-player capacity and 30-minute reliability, and L6 verified four-match 256-player concurrent capacity and 30-minute reliability soak workloads (see `docs/test-plan.md`). Physical cross-device two-computer LAN acceptance for the 5-player baseline was completed on October 17, 2026 (see `docs/test-plan.md`), while remote public-Internet deployment remains deferred (private LAN TLS 1.3 on port 4783 is implemented in S9).
 
 ## Proposed repository layout
 
@@ -64,6 +64,6 @@ Keep game and session interfaces transport-neutral. The following items remain d
 - Operational monitoring, Prometheus metrics, and systemd supervision
 - Durable crash-recovery and transaction persistence
 - Release packaging and archive generation (deferred until explicitly requested)
-- Physical two-computer cross-network LAN acceptance test (deferred; marked NOT RUN)
+- Physical two-computer cross-network LAN acceptance test (completed for 5-player plaintext baseline on October 17, 2026; multi-machine TLS 1.3 and large-scale physical LAN load testing remain future work)
 
 Single-process initial design does not provide automatic failover. Adding new transports must preserve core game engine rules and determinism.

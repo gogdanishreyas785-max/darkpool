@@ -218,27 +218,30 @@ For encrypted, tamper-resistant multiplayer over a private local network, launch
 15. **Resolve Votes**: Moderator types `resolve`. Eliminations and victory outcomes are announced.
 16. **Next Rounds**: If neither side has won, repeat steps 7–15 for Rounds 2 and 3. The final winner is announced when the Insider is eliminated (`EmployeesWin`), the company collapses (`InsiderWin`), or Round 3 concludes (`InsiderWin`).
 
-## Two-Computer Manual Acceptance Checklist (Trusted Private LAN)
+## Two-Computer Manual Acceptance (Trusted Private LAN)
 
-**Status:** `NOT RUN — requires two reachable LAN computers`
-> Automated single-host integration tests verify private address parsing, loopback default binding, interface assignment checking, and non-loopback interface socket handshakes. Physical two-computer cross-network acceptance requires two independent physical machines connected on the same physical subnet and is tracked via the checklist below:
+**Status:** `COMPLETED (October 17, 2026)`
+- **Tested Application Revision:** `5479dad55341e36d94fb7a7b29847993a12cc037` (tested on October 17, 2026; distinct from subsequent documentation changes)
+- **Automated CTest Suite:** 32/32 tests passed (0 failures, 84.83 seconds runtime) on Computer A. Note: The automated test log reported for this run (`evidence/lan-acceptance.txt`) was generated on the testing host during acceptance and is not present in this repository checkout.
+- **Manual LAN Session:** Operator reported successful completion of the full 21-step interactive two-computer LAN acceptance workflow on a trusted RFC 1918 private IPv4 subnet (5 players + 1 moderator across Computer A and Computer B, completing all three rounds to a final outcome).
+- **Detailed Acceptance Record:** See the [LAN Acceptance Test section in `docs/test-plan.md`](docs/test-plan.md#lan-acceptance-test) for complete test breakdown, scope, and evidence limitations.
 
 | Step | Verification Item | Expected Result | Acceptance Status |
 |---|---|---|:---:|
-| 1 | Discover Server IP | `ip -4 addr show` displays active RFC 1918 address (e.g. `192.168.1.50`). | Ready for run |
-| 2 | Start Server | `./build/darkpool_server --bind-address 192.168.1.50 4782` starts and prints bound address & security warning. | Ready for run |
-| 3 | Firewall Rule | Port 4782 restricted to subnet (`sudo ufw allow from 192.168.1.0/24 to any port 4782 proto tcp`). | Ready for run |
-| 4 | Connect Moderator | From Computer B: `./build/darkpool_client 192.168.1.50 4782 moderator` authenticates with token. | `NOT RUN` (physical 2-machine env required) |
-| 5 | Connect Players | Connect >= 5 players across Computer A and Computer B using `darkpool_client 192.168.1.50 4782 player`. | `NOT RUN` (physical 2-machine env required) |
-| 6 | Match Creation | Moderator runs `create 5`; receives `match_created` with 5 seats (1 Insider, 1 Investigator, 3 Employees). | `NOT RUN` (physical 2-machine env required) |
-| 7 | Player Joins & Role Privacy | Each player runs `join 1`; receives assigned private role. Confirm roles are never leaked to other terminals. | `NOT RUN` (physical 2-machine env required) |
-| 8 | Match Start & Round 1 Event | Moderator runs `start`, then `event 1`. Phase transitions to `Discussion` on all client terminals. | `NOT RUN` (physical 2-machine env required) |
-| 9 | Insider Hint Privacy | Insider runs `hint`; receives event impact 1. Confirm non-insiders cannot view or receive the hint. | `NOT RUN` (physical 2-machine env required) |
-| 10 | Trading Phase & Execution | Moderator opens trading; players submit `buy`/`sell`/`hold`; market resolves with conserved shares and updated price. | `NOT RUN` (physical 2-machine env required) |
-| 11 | Clue Investigation Privacy | Investigator runs `clue <target_id>`; receives private clue. Confirm result is private to investigator only. | `NOT RUN` (physical 2-machine env required) |
-| 12 | Voting Phase & Elimination | Moderator opens voting; players cast votes; vote resolution handles ties/eliminations accurately. | `NOT RUN` (physical 2-machine env required) |
-| 13 | Rounds 2 & 3 Progression | Complete rounds 2 and 3 through all phase transitions; verify deterministic outcome (`InsiderWin` / `EmployeesWin`). | `NOT RUN` (physical 2-machine env required) |
-| 14 | Post-Game Disconnect | Disconnect all clients; verify server remains responsive and cleans up all connection state cleanly. | `NOT RUN` (physical 2-machine env required) |
+| 1 | Discover Server IP | `ip -4 addr show` displays active RFC 1918 address (e.g. `192.168.1.50`). | PASS |
+| 2 | Start Server | `./build/darkpool_server --bind-address <LAN-IP> 4782` starts and prints bound address & security warning. | PASS |
+| 3 | Firewall Rule | Port 4782 restricted to subnet (`sudo ufw allow from <subnet> to any port 4782 proto tcp`). | PASS |
+| 4 | Connect Moderator | From Computer B: `./build/darkpool_client <LAN-IP> 4782 moderator` authenticates with token. | PASS (Operator-reported) |
+| 5 | Connect Players | Connect 5 players across Computer A and Computer B using `darkpool_client <LAN-IP> 4782 player`. | PASS (Operator-reported) |
+| 6 | Match Creation | Moderator runs `create 5`; receives `match_created` with 5 seats (1 Insider, 1 Investigator, 3 Employees). | PASS (Operator-reported) |
+| 7 | Player Joins & Role Privacy | Each player runs `join 1`; receives assigned private role. Confirm roles are never leaked to other terminals. | PASS (Operator-reported) |
+| 8 | Match Start & Round 1 Event | Moderator runs `start`, then `event 0`. Phase transitions to `Discussion` on all client terminals. | PASS (Operator-reported) |
+| 9 | Insider Hint Privacy | Insider runs `hint`; receives event impact 0. Confirm non-insiders cannot view or receive the hint. | PASS (Operator-reported) |
+| 10 | Trading Phase & Execution | Moderator opens trading; players submit `hold`; market resolves with conserved shares and updated price. | PASS (Operator-reported) |
+| 11 | Clue Investigation Privacy | Investigator runs `clue <target_id>`; receives private clue. Confirm result is private to investigator only. | PASS (Operator-reported) |
+| 12 | Voting Phase & Elimination | Moderator opens voting; players cast votes; vote resolution handles eliminations/abstentions accurately. | PASS (Operator-reported) |
+| 13 | Rounds 2 & 3 Progression | Complete rounds 2 and 3 through all phase transitions; verify deterministic outcome. | PASS (Operator-reported) |
+| 14 | Post-Game Disconnect | Disconnect all clients; verify server cleans up connection state cleanly and firewall rule is removed. | PASS (Operator-reported) |
 
 ## Deferred Future Work (Backlog)
 
