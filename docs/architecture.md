@@ -259,3 +259,120 @@ Treat these as separate security controls:
 The current setup scripts do not automatically distribute each new match's join token to every player client; the moderator must securely share it with intended players. See the [User Guide: Match tokens and access control](user-guide.md#8-match-tokens-and-access-control).
 
 Public-Internet deployment, persistent player accounts, mutual TLS player identity, durable crash recovery, and dynamic in-process certificate reload are not currently supported. For setup instructions and troubleshooting, see the [User Guide](user-guide.md).
+
+## 9. IPC and operating-system primitive inventory
+
+This inventory distinguishes APIs used explicitly by DARKPOOL's tracked application code from alternatives that are not part of the current design. "Not used" means the repository does not implement that primitive as an application communication mechanism; it does not make claims about what OpenSSL or the operating system may do internally.
+
+| Primitive from the candidate list | Current status | What it means for DARKPOOL |
+|---|---|---|
+| **`epoll`** | **Used** | The Linux server monitors listeners, client sockets, TLS readiness, and the signal descriptor in one event loop. See `src/server_runtime.cpp`. |
+| **UNIX-domain sockets** | **Used** | Local inter-process communication (IPC) when the client and server run on the same Linux host. A stream socket carries the same length-prefixed JSON frames used by other transports. |
+| **Network sockets (TCP)** | **Used** | Connects clients to the server across a network. TCP provides a reliable ordered byte stream, not encryption or message boundaries. |
+| **TLS 1.3 over TCP** | **Used** | Protects remote-session bytes and validates the server's certificate identity through the configured CA or SHA-256 fingerprint method. |
+| **Linux signals** | **Used, through `signalfd`** | `SIGINT` and `SIGTERM` are blocked and exposed as a file descriptor, then handled by the `epoll` loop. Signals are for process control/shutdown, not game-message transport. |
+| `io_uring` | Not used | An alternative Linux asynchronous I/O interface. It is not enabled alongside the current `epoll` implementation. Consider it only after profiling identifies an I/O bottleneck and the added complexity is justified. |
+| System V message queues | Not used | No `msgget`/`msgsnd`/`msgrcv`-based application IPC. |
+| POSIX message queues | Not used | No `mq_open`/`mq_send`/`mq_receive`-based application IPC. |
+| POSIX shared memory | Not used | No `shm_open` shared-memory region or cross-process shared game state. |
+| System V shared memory | Not used | No `shmget`/`shmat` shared-memory segment. |
+| Memory-mapped files | Not used as IPC | There is no application `mmap`-backed file used to exchange messages or game state between processes. |
+| Anonymous memory maps | Not used as IPC | DARKPOOL does not create an `mmap(MAP_ANONYMOUS)` region for cross-process sharing. Ordinary process memory is used for in-process state and buffers. |
+| Anonymous pipes | Not used | No `pipe`-based channel between DARKPOOL components. |
+| Named pipes (FIFOs) | Not used | No `mkfifo` FIFO used as a client/server or process-to-process communication channel. |
+| POSIX semaphores | Not used | No `sem_open`-based synchronization for shared game state. |
+| System V semaphores | Not used | No `semget`/`semop`-based synchronization. |
+| `eventfd` | Not used | No event counter descriptor for waking or signaling work to the event loop. |
+| D-Bus | Not used | DARKPOOL does not expose game operations as a desktop/system D-Bus service. |
+| Varlink | Not used | No Varlink local-service protocol. |
+| Wayland protocol | Not used | DARKPOOL has a terminal client, not a Wayland compositor/client integration. |
+| X11 protocol | Not used | No X11 client or window-system protocol implementation. |
+| gRPC | Not used | The application protocol is not gRPC and does not use Protocol Buffers or HTTP/2 for game requests. |
+| Apache Thrift | Not used | No Thrift RPC or generated Thrift interface. |
+| Cap'n Proto | Not used | No Cap'n Proto schema, binary serialization, or RPC layer. |
+| PipeWire | Not used | No audio/video graph integration. |
+| PulseAudio | Not used | No audio playback or audio-server IPC. |
+
+### 9.1 How IPC actually works today
+
+IPC is the exchange of data between separate processes on the **same host**. In DARKPOOL's local mode, the client process opens a UNIX-domain stream socket at the configured socket path (default `/tmp/darkpool.sock`) and the server listens on that path. The client serializes each command as JSON, adds the four-byte big-endian payload-length prefix, and writes the bytes to the socket. The server reads arbitrary chunks, uses `FrameDecoder` to reconstruct complete frames, and passes each request to the session/authentication and coordinator logic. Replies and allowed notifications travel back over the same full-duplex connection.
+
+~~~text
+Client process                                      Server process
+--------------                                      --------------
+CLI command
+    |
+JSON + 4-byte length prefix
+    |
+ClientConnection
+    |
+    +========= UNIX-domain stream socket ===========+
+                                                    |
+                                      ServerRuntime / epoll
+                                                    |
+                                           FrameDecoder
+                                                    |
+                                  session auth -> coordinator
+                                                    |
+                                              game engine
+                                                    |
+ClientConnection <==== framed replies/events =======+
+    |
+CLI displays result
+~~~
+
+The socket is the **inter-process channel**. `FrameDecoder`, `FrameStream`, and `OutputQueue` are ordinary in-process data structures: they buffer, assemble, and queue bytes but do not independently connect two processes. There is also no IPC boundary between the coordinator and game engine in the current server; those are C++ components in the same process, communicating through direct function calls and in-process objects. No shared memory, external message broker, or RPC framework is needed for that path.
+
+A UNIX-domain socket is a good fit here because it supports bidirectional request/reply and asynchronous notifications with stream semantics, and lets the operating system manage connection lifecycle. It is not interchangeable with a TCP socket on another host: a UNIX-domain socket path is local to one machine and is not routed across the LAN.
+
+### 9.2 Network path: remote clients
+
+For a remote client, the application uses a TCP socket to reach the server's address and port. On the TLS listener, OpenSSL negotiates TLS 1.3 before application frames are exchanged. The same length-prefixed JSON protocol is then carried inside the encrypted TLS byte stream.
+
+~~~text
+Remote client
+    |
+TCP connection to server IP:port
+    |
+TLS 1.3 handshake + server identity verification
+    |
+Encrypted byte stream containing framed JSON
+    |
+Server TLS/nonblocking I/O + epoll
+    |
+FrameDecoder -> session authentication -> coordinator -> engine
+~~~
+
+TCP makes bytes arrive reliably and in order while a connection remains viable, but it does not guarantee that one write equals one read, does not identify a game action, and does not encrypt traffic. Framing solves message boundaries; TLS solves in-transit confidentiality/integrity and server identity verification; the application protocol and coordinator solve message meaning and authorization. These are separate responsibilities.
+
+### 9.3 Security model: do not confuse transport with authorization
+
+DARKPOOL applies several distinct controls:
+
+- **Binding and exposure:** the local socket is for same-host clients. The TCP binding code validates IPv4 bind addresses and rejects public/non-LAN addresses for the supported non-loopback mode. Use the TLS listener for remote LAN play; plaintext TCP is not suitable for untrusted networks.
+- **TLS trust:** the TLS client uses the configured local CA or SHA-256 server-certificate fingerprint and checks server certificate validity and IP SAN. The client must use an address matching the certificate identity. Do not bypass certificate verification to make a connection work.
+- **Session and role authorization:** successful TLS proves the server identity to the client; it does not prove that a connecting user is the moderator or has permission to perform an action.
+- **Moderator authentication and match admission:** moderator credentials and protected-match join tokens serve different purposes. A join token grants match admission, not transport encryption or moderator privileges.
+- **Request and resource limits:** the server limits frame payloads to 4 KiB, bounds queued output to 64 KiB per connection, applies per-session request rate limiting, and configures a connection limit. These limit memory pressure and request floods but are not substitutes for correct authentication or network-level firewall rules.
+- **Private information:** the coordinator routes role-specific hints, clues, and research to the intended audience. TLS protects traffic in transit; audience filtering prevents the application from sending a private event to the wrong player in the first place.
+
+Current limitations remain: the protocol does not use mutual TLS as an individual player identity system, the application does not provide durable crash recovery, and this is not a hardened public-Internet deployment design. Keep the service on trusted/private networks and follow the TLS setup instructions in the [User Guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan).
+
+## 10. Reasonable extensions—and when they are worth doing
+
+The current design is intentionally a single authoritative process with socket-based clients. Adding more IPC mechanisms does not automatically make it faster or safer. Extensions should address a measured bottleneck or a new architectural requirement.
+
+| Possible extension | When it might be useful | Design recommendation |
+|---|---|---|
+| **`eventfd` plus a bounded task queue** | A future worker thread, timer service, or background subsystem needs to hand work back to the `epoll` event loop. | A good Linux-specific extension: workers enqueue a typed task, signal `eventfd`, and the event loop drains the queue and applies state changes serially. Do not mutate coordinator/game state directly from worker threads. Not needed while all work is initiated in the event loop. |
+| **`io_uring`** | Profiling shows that syscall/readiness overhead materially limits a high-connection-count or high-throughput deployment. | Treat as an alternative backend to compare against the current `epoll` reactor, not a second layer to add without measurement. TLS integration and operation-lifetime management increase complexity. |
+| **POSIX shared memory or `mmap` + process-shared synchronization** | Large local telemetry, replay analysis, or a separate same-host analytics process needs high-volume shared data with low copying. | Consider only for a defined data plane. Keep authoritative game mutations and access checks in the server; shared memory alone gives no authentication, message schema, or synchronization discipline. Pairing it with process-shared locks/semaphores or an event notification mechanism requires careful crash and version handling. |
+| **POSIX/System V message queues** | A distinct local process needs durable-ish or discrete queued work items with independently managed producer/consumer lifecycles. | Not recommended for current game commands. DARKPOOL already needs full-duplex connected sessions and pushes asynchronous notifications; sockets model that interaction directly. |
+| **Pipes/FIFOs** | A small helper process needs one-way input/output, such as a local administrative script or log consumer. | Suitable for narrow shell-tool integration, not a replacement for the multiplayer protocol. FIFOs need agreed framing and lifecycle handling and do not provide network transport or TLS. |
+| **gRPC or Apache Thrift** | DARKPOOL grows a separately versioned service API, typed generated clients, or service-to-service calls. | Evaluate as a protocol migration for a clearly scoped service. It would add schemas, code generation, dependency/version management, and a new deployment surface; it is not a drop-in improvement to the current framed-JSON protocol. |
+| **Cap'n Proto** | Profiling shows JSON parsing/encoding is significant or a schema-driven compact binary protocol is a hard requirement. | Benchmark a prototype before replacing JSON. Binary serialization does not itself provide transport security, authorization, or message compatibility policy. |
+| **D-Bus or Varlink** | A Linux-local service-management interface is needed for administrative integration with other host services. | Keep such an interface separate from the player game protocol and restrict its policy/permissions. Neither is a replacement for TLS/TCP multiplayer transport. |
+| **Wayland, X11, PipeWire, PulseAudio** | A future graphical client or audio/video feature requires desktop/window-system integration. | These solve UI, audio, or media problems, not generic game IPC. A GUI/audio client could use them alongside the existing network protocol, but they do not belong in the authoritative game-server data path. |
+| **POSIX/System V semaphores alone** | Multiple local processes truly share mutable memory and need synchronization. | Semaphores are synchronization primitives, not a message format or transport. Do not add them until there is a real shared-state design; choosing one without defining ownership, recovery, and ordering is incomplete. |
+
+**Recommended path:** retain UNIX-domain sockets for same-host IPC, TLS 1.3/TCP for LAN clients, and `epoll` for the current Linux server. The most natural future addition—only if background worker tasks are introduced—is a bounded task queue plus `eventfd` to wake the reactor. Consider `io_uring`, shared-memory IPC, or a schema/RPC framework only after measurements or a concrete new integration requirement justify the extra complexity.
