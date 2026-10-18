@@ -126,7 +126,7 @@ TLS does **not** decide whether a user is a moderator, whether a player has join
 
 ### 3.5 Nonblocking I/O and epoll
 
-A blocking server operation can stop a thread while it waits for a peer. DARKPOOL instead uses nonblocking I/O and Linux `epoll` to track many active connections in one event loop.
+A blocking server operation can stop a thread while it waits for a peer. DARKPOOL instead uses an **event-driven, nonblocking I/O model based on Linux `epoll`**. This is asynchronous in the architectural sense: the server does not wait synchronously for each client operation to finish, but waits for readiness events and advances a connection when progress is possible. It is readiness-based I/O, not the `io_uring` submission/completion API.
 
 The event loop waits for readiness notifications, such as a socket becoming readable or writable, then advances the corresponding connection state. This is important when many players are connected but most are idle.
 
@@ -271,7 +271,7 @@ This inventory distinguishes APIs used explicitly by DARKPOOL's tracked applicat
 | **Network sockets (TCP)** | **Used** | Connects clients to the server across a network. TCP provides a reliable ordered byte stream, not encryption or message boundaries. |
 | **TLS 1.3 over TCP** | **Used** | Protects remote-session bytes and validates the server's certificate identity through the configured CA or SHA-256 fingerprint method. |
 | **Linux signals** | **Used, through `signalfd`** | `SIGINT` and `SIGTERM` are blocked and exposed as a file descriptor, then handled by the `epoll` loop. Signals are for process control/shutdown, not game-message transport. |
-| `io_uring` | Not used | An alternative Linux asynchronous I/O interface. It is not enabled alongside the current `epoll` implementation. Consider it only after profiling identifies an I/O bottleneck and the added complexity is justified. |
+| `io_uring` | Not used | An alternative Linux asynchronous I/O interface based on submission and completion queues. DARKPOOL already uses asynchronous/event-driven nonblocking I/O through `epoll`, but does not use the `io_uring` API. Consider replacing/comparing the backend only after profiling identifies a bottleneck and the added complexity is justified. |
 | System V message queues | Not used | No `msgget`/`msgsnd`/`msgrcv`-based application IPC. |
 | POSIX message queues | Not used | No `mq_open`/`mq_send`/`mq_receive`-based application IPC. |
 | POSIX shared memory | Not used | No `shm_open` shared-memory region or cross-process shared game state. |
