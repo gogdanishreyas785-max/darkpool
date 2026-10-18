@@ -63,7 +63,10 @@ build_and_test() {
   info "Configuring Release build with warnings-as-errors"
   cmake -S "$REPO_ROOT" -B "$REPO_ROOT/build" -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON
   info "Building DARKPOOL"
-  cmake --build "$REPO_ROOT/build" --parallel "$(nproc)"
+  local jobs
+  jobs="$(printenv DARKPOOL_BUILD_JOBS 2>/dev/null || printf '2')"
+  [[ "$jobs" =~ ^[1-9][0-9]*$ ]] || die "DARKPOOL_BUILD_JOBS must be a positive integer"
+  cmake --build "$REPO_ROOT/build" --parallel "$jobs"
   info "Running TLS integration tests"
   ctest --test-dir "$REPO_ROOT/build" --output-on-failure -R '^darkpool_tls_integration_tests$'
 }
@@ -236,6 +239,8 @@ setup_client() {
     ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/moderator.token"' > "$DATA_DIR/moderator.token" || die "moderator token transfer failed"
     [[ -s "$DATA_DIR/moderator.token" ]] || die "downloaded moderator token is empty"
     chmod 600 "$DATA_DIR/moderator.token"
+  else
+    rm -f -- "$DATA_DIR/moderator.token"
   fi
   printf '%s\n' "$server_ip" > "$DATA_DIR/server-ip"
   chmod 600 "$DATA_DIR/server-ip"
