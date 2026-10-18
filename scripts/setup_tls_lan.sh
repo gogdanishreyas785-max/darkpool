@@ -214,8 +214,13 @@ setup_client() {
   [[ $# -ge 1 && $# -le 3 ]] || { usage; die "client requires SERVER_LAN_IPV4 [SERVER_SSH_USER] [player|moderator]"; }
   local server_ip="$1" ssh_user role
   ssh_user="$(id -un)"
-  if [[ $# -ge 2 && -n "$2" ]]; then ssh_user="$2"; fi
   role=player
+  if [[ $# -ge 2 && -n "$2" ]]; then
+    case "$2" in
+      player|moderator) role="$2" ;;
+      *) ssh_user="$2" ;;
+    esac
+  fi
   if [[ $# -ge 3 ]]; then role="$3"; fi
   validate_private_ipv4 "$server_ip"
   [[ "$ssh_user" =~ ^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$ ]] || die "invalid SSH username"
