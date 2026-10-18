@@ -23,7 +23,7 @@ add_library(darkpool_engine src/game_engine.cpp)
 target_include_directories(darkpool_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_engine PUBLIC cxx_std_20)
 
-add_library(darkpool_communications src/network.cpp)
+add_library(darkpool_communications src/network.cpp src/token_store.cpp)
 target_include_directories(darkpool_communications PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_communications PUBLIC cxx_std_20)
 target_link_libraries(darkpool_communications PUBLIC nlohmann_json::nlohmann_json)

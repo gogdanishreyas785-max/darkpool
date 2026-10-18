@@ -160,6 +160,26 @@ For encrypted, tamper-resistant multiplayer over a private local network, launch
    ```
 
 
+
+### Option E: Automated Turnkey TLS 1.3 LAN Scripts (Recommended)
+
+DARKPOOL provides three automated scripts that manage certificate creation, token directory security (`0700` / `0600`), and automated match admission:
+
+```sh
+# 1. Generate TLS 1.3 certificates and extract fingerprint:
+bash scripts/setup_tls_lan.sh [SERVER_LAN_IP]
+
+# 2. Start Authoritative Server with token provisioning enabled:
+bash scripts/run_tls_server.sh
+
+# 3. Start Moderator Client:
+bash scripts/run_tls_client.sh moderator
+
+# 4. Start Player Clients (auto-discovers match and provisions token):
+bash scripts/run_tls_client.sh player
+```
+Inside the player terminal, players simply run `join` (or `join <id>`) to be admitted automatically without manually copying the join token.
+
 ### LAN Troubleshooting Guide
 
 - **Connection refused / Timed out**:

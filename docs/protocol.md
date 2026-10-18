@@ -173,3 +173,68 @@ The authoritative `market_snapshot` and `match_status` envelopes include defined
 - `volatility`: Unsigned integer $[0, 20]$ reflecting trade volume and event tension.
 - `liquidity`: Unsigned integer $[0, 100]$ percentage representing reserve share depth relative to total supply.
 - Private individual holdings, credits, roles, clue targets, and research reports are strictly omitted from public snapshots.
+
+### 4. Authoritative Vote Resolution and Secret-Ballot Reporting Schema
+The authoritative `vote_resolved` (push event) and `vote_resolution` (command response) envelopes separate submitted participation counts from candidate elimination thresholds, preserving secret voting while preventing deceptive zero-vote reports:
+```json
+{
+  "type": "server_event",
+  "event": "vote_resolved",
+  "match_id": 1,
+  "state_version": 25,
+  "round": 1,
+  "eliminated_player": null,
+  "votes_received": 0,
+  "votes_cast": 1,
+  "votes_submitted": 1,
+  "votes_abstained": 0,
+  "votes_missing": 3,
+  "eligible_voters": 4,
+  "outcome": "None"
+}
+```
+- `eligible_voters`: Total number of active, non-eliminated players eligible when voting opened.
+- `votes_submitted` / `votes_cast`: Total number of ballots received before deadline, including explicit abstentions.
+- `votes_abstained`: Number of submitted ballots with explicit abstention (`target_id: null`).
+- `votes_missing`: Number of eligible players who submitted no ballot prior to deadline (`eligible_voters - votes_cast`).
+- `votes_received`: Number of votes received by the eliminated candidate (only populated when strict majority threshold > E/2 is met). When no candidate is eliminated, `votes_received` is reported as 0 or omitted from candidate display to avoid confusing the user.
+- **Privacy Guarantee**: Individual voter IDs and ballot targets are never broadcast, preserving secret voting.
+
+### 5. Match Discovery and Admission Protocol
+To support variable-capacity lobbies, multiple concurrent matches, and automated admission without manual token copying:
+- **List Matches (`list_matches`)**:
+  - Inbound: `{"type": "list_matches"}`
+  - Outbound:
+    ```json
+    {
+      "type": "matches_list",
+      "matches": [
+        {
+          "match_id": 1,
+          "phase": "Lobby",
+          "player_count": 4,
+          "joined_players": 1,
+          "open_lobby": false
+        }
+      ]
+    }
+    ```
+- **Authenticated Token Enrollment (`get_match_token`)**:
+  - Inbound: `{"type": "get_match_token", "match_id": 1, "enrollment_token": "<server-enrollment-secret>"}`
+  - Outbound (Authorized):
+    ```json
+    {
+      "type": "match_token_result",
+      "ok": true,
+      "match_id": 1,
+      "join_token": "a1b2c3d4e5f60718293a4b5c6d7e8f90"
+    }
+    ```
+  - Outbound (Unauthorized / Missing Authorization):
+    ```json
+    {
+      "type": "error",
+      "error": "invalid enrollment authorization"
+    }
+    ```
+  - Pre-shared enrollment secret is configured on the server via `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`. Fails closed if not configured.

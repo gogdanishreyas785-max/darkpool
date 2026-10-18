@@ -113,6 +113,30 @@ c4b8e2194d216f40b2f6efba983a005bc1e71dd6cf3d15bba1a52044238e8ec2
 
 ---
 
+
+### Automated Launcher Scripts (Recommended Workflow)
+
+DARKPOOL provides turnkey shell scripts that automate TLS certificate generation, key permission enforcement (0600), server launch with token provisioning, and player client execution with automatic match admission:
+
+```bash
+# 1. Setup TLS certificates, directories, and SHA-256 fingerprint:
+bash scripts/setup_tls_lan.sh [SERVER_LAN_IP]
+
+# 2. Launch the Authoritative Game Server with auto-provisioning enabled:
+bash scripts/run_tls_server.sh
+
+# 3. In Moderator Terminal, launch the moderator client:
+bash scripts/run_tls_client.sh moderator
+
+# 4. In Player Terminals, launch player clients with auto-admission:
+bash scripts/run_tls_client.sh player
+```
+When using `scripts/run_tls_client.sh player`, the client automatically discovers the latest waiting match and obtains the match admission credential without requiring manual copy-pasting of tokens. Inside the player CLI, simply enter:
+```text
+[Player] > join
+```
+or `join 1`. The client validates admission, the server assigns a confidential role, and gameplay begins.
+
 ## 4. Start the Authoritative Game Server
 
 Set the moderator authentication secret (`DARKPOOL_MODERATOR_TOKEN`) and launch `darkpool_server`.

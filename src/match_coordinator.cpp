@@ -1,4 +1,5 @@
 #include "darkpool/match_coordinator.hpp"
+#include "darkpool/token_store.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -75,6 +76,15 @@ std::string generate_secure_join_token() noexcept {
     token.push_back(kHexDigits[b & 0x0F]);
   }
   return token;
+}
+
+bool secure_compare(std::string_view a, std::string_view b) noexcept {
+  if (a.size() != b.size()) return false;
+  unsigned char diff = 0;
+  for (std::size_t i = 0; i < a.size(); ++i) {
+    diff |= static_cast<unsigned char>(a[i] ^ b[i]);
+  }
+  return diff == 0;
 }
 
 network::json error(std::string message) {
@@ -265,13 +275,24 @@ network::json public_status(std::uint64_t match_id, std::uint64_t state_version,
     const auto& vote = *last_vote;
     response["last_vote"] = network::json{{"eliminated_player", vote.eliminated
         ? network::json(*vote.eliminated) : network::json(nullptr)},
-        {"votes_received", vote.votes_received}, {"eligible_voters", vote.eligible_voters},
+        {"votes_received", vote.votes_received},
+        {"votes_cast", vote.votes_cast},
+        {"votes_submitted", vote.votes_cast},
+        {"votes_abstained", vote.votes_abstained},
+        {"votes_missing", vote.votes_missing},
+        {"eligible_voters", vote.eligible_voters},
         {"outcome", Match::to_string(vote.outcome)}};
   }
   return response;
 }
 
 }  // namespace
+
+MatchCoordinator::~MatchCoordinator() {
+  for (const auto& [id, _] : matches_) {
+    security::TokenStore::remove_match_token(id);
+  }
+}
 
 void MatchCoordinator::register_session(std::uint64_t session, SessionRole role) {
   sessions_.insert_or_assign(session, Session{role, std::nullopt, std::nullopt, {}});
@@ -290,6 +311,7 @@ void MatchCoordinator::unregister_session(std::uint64_t session) noexcept {
   for (const auto match_id : found->second.moderator_matches) {
     const auto match = matches_.find(match_id);
     if (match == matches_.end()) continue;
+    security::TokenStore::remove_match_token(match_id);
     for (const auto& player_session : match->second.player_sessions) {
       if (!player_session) continue;
       const auto player = sessions_.find(*player_session);
@@ -385,6 +407,7 @@ MarketResolution MatchCoordinator::apply_resolve_market(std::uint64_t match_id, 
   const auto& st = record.match->state();
 
   if (st.phase == Phase::Finished) {
+    security::TokenStore::remove_match_token(match_id);
     record.timer.active = false;
     pending_notifications_.push_back(OutgoingNotification{
         members,
@@ -512,10 +535,15 @@ VoteResolution MatchCoordinator::apply_resolve_votes(std::uint64_t match_id, Mat
                     {"phase", "Voting"},
                     {"eliminated_player", vote.eliminated ? network::json(*vote.eliminated) : network::json(nullptr)},
                     {"votes_received", vote.votes_received},
+                    {"votes_cast", vote.votes_cast},
+                    {"votes_submitted", vote.votes_cast},
+                    {"votes_abstained", vote.votes_abstained},
+                    {"votes_missing", vote.votes_missing},
                     {"eligible_voters", vote.eligible_voters},
                     {"outcome", Match::to_string(vote.outcome)},
                     {"state_version", record.state_version}}});
   if (st.phase == Phase::Finished) {
+    security::TokenStore::remove_match_token(match_id);
     pending_notifications_.push_back(OutgoingNotification{
         members,
         network::json{{"type", "server_event"}, {"event", "match_finished"},
@@ -643,7 +671,8 @@ std::optional<network::json> MatchCoordinator::handle(
       type == "request_clue" || type == "open_voting" || type == "vote" ||
       type == "resolve_votes" || type == "insider_hint" ||
       type == "research" || type == "scout" ||
-      type == "pause" || type == "resume" || type == "abort";
+      type == "pause" || type == "resume" || type == "abort" ||
+      type == "list_matches" || type == "get_match_token";
   if (!coordinator_command) return std::nullopt;
 
   const auto connection = sessions_.find(session);
@@ -709,11 +738,34 @@ std::optional<network::json> MatchCoordinator::handle(
           {"open_lobby", is_open_lobby}};
       if (join_token) {
         resp["join_token"] = *join_token;
+        if (const char* prov = std::getenv("DARKPOOL_PROVISION_TOKENS");
+            prov && (std::strcmp(prov, "1") == 0 || std::strcmp(prov, "true") == 0)) {
+          security::TokenStore::save_match_token(match_id, *join_token);
+        }
       }
       return resp;
     } catch (const std::exception& exception) {
       return error(exception.what());
     }
+  }
+
+  if (type == "list_matches") {
+    network::json matches_arr = network::json::array();
+    for (const auto& [id, record] : matches_) {
+      std::size_t joined = 0;
+      for (const auto& s : record.player_sessions) {
+        if (s) ++joined;
+      }
+      matches_arr.push_back({
+        {"match_id", id},
+        {"phase", Match::to_string(record.match->state().phase)},
+        {"player_count", record.player_sessions.size()},
+        {"joined_players", joined},
+        {"open_lobby", !record.join_token.has_value()},
+        {"is_aborted", record.is_aborted}
+      });
+    }
+    return network::json{{"type", "matches_list"}, {"matches", std::move(matches_arr)}};
   }
 
   const auto requested_match = read_match_id(command);
@@ -764,6 +816,29 @@ std::optional<network::json> MatchCoordinator::handle(
       }
     }
     return error("match is full");
+  }
+
+  if (type == "get_match_token") {
+    if (!match->second.join_token.has_value()) {
+      return network::json{{"type", "match_token_result"}, {"ok", true},
+                           {"match_id", match_id}, {"open_lobby", true}};
+    }
+    const char* server_enroll_token = std::getenv("DARKPOOL_ENROLLMENT_TOKEN");
+    if (!server_enroll_token || server_enroll_token[0] == '\0') {
+      server_enroll_token = std::getenv("DARKPOOL_PLAYER_SECRET");
+    }
+    if (!server_enroll_token || server_enroll_token[0] == '\0') {
+      return error("enrollment authorization not configured on server");
+    }
+    if (!command.contains("enrollment_token") || !command["enrollment_token"].is_string()) {
+      return error("enrollment_token is required");
+    }
+    const auto client_enroll = command["enrollment_token"].get<std::string>();
+    if (!secure_compare(client_enroll, server_enroll_token)) {
+      return error("invalid enrollment authorization");
+    }
+    return network::json{{"type", "match_token_result"}, {"ok", true},
+                         {"match_id", match_id}, {"join_token", *match->second.join_token}};
   }
 
   if (!is_member(session, match_id)) return error("connection is not a member of target match");
@@ -954,7 +1029,12 @@ std::optional<network::json> MatchCoordinator::handle(
     const auto& vote = *result.value;
     return network::json{{"type", "vote_resolution"}, {"ok", true},
         {"eliminated_player", vote.eliminated ? network::json(*vote.eliminated) : network::json(nullptr)},
-        {"votes_received", vote.votes_received}, {"eligible_voters", vote.eligible_voters},
+        {"votes_received", vote.votes_received},
+        {"votes_cast", vote.votes_cast},
+        {"votes_submitted", vote.votes_cast},
+        {"votes_abstained", vote.votes_abstained},
+        {"votes_missing", vote.votes_missing},
+        {"eligible_voters", vote.eligible_voters},
         {"outcome", Match::to_string(vote.outcome)}};
   }
   if (type == "insider_hint") {
@@ -1049,6 +1129,7 @@ std::optional<network::json> MatchCoordinator::handle(
       return error("match is already finished");
     }
     match->second.is_aborted = true;
+    security::TokenStore::remove_match_token(match_id);
     match->second.timer.active = false;
     match->second.timer.paused = false;
     match->second.timer.in_transition = false;

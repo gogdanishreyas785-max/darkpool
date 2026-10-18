@@ -350,3 +350,31 @@ The S9 automated verification suite covers 25 comprehensive integration scenario
 - [x] Full automated test matrix (25 scenarios) executed and passing via CTest.
 - [x] Corrected benchmark harness executed with descriptor leak fix and Plaintext TCP baseline on port 4782.
 - [x] Physical two-computer cross-network LAN acceptance test: **PASS (Operator-reported)** for 5-player plaintext LAN baseline (October 17, 2026; see docs/test-plan.md). Multi-machine manual TLS 1.3 verification remains a future milestone.
+
+---
+
+## 11. Automated Match Token Provisioning and Secret-Preserving Voting Resolution
+
+### 11.1 Threat Model & Trust Bootstrap
+In the DARKPOOL security architecture, TLS 1.3 authenticates the game server to the connecting clients via leaf certificate SHA-256 fingerprint pinning (AD-S9-03). However, TLS transport security alone does not authenticate the client identity or grant player admission:
+- Connecting unauthenticated TCP/TLS sockets cannot indiscriminately request or receive admission credentials.
+- Protected matches must not silently degrade into open lobbies.
+- Moderator privileges remain strictly isolated from player admission rights.
+
+To support automatic token delivery across multiple machines on a private LAN or locally on a single machine:
+1. **Out-of-Band SSH / SCP Provisioning (Recommended Multi-Machine Mode)**:
+   The server generates the admission token and stores it in `~/.darkpool/tokens/match_<id>.token` with `0600` permissions. Authorized player clients sync tokens via SSH/SCP (`scripts/run_tls_client.sh player`), leveraging SSH key authorization.
+2. **Authenticated In-Band Enrollment (`get_match_token`)**:
+   Clients possessing a pre-shared enrollment authorization (`DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`) query `get_match_token` over the encrypted TLS 1.3 channel. The server performs a constant-time comparison and returns the match token. Without valid authorization, the request fails closed.
+3. **Local Token Store (`TokenStore`)**:
+   Local credentials reside in `~/.darkpool/tokens` (mode `0700`) in owner-only files (`0600`). Any file with group or world permissions (`st_mode & 0077 != 0`) is rejected and refused.
+
+### 11.2 Secret Voting & Resolution Reporting
+Voting resolution implements strict separation between:
+- `eligible_voters`: Total eligible players when voting opened.
+- `votes_submitted` / `votes_cast`: Total ballots received (including explicit abstentions).
+- `votes_abstained`: Explicit abstentions (`target_id: null`).
+- `votes_missing`: Eligible players who submitted no ballot prior to expiration.
+- `votes_received`: Votes received by the eliminated candidate (only populated if strict majority threshold > E/2 was met).
+
+Secret voting is strictly preserved: individual voter identities, private ballots, and non-eliminated candidate tallies are never broadcast or exposed in logs.
