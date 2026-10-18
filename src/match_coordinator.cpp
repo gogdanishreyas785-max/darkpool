@@ -1,14 +1,15 @@
 #include "darkpool/match_coordinator.hpp"
 
 #include <algorithm>
-#include <cerrno>
 #include <cstdint>
+#include <exception>
 #include <limits>
 #include <random>
-#include <stdexcept>
+#include <string>
 #include <utility>
 
 #if defined(__linux__)
+#include <cerrno>
 #include <sys/random.h>
 #endif
 
@@ -130,22 +131,96 @@ std::optional<std::size_t> read_player_count(const network::json& command) {
   }
 }
 
-network::json public_status(std::uint64_t match_id, const MatchState& state,
+network::json make_market_snapshot(std::uint64_t match_id, std::uint64_t state_version,
+                                  const MatchState& state,
+                                  const std::optional<MarketResult>& last_market,
+                                  const MatchTimer& timer,
+                                  std::chrono::steady_clock::time_point now,
+                                  bool is_aborted) {
+  const auto shares_held_by_players = state.total_supply >= state.reserve
+      ? (state.total_supply - state.reserve) : 0U;
+  std::uint64_t sec_rem = 0;
+  if (timer.active && !is_aborted) {
+    if (timer.paused) {
+      sec_rem = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(timer.paused_remaining).count());
+    } else if (timer.deadline > now) {
+      sec_rem = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(timer.deadline - now).count());
+    }
+  }
+  network::json snapshot{
+    {"type", "market_snapshot"},
+    {"match_id", match_id},
+    {"state_version", state_version},
+    {"round", state.round},
+    {"phase", is_aborted ? "Finished" : Match::to_string(state.phase)},
+    {"health", state.company.health},
+    {"price", state.company.price},
+    {"total_supply", state.total_supply},
+    {"reserve", state.reserve},
+    {"shares_held_by_players", shares_held_by_players},
+    {"sentiment", state.sentiment},
+    {"volatility", state.volatility},
+    {"liquidity", state.liquidity},
+    {"outcome", is_aborted ? "Aborted" : Match::to_string(state.outcome)},
+    {"is_paused", timer.paused},
+    {"seconds_remaining", sec_rem}
+  };
+  if (last_market) {
+    const auto& market = *last_market;
+    snapshot["last_market"] = network::json{
+      {"executed_buys", market.executed_buys},
+      {"executed_sells", market.executed_sells},
+      {"closing_health", market.closing_health},
+      {"closing_price", market.closing_price},
+      {"closing_reserve", market.closing_reserve},
+      {"sentiment", market.sentiment},
+      {"volatility", market.volatility},
+      {"liquidity", market.liquidity},
+      {"outcome", Match::to_string(market.outcome)}
+    };
+  }
+  return snapshot;
+}
+
+network::json public_status(std::uint64_t match_id, std::uint64_t state_version,
+                            const MatchState& state,
                             std::size_t joined_players,
                             std::size_t player_count,
                             const std::optional<MarketResult>& last_market,
-                            const std::optional<VoteResult>& last_vote) {
+                            const std::optional<VoteResult>& last_vote,
+                            const MatchTimer& timer,
+                            std::chrono::steady_clock::time_point now,
+                            bool is_aborted) {
+  std::uint64_t sec_rem = 0;
+  if (timer.active && !is_aborted) {
+    if (timer.paused) {
+      sec_rem = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(timer.paused_remaining).count());
+    } else if (timer.deadline > now) {
+      sec_rem = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::seconds>(timer.deadline - now).count());
+    }
+  }
   network::json response{{"type", "match_status"}, {"match_id", match_id},
-                         {"phase", Match::to_string(state.phase)}, {"round", state.round},
+                         {"state_version", state_version},
+                         {"phase", is_aborted ? "Finished" : Match::to_string(state.phase)}, {"round", state.round},
                          {"joined_players", joined_players},
                          {"player_count", player_count},
                          {"health", state.company.health}, {"price", state.company.price},
-                         {"outcome", Match::to_string(state.outcome)}};
+                         {"sentiment", state.sentiment}, {"volatility", state.volatility},
+                         {"liquidity", state.liquidity},
+                         {"outcome", is_aborted ? "Aborted" : Match::to_string(state.outcome)},
+                         {"is_paused", timer.paused},
+                         {"seconds_remaining", sec_rem}};
   if (last_market) {
     const auto& market = *last_market;
     response["last_market"] = network::json{{"executed_buys", market.executed_buys},
         {"executed_sells", market.executed_sells}, {"closing_health", market.closing_health},
         {"closing_price", market.closing_price}, {"closing_reserve", market.closing_reserve},
+        {"sentiment", market.sentiment}, {"volatility", market.volatility},
+        {"liquidity", market.liquidity},
         {"outcome", Match::to_string(market.outcome)}};
   }
   if (last_vote) {
@@ -200,6 +275,324 @@ bool MatchCoordinator::is_member(std::uint64_t session, std::uint64_t match_id) 
       match->second.moderator == session;
 }
 
+std::vector<std::uint64_t> MatchCoordinator::get_match_members(const MatchRecord& record) {
+  std::vector<std::uint64_t> members;
+  if (record.moderator != 0U) {
+    members.push_back(record.moderator);
+  }
+  for (const auto& opt_session : record.player_sessions) {
+    if (opt_session) {
+      members.push_back(*opt_session);
+    }
+  }
+  return members;
+}
+
+std::vector<OutgoingNotification> MatchCoordinator::drain_notifications() {
+  std::vector<OutgoingNotification> result;
+  result.swap(pending_notifications_);
+  return result;
+}
+
+void MatchCoordinator::set_simulated_time(std::optional<std::chrono::steady_clock::time_point> now) {
+  simulated_time_ = now;
+}
+
+void MatchCoordinator::set_phase_durations(PhaseDurations durations) {
+  phase_durations_ = durations;
+}
+
+std::chrono::steady_clock::time_point MatchCoordinator::now_() const {
+  if (simulated_time_) return *simulated_time_;
+  return std::chrono::steady_clock::now();
+}
+
+OperationResult MatchCoordinator::apply_open_trading(std::uint64_t match_id, MatchRecord& record,
+                                                    std::chrono::steady_clock::time_point now) {
+  const auto result = record.match->open_trading();
+  if (!result) return result;
+  ++record.state_version;
+  record.timer.active = true;
+  record.timer.paused = false;
+  record.timer.phase = Phase::Trading;
+  record.timer.total_duration = phase_durations_.trading;
+  record.timer.deadline = now + phase_durations_.trading;
+  record.timer.paused_remaining = phase_durations_.trading;
+  record.timer.warning_30_fired = false;
+  record.timer.warning_10_fired = false;
+
+  const auto members = get_match_members(record);
+  const auto& st = record.match->state();
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      network::json{{"type", "server_event"}, {"event", "phase_started"},
+                    {"match_id", match_id}, {"round", st.round},
+                    {"phase", Match::to_string(st.phase)},
+                    {"seconds_remaining", static_cast<std::uint64_t>(phase_durations_.trading.count())},
+                    {"state_version", record.state_version}}});
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                           record.timer, now, record.is_aborted)});
+  return result;
+}
+
+MarketResolution MatchCoordinator::apply_resolve_market(std::uint64_t match_id, MatchRecord& record,
+                                                        std::chrono::steady_clock::time_point now) {
+  auto result = record.match->resolve_market();
+  if (!result) return result;
+  record.last_market = *result.value;
+  ++record.state_version;
+  const auto members = get_match_members(record);
+  const auto& st = record.match->state();
+
+  if (st.phase == Phase::Finished) {
+    record.timer.active = false;
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_finished"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", "Finished"},
+                      {"outcome", Match::to_string(st.outcome)},
+                      {"state_version", record.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                             record.timer, now, record.is_aborted)});
+  } else {
+    // Engine is now in canonical Phase::Clue (approved duration: 30 seconds)
+    record.timer.active = true;
+    record.timer.paused = false;
+    record.timer.phase = Phase::Clue;
+    record.timer.in_transition = false;
+    record.timer.total_duration = phase_durations_.clue;
+    record.timer.deadline = now + phase_durations_.clue;
+    record.timer.paused_remaining = phase_durations_.clue;
+    record.timer.warning_30_fired = true;
+    record.timer.warning_10_fired = false;
+
+    // 1. Market resolution and public market snapshot
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                             record.timer, now, record.is_aborted)});
+
+    // 2. Clue phase start
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "phase_started"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"seconds_remaining", static_cast<std::uint64_t>(phase_durations_.clue.count())},
+                      {"state_version", record.state_version}}});
+
+    // 3. Clue 30-second warning (emitted once at Clue entry because 30s Clue begins with 30s remaining)
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "phase_warning"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"seconds_remaining", 30},
+                      {"state_version", record.state_version}}});
+  }
+  return result;
+}
+
+void MatchCoordinator::start_transition_interval(std::uint64_t match_id, MatchRecord& record, Phase upcoming,
+                                                 std::chrono::steady_clock::time_point now) {
+  record.timer.active = true;
+  record.timer.paused = false;
+  record.timer.in_transition = true;
+  record.timer.upcoming_phase = upcoming;
+  record.timer.total_duration = phase_durations_.transition;
+  record.timer.deadline = now + phase_durations_.transition;
+  record.timer.paused_remaining = phase_durations_.transition;
+  record.timer.warning_30_fired = false;
+  record.timer.warning_10_fired = false;
+
+  const auto members = get_match_members(record);
+  const auto& st = record.match->state();
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      network::json{{"type", "server_event"}, {"event", "transition_interval"},
+                    {"match_id", match_id}, {"round", st.round},
+                    {"upcoming_phase", Match::to_string(upcoming)},
+                    {"seconds_remaining", static_cast<std::uint64_t>(phase_durations_.transition.count())},
+                    {"state_version", record.state_version}}});
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                           record.timer, now, record.is_aborted)});
+}
+
+OperationResult MatchCoordinator::apply_open_voting(std::uint64_t match_id, MatchRecord& record,
+                                                    std::chrono::steady_clock::time_point now) {
+  const auto result = record.match->open_voting();
+  if (!result) return result;
+  ++record.state_version;
+  record.timer.active = true;
+  record.timer.paused = false;
+  record.timer.in_transition = false;
+  record.timer.phase = Phase::Voting;
+  record.timer.total_duration = phase_durations_.voting;
+  record.timer.deadline = now + phase_durations_.voting;
+  record.timer.paused_remaining = phase_durations_.voting;
+  record.timer.warning_30_fired = false;
+  record.timer.warning_10_fired = false;
+
+  const auto members = get_match_members(record);
+  const auto& st = record.match->state();
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      network::json{{"type", "server_event"}, {"event", "phase_started"},
+                    {"match_id", match_id}, {"round", st.round},
+                    {"phase", Match::to_string(st.phase)},
+                    {"seconds_remaining", static_cast<std::uint64_t>(phase_durations_.voting.count())},
+                    {"state_version", record.state_version}}});
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                           record.timer, now, record.is_aborted)});
+  return result;
+}
+
+VoteResolution MatchCoordinator::apply_resolve_votes(std::uint64_t match_id, MatchRecord& record,
+                                                     std::chrono::steady_clock::time_point now) {
+  const auto vote_round = record.match->state().round;
+  auto result = record.match->resolve_votes();
+  if (!result) return result;
+  record.last_vote = *result.value;
+  const auto& vote = *result.value;
+  ++record.state_version;
+  record.timer.active = false;
+  const auto members = get_match_members(record);
+  const auto& st = record.match->state();
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      network::json{{"type", "server_event"}, {"event", "vote_resolved"},
+                    {"match_id", match_id}, {"round", vote_round},
+                    {"phase", "Voting"},
+                    {"eliminated_player", vote.eliminated ? network::json(*vote.eliminated) : network::json(nullptr)},
+                    {"votes_received", vote.votes_received},
+                    {"eligible_voters", vote.eligible_voters},
+                    {"outcome", Match::to_string(vote.outcome)},
+                    {"state_version", record.state_version}}});
+  if (st.phase == Phase::Finished) {
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_finished"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", "Finished"},
+                      {"outcome", Match::to_string(st.outcome)},
+                      {"state_version", record.state_version}}});
+  } else {
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "round_started"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"state_version", record.state_version}}});
+  }
+  pending_notifications_.push_back(OutgoingNotification{
+      members,
+      make_market_snapshot(match_id, record.state_version, st, record.last_market,
+                           record.timer, now, record.is_aborted)});
+  return result;
+}
+
+void MatchCoordinator::tick(std::optional<std::chrono::steady_clock::time_point> now) {
+  if (now) {
+    simulated_time_ = *now;
+  }
+  const auto current = now_();
+
+  for (auto& [match_id, record] : matches_) {
+    if (record.is_aborted || record.timer.paused || !record.timer.active) {
+      continue;
+    }
+    const auto& st = record.match->state();
+    if (st.phase == Phase::Finished) {
+      record.timer.active = false;
+      continue;
+    }
+
+    if (current < record.timer.deadline) {
+      if (!record.timer.in_transition) {
+        const auto remaining_sec = std::chrono::duration_cast<std::chrono::seconds>(
+            record.timer.deadline - current).count();
+        const auto members = get_match_members(record);
+
+        if (remaining_sec <= 30 && !record.timer.warning_30_fired &&
+            record.timer.total_duration > std::chrono::seconds(30)) {
+          record.timer.warning_30_fired = true;
+          pending_notifications_.push_back(OutgoingNotification{
+              members,
+              network::json{{"type", "server_event"},
+                            {"event", "phase_warning"},
+                            {"match_id", match_id},
+                            {"round", st.round},
+                            {"phase", Match::to_string(st.phase)},
+                            {"seconds_remaining", 30},
+                            {"state_version", record.state_version}}});
+        }
+
+        if (remaining_sec <= 10 && !record.timer.warning_10_fired &&
+            record.timer.total_duration >= std::chrono::seconds(10)) {
+          record.timer.warning_10_fired = true;
+          pending_notifications_.push_back(OutgoingNotification{
+              members,
+              network::json{{"type", "server_event"},
+                            {"event", "phase_warning"},
+                            {"match_id", match_id},
+                            {"round", st.round},
+                            {"phase", Match::to_string(st.phase)},
+                            {"seconds_remaining", 10},
+                            {"state_version", record.state_version}}});
+        }
+      }
+    } else {
+      // Deadline reached or exceeded!
+      // Ensure 10-second warning is ordered before transition entry when both become observable at the same tick
+      if (st.phase == Phase::Clue && !record.timer.in_transition) {
+        if (!record.timer.warning_10_fired) {
+          record.timer.warning_10_fired = true;
+          const auto members = get_match_members(record);
+          pending_notifications_.push_back(OutgoingNotification{
+              members,
+              network::json{{"type", "server_event"},
+                            {"event", "phase_warning"},
+                            {"match_id", match_id},
+                            {"round", st.round},
+                            {"phase", Match::to_string(st.phase)},
+                            {"seconds_remaining", 10},
+                            {"state_version", record.state_version}}});
+        }
+      }
+
+      record.timer.active = false;
+      if (record.timer.in_transition) {
+        record.timer.in_transition = false;
+        if (record.timer.upcoming_phase == Phase::Voting) {
+          apply_open_voting(match_id, record, current);
+        } else if (record.timer.upcoming_phase == Phase::Trading) {
+          apply_open_trading(match_id, record, current);
+        }
+      } else {
+        if (st.phase == Phase::Discussion) {
+          apply_open_trading(match_id, record, current);
+        } else if (st.phase == Phase::Trading) {
+          apply_resolve_market(match_id, record, current);
+        } else if (st.phase == Phase::Clue) {
+          // Automatic 10-second transition interval to Voting on Clue expiry
+          start_transition_interval(match_id, record, Phase::Voting, current);
+        } else if (st.phase == Phase::Voting) {
+          apply_resolve_votes(match_id, record, current);
+        }
+      }
+    }
+  }
+}
+
 std::optional<network::json> MatchCoordinator::handle(
     std::uint64_t session, const network::json& command) {
   if (!command.is_object() || !command.contains("type") || !command["type"].is_string()) {
@@ -210,7 +603,9 @@ std::optional<network::json> MatchCoordinator::handle(
       type == "start_match" || type == "match_status" || type == "publish_event" ||
       type == "open_trading" || type == "resolve_market" || type == "trade" ||
       type == "request_clue" || type == "open_voting" || type == "vote" ||
-      type == "resolve_votes" || type == "insider_hint";
+      type == "resolve_votes" || type == "insider_hint" ||
+      type == "research" || type == "scout" ||
+      type == "pause" || type == "resume" || type == "abort";
   if (!coordinator_command) return std::nullopt;
 
   const auto connection = sessions_.find(session);
@@ -238,10 +633,10 @@ std::optional<network::json> MatchCoordinator::handle(
       roster.push_back(PlayerSetup{static_cast<PlayerId>(i + 1U), assigned_roles[i]});
     }
     try {
-      auto match = std::make_unique<Match>(roster);
+      auto match = std::make_unique<Match>(roster, default_market_coefficients_);
       const auto match_id = next_match_id_++;
       MatchRecord record{std::move(match), session,
-          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt};
+          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt, 1U, false, {}};
       matches_.emplace(match_id, std::move(record));
       connection->second.moderator_matches.push_back(match_id);
       return network::json{{"type", "match_created"}, {"match_id", match_id},
@@ -262,6 +657,7 @@ std::optional<network::json> MatchCoordinator::handle(
     if (connection->second.role != SessionRole::Player) return error("player permission required");
     if (has_client_identity(command)) return error("client identity fields are not accepted");
     if (connection->second.player_match) return error("connection already belongs to a match");
+    if (match->second.is_aborted) return error("match has been aborted");
     if (match->second.match->state().phase != Phase::Lobby) return error("match is not joinable");
     for (std::size_t seat = 0; seat < match->second.player_sessions.size(); ++seat) {
       if (!match->second.player_sessions[seat]) {
@@ -270,6 +666,11 @@ std::optional<network::json> MatchCoordinator::handle(
         connection->second.player_match = match_id;
         connection->second.player_id = player_id;
         const auto role = match->second.match->state().players[seat].role;
+        pending_notifications_.push_back(OutgoingNotification{
+            {session},
+            make_market_snapshot(match_id, match->second.state_version,
+                                 match->second.match->state(), match->second.last_market,
+                                 match->second.timer, now_(), match->second.is_aborted)});
         return network::json{{"type", "joined_match"}, {"match_id", match_id},
                              {"player_id", player_id}, {"seat", seat + 1U},
                              {"private_role", Match::to_string(role)}};
@@ -279,11 +680,24 @@ std::optional<network::json> MatchCoordinator::handle(
   }
 
   if (!is_member(session, match_id)) return error("connection is not a member of target match");
+
+  if (match->second.is_aborted) {
+    if (type == "match_status") {
+      const auto joined = static_cast<std::size_t>(std::count_if(match->second.player_sessions.begin(),
+          match->second.player_sessions.end(), [](const auto& item) { return item.has_value(); }));
+      return public_status(match_id, match->second.state_version, match->second.match->state(), joined,
+                           match->second.player_sessions.size(),
+                           match->second.last_market, match->second.last_vote,
+                           match->second.timer, now_(), match->second.is_aborted);
+    }
+    return error("match has been aborted");
+  }
+
   const bool player_command = type == "trade" || type == "request_clue" ||
-      type == "vote" || type == "insider_hint";
+      type == "vote" || type == "insider_hint" || type == "research" || type == "scout";
   const bool moderator_command = type == "start_match" || type == "publish_event" ||
       type == "open_trading" || type == "resolve_market" || type == "open_voting" ||
-      type == "resolve_votes";
+      type == "resolve_votes" || type == "pause" || type == "resume" || type == "abort";
   if (player_command && connection->second.role != SessionRole::Player) {
     return error("player permission required");
   }
@@ -295,9 +709,10 @@ std::optional<network::json> MatchCoordinator::handle(
   if (type == "match_status") {
     const auto joined = static_cast<std::size_t>(std::count_if(match->second.player_sessions.begin(),
         match->second.player_sessions.end(), [](const auto& item) { return item.has_value(); }));
-    return public_status(match_id, match->second.match->state(), joined,
+    return public_status(match_id, match->second.state_version, match->second.match->state(), joined,
                          match->second.player_sessions.size(),
-                         match->second.last_market, match->second.last_vote);
+                         match->second.last_market, match->second.last_vote,
+                         match->second.timer, now_(), match->second.is_aborted);
   }
 
   const auto player_id = connection->second.player_id;
@@ -309,21 +724,77 @@ std::optional<network::json> MatchCoordinator::handle(
     }
     const auto result = match->second.match->start();
     if (!result) return operation_error(result);
+    ++match->second.state_version;
+    const auto members = get_match_members(match->second);
+    const auto& st = match->second.match->state();
+    const auto now = now_();
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_started"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"state_version", match->second.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, match->second.state_version, st, match->second.last_market,
+                             match->second.timer, now, match->second.is_aborted)});
     return network::json{{"type", "transition_result"}, {"ok", true},
                          {"phase", Match::to_string(match->second.match->state().phase)}};
   }
   if (type == "publish_event") {
+    if (match->second.timer.paused) return error("match is paused");
     const auto impact = read_impact(command);
     if (!impact) return error("integer impact in [-2,2] is required");
     const auto result = match->second.match->publish_event(*impact);
+    if (!result) return operation_error(result);
+    ++match->second.state_version;
+    const auto now = now_();
+    match->second.timer.active = true;
+    match->second.timer.paused = false;
+    match->second.timer.phase = Phase::Discussion;
+    match->second.timer.total_duration = phase_durations_.discussion;
+    match->second.timer.deadline = now + phase_durations_.discussion;
+    match->second.timer.paused_remaining = phase_durations_.discussion;
+    match->second.timer.warning_30_fired = false;
+    match->second.timer.warning_10_fired = false;
+
+    const auto members = get_match_members(match->second);
+    const auto& st = match->second.match->state();
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "phase_started"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"seconds_remaining", static_cast<std::uint64_t>(phase_durations_.discussion.count())},
+                      {"state_version", match->second.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, match->second.state_version, st, match->second.last_market,
+                             match->second.timer, now, match->second.is_aborted)});
+    return network::json{{"type", "transition_result"}, {"ok", true},
+                         {"phase", Match::to_string(match->second.match->state().phase)},
+                         {"round", match->second.match->state().round}};
+  }
+  if (type == "open_trading") {
+    if (match->second.timer.paused) return error("match is paused");
+    const auto result = apply_open_trading(match_id, match->second, now_());
     if (!result) return operation_error(result);
     return network::json{{"type", "transition_result"}, {"ok", true},
                          {"phase", Match::to_string(match->second.match->state().phase)},
                          {"round", match->second.match->state().round}};
   }
-  if (type == "open_trading" || type == "open_voting") {
-    const auto result = type == "open_trading" ? match->second.match->open_trading()
-                                                  : match->second.match->open_voting();
+  if (type == "open_voting") {
+    if (match->second.timer.paused) return error("match is paused");
+    if (command.value("with_transition", false)) {
+      if (match->second.timer.in_transition) return error("transition interval already active");
+      start_transition_interval(match_id, match->second, Phase::Voting, now_());
+      return network::json{{"type", "transition_result"}, {"ok", true},
+                           {"phase", Match::to_string(match->second.match->state().phase)},
+                           {"upcoming_phase", "Voting"},
+                           {"in_transition", true},
+                           {"round", match->second.match->state().round}};
+    }
+    const auto result = apply_open_voting(match_id, match->second, now_());
     if (!result) return operation_error(result);
     return network::json{{"type", "transition_result"}, {"ok", true},
                          {"phase", Match::to_string(match->second.match->state().phase)},
@@ -337,14 +808,27 @@ std::optional<network::json> MatchCoordinator::handle(
     else if (action_name == "SELL") action = TradeAction::Sell;
     else if (action_name == "HOLD") action = TradeAction::Hold;
     else return error("action must be BUY, SELL, or HOLD");
-    const auto result = match->second.match->submit_trade(*player_id, action);
+
+    Shares quantity = 1;
+    if (command.contains("quantity")) {
+      if (!command["quantity"].is_number_integer() && !command["quantity"].is_number_unsigned()) {
+        return error("quantity must be a positive integer");
+      }
+      const auto raw_qty = command["quantity"].get<std::int64_t>();
+      if (raw_qty <= 0 || static_cast<std::uint64_t>(raw_qty) > std::numeric_limits<Shares>::max()) {
+        return error("quantity must be a positive integer");
+      }
+      quantity = static_cast<Shares>(raw_qty);
+    }
+
+    const auto result = match->second.match->submit_trade(*player_id, action, quantity);
     if (!result) return operation_error(result);
-    return network::json{{"type", "trade_result"}, {"ok", true}, {"code", "Accepted"}};
+    return network::json{{"type", "trade_result"}, {"ok", true}, {"code", "Accepted"}, {"quantity", quantity}};
   }
   if (type == "resolve_market") {
-    auto result = match->second.match->resolve_market();
+    if (match->second.timer.paused) return error("match is paused");
+    auto result = apply_resolve_market(match_id, match->second, now_());
     if (!result) return operation_error(result.status);
-    match->second.last_market = *result.value;
     const auto& market = *result.value;
     return network::json{{"type", "market_result"}, {"ok", true},
         {"executed_buys", market.executed_buys}, {"executed_sells", market.executed_sells},
@@ -353,6 +837,9 @@ std::optional<network::json> MatchCoordinator::handle(
   }
   if (type == "request_clue") {
     if (!player_id) return error("player membership required");
+    if (match->second.timer.in_transition || match->second.match->state().phase != Phase::Clue) {
+      return error("clue phase has ended");
+    }
     const auto target = read_player_target(command, "target_id", false);
     if (!target) return error("valid target_id is required");
     OperationResult result;
@@ -374,9 +861,9 @@ std::optional<network::json> MatchCoordinator::handle(
     return network::json{{"type", "vote_result"}, {"ok", true}, {"accepted", true}};
   }
   if (type == "resolve_votes") {
-    auto result = match->second.match->resolve_votes();
+    if (match->second.timer.paused) return error("match is paused");
+    auto result = apply_resolve_votes(match_id, match->second, now_());
     if (!result) return operation_error(result.status);
-    match->second.last_vote = *result.value;
     const auto& vote = *result.value;
     return network::json{{"type", "vote_resolution"}, {"ok", true},
         {"eliminated_player", vote.eliminated ? network::json(*vote.eliminated) : network::json(nullptr)},
@@ -390,6 +877,109 @@ std::optional<network::json> MatchCoordinator::handle(
     if (!result) return operation_error(result);
     if (!hint) return error("hint operation returned no result");
     return network::json{{"type", "hint_private"}, {"match_id", match_id}, {"event_impact", *hint}};
+  }
+  if (type == "research" || type == "scout") {
+    if (!player_id) return error("player membership required");
+    OperationResult op_result;
+    const auto outcome = match->second.match->conduct_research(*player_id, op_result);
+    if (!op_result) return operation_error(op_result);
+    if (!outcome) return error("research operation returned no result");
+    return network::json{{"type", "research_result"},
+                         {"ok", true},
+                         {"match_id", match_id},
+                         {"direction", outcome->direction},
+                         {"already_used", outcome->already_used},
+                         {"credits_remaining", outcome->credits_remaining}};
+  }
+  if (type == "pause") {
+    if (match->second.is_aborted || match->second.match->state().phase == Phase::Finished) {
+      return error("match is already finished");
+    }
+    if (match->second.match->state().phase == Phase::Lobby) {
+      return error("match has not started");
+    }
+    if (match->second.timer.paused) return error("match is already paused");
+
+    match->second.timer.paused = true;
+    const auto now = now_();
+    if (match->second.timer.active && match->second.timer.deadline > now) {
+      match->second.timer.paused_remaining =
+          std::chrono::duration_cast<std::chrono::milliseconds>(match->second.timer.deadline - now);
+    } else {
+      match->second.timer.paused_remaining = std::chrono::milliseconds{0};
+    }
+    ++match->second.state_version;
+    const auto members = get_match_members(match->second);
+    const auto& st = match->second.match->state();
+    const auto sec_rem = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(match->second.timer.paused_remaining).count());
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_paused"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"seconds_remaining", sec_rem},
+                      {"state_version", match->second.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, match->second.state_version, st, match->second.last_market,
+                             match->second.timer, now, match->second.is_aborted)});
+    return network::json{{"type", "pause_result"}, {"ok", true},
+                         {"match_id", match_id}, {"seconds_remaining", sec_rem}};
+  }
+  if (type == "resume") {
+    if (match->second.is_aborted || match->second.match->state().phase == Phase::Finished) {
+      return error("match is already finished");
+    }
+    if (!match->second.timer.paused) return error("match is not paused");
+
+    match->second.timer.paused = false;
+    const auto now = now_();
+    if (match->second.timer.active) {
+      match->second.timer.deadline = now + match->second.timer.paused_remaining;
+    }
+    ++match->second.state_version;
+    const auto members = get_match_members(match->second);
+    const auto& st = match->second.match->state();
+    const auto sec_rem = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::seconds>(match->second.timer.paused_remaining).count());
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_resumed"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", Match::to_string(st.phase)},
+                      {"seconds_remaining", sec_rem},
+                      {"state_version", match->second.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, match->second.state_version, st, match->second.last_market,
+                             match->second.timer, now, match->second.is_aborted)});
+    return network::json{{"type", "resume_result"}, {"ok", true},
+                         {"match_id", match_id}, {"seconds_remaining", sec_rem}};
+  }
+  if (type == "abort") {
+    if (match->second.is_aborted || match->second.match->state().phase == Phase::Finished) {
+      return error("match is already finished");
+    }
+    match->second.is_aborted = true;
+    match->second.timer.active = false;
+    match->second.timer.paused = false;
+    match->second.timer.in_transition = false;
+    ++match->second.state_version;
+    const auto members = get_match_members(match->second);
+    const auto& st = match->second.match->state();
+    const auto now = now_();
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        network::json{{"type", "server_event"}, {"event", "match_aborted"},
+                      {"match_id", match_id}, {"round", st.round},
+                      {"phase", "Finished"}, {"outcome", "Aborted"},
+                      {"state_version", match->second.state_version}}});
+    pending_notifications_.push_back(OutgoingNotification{
+        members,
+        make_market_snapshot(match_id, match->second.state_version, st, match->second.last_market,
+                             match->second.timer, now, match->second.is_aborted)});
+    return network::json{{"type", "abort_result"}, {"ok", true}, {"match_id", match_id}};
   }
   return error("unsupported command");
 }

@@ -73,9 +73,7 @@ bool receive_echo(int fd, const json& payload) {
   return echoed && consumed == bytes.size() && echoed->payload() == payload;
 }
 
-std::optional<json> request_json(int fd, const json& payload) {
-  const auto outgoing = Frame(payload).serialize();
-  if (!send_all(fd, outgoing.data(), outgoing.size(), false)) return std::nullopt;
+std::optional<json> read_single_frame(int fd) {
   char header[4];
   if (!receive_exact(fd, header, sizeof(header))) return std::nullopt;
   const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
@@ -94,6 +92,22 @@ std::optional<json> request_json(int fd, const json& payload) {
     return response->payload();
   } catch (const std::exception&) {
     return std::nullopt;
+  }
+}
+
+std::optional<json> request_json(int fd, const json& payload) {
+  const auto outgoing = Frame(payload).serialize();
+  if (!send_all(fd, outgoing.data(), outgoing.size(), false)) return std::nullopt;
+  while (true) {
+    auto frame = read_single_frame(fd);
+    if (!frame) return std::nullopt;
+    if (frame->is_object()) {
+      const auto t = frame->value("type", "");
+      if (t == "server_event" || t == "market_snapshot") {
+        continue;
+      }
+    }
+    return frame;
   }
 }
 
@@ -1403,6 +1417,151 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
       CHECK(::lstat(malformed_path.c_str(), &st) != 0 && errno == ENOENT);
     }
   }
+
+  // 6. Asynchronous push notifications and moderator controls over UNIX domain socket
+  {
+    const std::string notif_path = "/tmp/darkpool_test_notif_" + pid_str + ".sock";
+    (void)::unlink(notif_path.c_str());
+
+    const auto child = start_unix_server(server_path, notif_path, "mod-token-unix-notif");
+    CHECK(child >= 0);
+    if (child >= 0) {
+      const int mod_fd = connect_unix_with_retry(notif_path);
+      CHECK(mod_fd >= 0);
+      if (mod_fd >= 0) {
+        set_receive_timeout(mod_fd, 3000);
+        const auto mod_resp = request_json(
+            mod_fd,
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-unix-notif"}});
+        CHECK(mod_resp && (*mod_resp)["type"] == "connect");
+
+        const auto create_resp = request_json(
+            mod_fd, json{{"type", "create_match"}, {"player_count", 5U}});
+        CHECK(create_resp && (*create_resp)["type"] == "match_created");
+        const auto match_id = (*create_resp)["match_id"].get<uint64_t>();
+
+        const int player_fd = connect_unix_with_retry(notif_path);
+        CHECK(player_fd >= 0);
+        if (player_fd >= 0) {
+          set_receive_timeout(player_fd, 3000);
+          const auto p_conn = request_json(
+              player_fd, json{{"type", "connect"}, {"role", "player"}});
+          CHECK(p_conn && (*p_conn)["type"] == "connect");
+
+          // Player joins match over unix socket
+          const auto join_bytes = Frame(json{{"type", "join_match"}, {"match_id", match_id}}).serialize();
+          CHECK(send_all(player_fd, join_bytes.data(), join_bytes.size(), false));
+
+          // Player receives joined_match response first
+          const auto join_resp = read_single_frame(player_fd);
+          CHECK(join_resp && (*join_resp)["type"] == "joined_match");
+
+          // Player receives initial market_snapshot pushed over unix socket
+          const auto init_snap = read_single_frame(player_fd);
+          CHECK(init_snap && (*init_snap)["type"] == "market_snapshot");
+          CHECK(init_snap && (*init_snap)["phase"] == "Lobby");
+
+          // Connect 4 more players so match can start
+          std::vector<int> extra_players;
+          for (int i = 2; i <= 5; ++i) {
+            const int efd = connect_unix_with_retry(notif_path);
+            CHECK(efd >= 0);
+            extra_players.push_back(efd);
+            (void)request_json(efd, json{{"type", "connect"}, {"role", "player"}});
+            (void)request_json(efd, json{{"type", "join_match"}, {"match_id", match_id}});
+          }
+
+          // Moderator starts match
+          const auto start_bytes = Frame(json{{"type", "start_match"}, {"match_id", match_id}}).serialize();
+          CHECK(send_all(mod_fd, start_bytes.data(), start_bytes.size(), false));
+          const auto mod_start = read_single_frame(mod_fd);
+          CHECK(mod_start && (*mod_start)["type"] == "transition_result");
+          (void)read_single_frame(mod_fd); // mod server_event
+          (void)read_single_frame(mod_fd); // mod market_snapshot
+
+          // Player 1 receives pushed match_started event and market_snapshot while idle over unix socket!
+          const auto p_start_ev = read_single_frame(player_fd);
+          CHECK(p_start_ev && (*p_start_ev)["type"] == "server_event" && (*p_start_ev)["event"] == "match_started");
+          const auto p_start_snap = read_single_frame(player_fd);
+          CHECK(p_start_snap && (*p_start_snap)["type"] == "market_snapshot" && (*p_start_snap)["phase"] == "AwaitingEvent");
+
+          // Moderator publishes event
+          const auto pub_bytes = Frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}).serialize();
+          CHECK(send_all(mod_fd, pub_bytes.data(), pub_bytes.size(), false));
+          const auto mod_pub = read_single_frame(mod_fd);
+          CHECK(mod_pub && (*mod_pub)["type"] == "transition_result");
+          (void)read_single_frame(mod_fd); // mod server_event
+          (void)read_single_frame(mod_fd); // mod market_snapshot
+
+          // Player 1 receives phase_started (Discussion) and snapshot pushed over unix socket
+          const auto p_disc_ev = read_single_frame(player_fd);
+          CHECK(p_disc_ev && (*p_disc_ev)["type"] == "server_event" && (*p_disc_ev)["phase"] == "Discussion");
+          const auto p_disc_snap = read_single_frame(player_fd);
+          CHECK(p_disc_snap && (*p_disc_snap)["type"] == "market_snapshot" && (*p_disc_snap)["phase"] == "Discussion");
+
+          // Moderator pauses match over unix socket
+          const auto pause_bytes = Frame(json{{"type", "pause"}, {"match_id", match_id}}).serialize();
+          CHECK(send_all(mod_fd, pause_bytes.data(), pause_bytes.size(), false));
+          const auto mod_pause = read_single_frame(mod_fd);
+          CHECK(mod_pause && (*mod_pause)["type"] == "pause_result" && (*mod_pause)["ok"]);
+          (void)read_single_frame(mod_fd); // mod server_event
+          (void)read_single_frame(mod_fd); // mod market_snapshot
+
+          // Player 1 receives match_paused and snapshot with is_paused == true over unix socket
+          const auto p_pause_ev = read_single_frame(player_fd);
+          CHECK(p_pause_ev && (*p_pause_ev)["type"] == "server_event" && (*p_pause_ev)["event"] == "match_paused");
+          const auto p_pause_snap = read_single_frame(player_fd);
+          CHECK(p_pause_snap && (*p_pause_snap)["type"] == "market_snapshot" && (*p_pause_snap)["is_paused"] == true);
+
+          // Player 1 sends command during pause (match_status) -> receives correlated response
+          const auto p_st_req = request_json(player_fd, json{{"type", "match_status"}, {"match_id", match_id}});
+          CHECK(p_st_req && (*p_st_req)["type"] == "match_status" && (*p_st_req)["is_paused"] == true);
+
+          // Moderator resumes match over unix socket
+          const auto resume_bytes = Frame(json{{"type", "resume"}, {"match_id", match_id}}).serialize();
+          CHECK(send_all(mod_fd, resume_bytes.data(), resume_bytes.size(), false));
+          const auto mod_resume = read_single_frame(mod_fd);
+          CHECK(mod_resume && (*mod_resume)["type"] == "resume_result" && (*mod_resume)["ok"]);
+          (void)read_single_frame(mod_fd); // mod server_event
+          (void)read_single_frame(mod_fd); // mod market_snapshot
+
+          // Player 1 receives match_resumed and snapshot with is_paused == false over unix socket
+          const auto p_resume_ev = read_single_frame(player_fd);
+          CHECK(p_resume_ev && (*p_resume_ev)["type"] == "server_event" && (*p_resume_ev)["event"] == "match_resumed");
+          const auto p_resume_snap = read_single_frame(player_fd);
+          CHECK(p_resume_snap && (*p_resume_snap)["type"] == "market_snapshot" && (*p_resume_snap)["is_paused"] == false);
+
+          // Moderator aborts match over unix socket
+          const auto abort_bytes = Frame(json{{"type", "abort"}, {"match_id", match_id}}).serialize();
+          CHECK(send_all(mod_fd, abort_bytes.data(), abort_bytes.size(), false));
+          const auto mod_abort = read_single_frame(mod_fd);
+          CHECK(mod_abort && (*mod_abort)["type"] == "abort_result" && (*mod_abort)["ok"]);
+          (void)read_single_frame(mod_fd); // mod server_event
+          (void)read_single_frame(mod_fd); // mod market_snapshot
+
+          // Player 1 receives match_aborted and terminal snapshot with outcome Aborted
+          const auto p_abort_ev = read_single_frame(player_fd);
+          CHECK(p_abort_ev && (*p_abort_ev)["type"] == "server_event" && (*p_abort_ev)["event"] == "match_aborted");
+          const auto p_abort_snap = read_single_frame(player_fd);
+          CHECK(p_abort_snap && (*p_abort_snap)["type"] == "market_snapshot" && (*p_abort_snap)["outcome"] == "Aborted");
+
+          // Post-abort command over unix socket is rejected
+          const auto post_cmd = request_json(player_fd, json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}});
+          CHECK(post_cmd && (*post_cmd)["type"] == "error");
+
+          for (const auto fd : extra_players) (void)close(fd);
+          (void)close(player_fd);
+        }
+        (void)close(mod_fd);
+      }
+
+      CHECK(kill(child, SIGTERM) == 0);
+      int status = 0;
+      CHECK(waitpid(child, &status, 0) == child);
+      struct stat st {};
+      CHECK(::lstat(notif_path.c_str(), &st) != 0 && errno == ENOENT);
+    }
+  }
 }
 
 int run_server_exit_code(const char* server_path, const std::vector<std::string>& args) {
@@ -1794,11 +1953,224 @@ void test_min_player_and_boundary_rejection(const char* server_path) {
   cleanup();
 }
 
+void test_notifications_and_market_snapshots(const char* server_path) {
+  std::cout << "Running test_notifications_and_market_snapshots...\n";
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+  const auto child = start_server(server_path, port, "notif-test-token");
+  CHECK(child >= 0);
+  if (child < 0) return;
+
+  std::vector<int> connected;
+  const auto cleanup = [&]() {
+    for (const auto fd : connected) (void)close(fd);
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  const int moderator = connect_with_retry(port);
+  CHECK(moderator >= 0);
+  if (moderator < 0) { cleanup(); return; }
+  connected.push_back(moderator);
+  set_receive_timeout(moderator, 3000);
+
+  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "notif-test-token"}});
+  CHECK(mod_hello && (*mod_hello)["type"] == "connect");
+
+  const auto create_resp = request_json(moderator, json{{"type", "create_match"}, {"player_count", 5}});
+  CHECK(create_resp && (*create_resp)["type"] == "match_created");
+  const auto match_id = (*create_resp)["match_id"].get<std::uint64_t>();
+
+  std::vector<int> players;
+  for (std::size_t i = 0; i < 5; ++i) {
+    const int pfd = connect_with_retry(port);
+    CHECK(pfd >= 0);
+    if (pfd < 0) { cleanup(); return; }
+    connected.push_back(pfd);
+    players.push_back(pfd);
+    set_receive_timeout(pfd, 3000);
+
+    const auto p_hello = request_json(pfd, json{{"type", "connect"}, {"role", "player"}});
+    CHECK(p_hello && (*p_hello)["type"] == "connect");
+
+    // Send join_match
+    const auto join_outgoing = Frame(json{{"type", "join_match"}, {"match_id", match_id}}).serialize();
+    CHECK(send_all(pfd, join_outgoing.data(), join_outgoing.size(), false));
+
+    // Player must receive joined_match response first
+    const auto join_resp = read_single_frame(pfd);
+    CHECK(join_resp && (*join_resp)["type"] == "joined_match");
+    CHECK(join_resp && (*join_resp)["match_id"] == match_id);
+    CHECK(join_resp && (*join_resp)["player_id"] == i + 1U);
+
+    // Player must immediately receive initial market snapshot pushed without polling status!
+    const auto init_snapshot = read_single_frame(pfd);
+    CHECK(init_snapshot && (*init_snapshot)["type"] == "market_snapshot");
+    CHECK(init_snapshot && (*init_snapshot)["match_id"] == match_id);
+    CHECK(init_snapshot && (*init_snapshot)["state_version"] == 1U);
+    CHECK(init_snapshot && (*init_snapshot)["phase"] == "Lobby");
+    CHECK(init_snapshot && (*init_snapshot)["round"] == 0U);
+    CHECK(init_snapshot && (*init_snapshot)["health"] == 5);
+    CHECK(init_snapshot && (*init_snapshot)["price"] == 10);
+    CHECK(init_snapshot && (*init_snapshot)["total_supply"] == 100U);
+    CHECK(init_snapshot && (*init_snapshot)["reserve"] == 50U);
+    CHECK(init_snapshot && (*init_snapshot)["shares_held_by_players"] == 50U);
+    CHECK(init_snapshot && (*init_snapshot)["outcome"] == "None");
+  }
+
+  // Moderator starts the match
+  const auto start_outgoing = Frame(json{{"type", "start_match"}, {"match_id", match_id}}).serialize();
+  CHECK(send_all(moderator, start_outgoing.data(), start_outgoing.size(), false));
+
+  // Moderator gets transition_result first
+  const auto start_resp = read_single_frame(moderator);
+  CHECK(start_resp && (*start_resp)["type"] == "transition_result" && (*start_resp)["ok"]);
+
+  // Moderator gets pushed match_started event and market snapshot
+  const auto mod_ev = read_single_frame(moderator);
+  CHECK(mod_ev && (*mod_ev)["type"] == "server_event" && (*mod_ev)["event"] == "match_started");
+  CHECK(mod_ev && (*mod_ev)["state_version"] == 2U);
+  const auto mod_snap = read_single_frame(moderator);
+  CHECK(mod_snap && (*mod_snap)["type"] == "market_snapshot" && (*mod_snap)["state_version"] == 2U);
+
+  // ALL 5 players receive match_started event and market_snapshot pushed while idle!
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "match_started");
+    CHECK(p_ev && (*p_ev)["match_id"] == match_id);
+    CHECK(p_ev && (*p_ev)["round"] == 1U);
+    CHECK(p_ev && (*p_ev)["phase"] == "AwaitingEvent");
+    CHECK(p_ev && (*p_ev)["state_version"] == 2U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["match_id"] == match_id);
+    CHECK(p_snap && (*p_snap)["round"] == 1U);
+    CHECK(p_snap && (*p_snap)["phase"] == "AwaitingEvent");
+    CHECK(p_snap && (*p_snap)["state_version"] == 2U);
+  }
+
+  // Moderator publishes event (impact 0)
+  const auto pub_outgoing = Frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}}).serialize();
+  CHECK(send_all(moderator, pub_outgoing.data(), pub_outgoing.size(), false));
+  const auto pub_resp = read_single_frame(moderator);
+  CHECK(pub_resp && (*pub_resp)["type"] == "transition_result" && (*pub_resp)["ok"]);
+  (void)read_single_frame(moderator); // mod server_event
+  (void)read_single_frame(moderator); // mod market_snapshot
+
+  // All 5 players receive phase_started (Discussion) and market_snapshot
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "phase_started");
+    CHECK(p_ev && (*p_ev)["phase"] == "Discussion");
+    CHECK(p_ev && (*p_ev)["state_version"] == 3U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["phase"] == "Discussion");
+    CHECK(p_snap && (*p_snap)["state_version"] == 3U);
+  }
+
+  // Moderator opens trading
+  const auto tr_outgoing = Frame(json{{"type", "open_trading"}, {"match_id", match_id}}).serialize();
+  CHECK(send_all(moderator, tr_outgoing.data(), tr_outgoing.size(), false));
+  const auto tr_resp = read_single_frame(moderator);
+  CHECK(tr_resp && (*tr_resp)["type"] == "transition_result" && (*tr_resp)["ok"]);
+  (void)read_single_frame(moderator); // mod server_event
+  (void)read_single_frame(moderator); // mod market_snapshot
+
+  // All 5 players receive phase_started (Trading) and market_snapshot
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "phase_started");
+    CHECK(p_ev && (*p_ev)["phase"] == "Trading");
+    CHECK(p_ev && (*p_ev)["state_version"] == 4U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["phase"] == "Trading");
+    CHECK(p_snap && (*p_snap)["state_version"] == 4U);
+  }
+
+  // Stage 3: Test pause, resume, abort push notification delivery over TCP
+  // 1. Moderator pauses match
+  const auto pause_outgoing = Frame(json{{"type", "pause"}, {"match_id", match_id}}).serialize();
+  CHECK(send_all(moderator, pause_outgoing.data(), pause_outgoing.size(), false));
+  const auto pause_resp = read_single_frame(moderator);
+  CHECK(pause_resp && (*pause_resp)["type"] == "pause_result" && (*pause_resp)["ok"]);
+  (void)read_single_frame(moderator); // mod server_event (match_paused)
+  (void)read_single_frame(moderator); // mod market_snapshot
+
+  // All 5 players receive match_paused and market_snapshot with is_paused == true
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "match_paused");
+    CHECK(p_ev && (*p_ev)["state_version"] == 5U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["is_paused"] == true);
+    CHECK(p_snap && (*p_snap)["state_version"] == 5U);
+  }
+
+  // 2. Moderator resumes match
+  const auto resume_outgoing = Frame(json{{"type", "resume"}, {"match_id", match_id}}).serialize();
+  CHECK(send_all(moderator, resume_outgoing.data(), resume_outgoing.size(), false));
+  const auto resume_resp = read_single_frame(moderator);
+  CHECK(resume_resp && (*resume_resp)["type"] == "resume_result" && (*resume_resp)["ok"]);
+  (void)read_single_frame(moderator); // mod server_event (match_resumed)
+  (void)read_single_frame(moderator); // mod market_snapshot
+
+  // All 5 players receive match_resumed and market_snapshot with is_paused == false
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "match_resumed");
+    CHECK(p_ev && (*p_ev)["state_version"] == 6U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["is_paused"] == false);
+    CHECK(p_snap && (*p_snap)["state_version"] == 6U);
+  }
+
+  // 3. Moderator aborts match
+  const auto abort_outgoing = Frame(json{{"type", "abort"}, {"match_id", match_id}}).serialize();
+  CHECK(send_all(moderator, abort_outgoing.data(), abort_outgoing.size(), false));
+  const auto abort_resp = read_single_frame(moderator);
+  CHECK(abort_resp && (*abort_resp)["type"] == "abort_result" && (*abort_resp)["ok"]);
+  (void)read_single_frame(moderator); // mod server_event (match_aborted)
+  (void)read_single_frame(moderator); // mod market_snapshot
+
+  // All 5 players receive match_aborted and market_snapshot with outcome == "Aborted"
+  for (std::size_t i = 0; i < 5; ++i) {
+    const auto p_ev = read_single_frame(players[i]);
+    CHECK(p_ev && (*p_ev)["type"] == "server_event");
+    CHECK(p_ev && (*p_ev)["event"] == "match_aborted");
+    CHECK(p_ev && (*p_ev)["phase"] == "Finished");
+    CHECK(p_ev && (*p_ev)["outcome"] == "Aborted");
+    CHECK(p_ev && (*p_ev)["state_version"] == 7U);
+
+    const auto p_snap = read_single_frame(players[i]);
+    CHECK(p_snap && (*p_snap)["type"] == "market_snapshot");
+    CHECK(p_snap && (*p_snap)["phase"] == "Finished");
+    CHECK(p_snap && (*p_snap)["outcome"] == "Aborted");
+    CHECK(p_snap && (*p_snap)["state_version"] == 7U);
+  }
+
+  cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|min-player|malformed|unix|lan-binding|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|min-player|malformed|unix|lan-binding|notifications|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
@@ -1818,6 +2190,8 @@ int main(int argc, char** argv) {
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "lan-binding") {
     test_lan_binding(argv[1]);
+  } else if (argc == 3 && std::string(argv[2]) == "notifications") {
+    test_notifications_and_market_snapshots(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "all") {
     test_server_capacity_and_echo(argv[1]);
     test_idle_unassigned_timeout(argv[1]);
@@ -1828,6 +2202,7 @@ int main(int argc, char** argv) {
     test_complete_three_round_match(argv[1], 8U);
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
     test_lan_binding(argv[1]);
+    test_notifications_and_market_snapshots(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }

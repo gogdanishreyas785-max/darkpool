@@ -478,8 +478,18 @@ struct TlsClientConnection {
     }
   }
 
-  std::optional<json> receive_frame(int timeout_ms = 5000) {
-    return receive_frame_detailed(timeout_ms).frame;
+  std::optional<json> receive_frame(int timeout_ms = 5000, bool skip_notifications = true) {
+    while (true) {
+      auto res = receive_frame_detailed(timeout_ms);
+      if (!res.frame.has_value()) return std::nullopt;
+      if (skip_notifications && res.frame->is_object()) {
+        const auto t = res.frame->value("type", "");
+        if (t == "server_event" || t == "market_snapshot") {
+          continue;
+        }
+      }
+      return res.frame;
+    }
   }
 };
 
@@ -2075,6 +2085,136 @@ void test_scenario_25_write_cursor_semantics(const char* server_path) {
   CHECK(res_err.error_message.find("abandoned") != std::string::npos);
 }
 
+// --------------------------------------------------------------------------
+// Scenario 26: TLS Push Notification Delivery & Hybrid Moderator Controls
+// --------------------------------------------------------------------------
+void test_scenario_26_tls_push_notifications_and_moderator_controls(const char* server_path) {
+  auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
+  const auto port = reserve_port();
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-secret");
+  CHECK(child > 0);
+
+  darkpool::transport::ClientTlsConfig client_cfg;
+  client_cfg.mode = darkpool::transport::ClientVerifyMode::LocalCa;
+  client_cfg.ca_file = certs->ca_cert_pem_path;
+  client_cfg.target_ip = "127.0.0.1";
+
+  // 1. Moderator connects
+  auto mod = connect_tls_client(port, client_cfg);
+  CHECK(mod != nullptr);
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-secret"}}));
+  auto mod_conn_resp = mod->receive_frame(5000, true);
+  CHECK(mod_conn_resp.has_value());
+
+  // 2. Moderator creates match for 5 players
+  CHECK(mod->send_frame(json{{"type", "create_match"}, {"player_count", 5}}));
+  auto create_resp = mod->receive_frame(5000, true);
+  CHECK(create_resp.has_value() && (*create_resp)["type"] == "match_created");
+  const auto match_id = (*create_resp)["match_id"].get<std::uint64_t>();
+
+  // 3. Connect 5 players
+  std::vector<std::unique_ptr<TlsClientConnection>> players;
+  players.reserve(5);
+  for (std::size_t i = 0; i < 5; ++i) {
+    auto p = connect_tls_client(port, client_cfg);
+    CHECK(p != nullptr);
+    CHECK(p->send_frame(json{{"type", "connect"}, {"role", "player"}}));
+    auto p_conn = p->receive_frame(5000, true);
+    CHECK(p_conn.has_value());
+    CHECK(p->send_frame(json{{"type", "join_match"}, {"match_id", match_id}}));
+    auto join_resp = p->receive_frame(5000, true);
+    CHECK(join_resp.has_value() && (*join_resp)["type"] == "joined_match");
+    // Player also received initial market snapshot pushed over TLS!
+    auto init_snap = p->receive_frame(5000, false);
+    CHECK(init_snap.has_value() && (*init_snap)["type"] == "market_snapshot");
+    players.push_back(std::move(p));
+  }
+
+  // 4. Moderator starts match
+  CHECK(mod->send_frame(json{{"type", "start_match"}, {"match_id", match_id}}));
+  auto start_resp = mod->receive_frame(5000, true);
+  CHECK(start_resp.has_value() && (*start_resp)["ok"]);
+
+  // Moderator receives match_started and market_snapshot push over TLS
+  auto mod_ev = mod->receive_frame(5000, false);
+  CHECK(mod_ev.has_value() && (*mod_ev)["type"] == "server_event" && (*mod_ev)["event"] == "match_started");
+  auto mod_snap = mod->receive_frame(5000, false);
+  CHECK(mod_snap.has_value() && (*mod_snap)["type"] == "market_snapshot");
+
+  // All 5 players receive match_started and market_snapshot pushed over TLS
+  for (auto& p : players) {
+    auto p_ev = p->receive_frame(5000, false);
+    CHECK(p_ev.has_value() && (*p_ev)["type"] == "server_event" && (*p_ev)["event"] == "match_started");
+    auto p_sn = p->receive_frame(5000, false);
+    CHECK(p_sn.has_value() && (*p_sn)["type"] == "market_snapshot");
+  }
+
+  // 5. Moderator publishes event (impact 1) -> enters Discussion
+  CHECK(mod->send_frame(json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 1}}));
+  auto pub_resp = mod->receive_frame(5000, true);
+  CHECK(pub_resp.has_value() && (*pub_resp)["ok"]);
+  (void)mod->receive_frame(5000, false); // mod phase_started
+  (void)mod->receive_frame(5000, false); // mod market_snapshot
+
+  for (auto& p : players) {
+    auto p_ev = p->receive_frame(5000, false);
+    CHECK(p_ev.has_value() && (*p_ev)["type"] == "server_event" && (*p_ev)["event"] == "phase_started");
+    CHECK((*p_ev)["phase"] == "Discussion");
+    auto p_sn = p->receive_frame(5000, false);
+    CHECK(p_sn.has_value() && (*p_sn)["type"] == "market_snapshot");
+  }
+
+  // 6. Test pause over TLS
+  CHECK(mod->send_frame(json{{"type", "pause"}, {"match_id", match_id}}));
+  auto pause_resp = mod->receive_frame(5000, true);
+  CHECK(pause_resp.has_value() && (*pause_resp)["type"] == "pause_result" && (*pause_resp)["ok"]);
+  (void)mod->receive_frame(5000, false); // mod match_paused
+  (void)mod->receive_frame(5000, false); // mod market_snapshot
+
+  for (auto& p : players) {
+    auto p_ev = p->receive_frame(5000, false);
+    CHECK(p_ev.has_value() && (*p_ev)["type"] == "server_event" && (*p_ev)["event"] == "match_paused");
+    auto p_sn = p->receive_frame(5000, false);
+    CHECK(p_sn.has_value() && (*p_sn)["type"] == "market_snapshot");
+    CHECK((*p_sn)["is_paused"] == true);
+  }
+
+  // 7. Test resume over TLS
+  CHECK(mod->send_frame(json{{"type", "resume"}, {"match_id", match_id}}));
+  auto resume_resp = mod->receive_frame(5000, true);
+  CHECK(resume_resp.has_value() && (*resume_resp)["type"] == "resume_result" && (*resume_resp)["ok"]);
+  (void)mod->receive_frame(5000, false); // mod match_resumed
+  (void)mod->receive_frame(5000, false); // mod market_snapshot
+
+  for (auto& p : players) {
+    auto p_ev = p->receive_frame(5000, false);
+    CHECK(p_ev.has_value() && (*p_ev)["type"] == "server_event" && (*p_ev)["event"] == "match_resumed");
+    auto p_sn = p->receive_frame(5000, false);
+    CHECK(p_sn.has_value() && (*p_sn)["type"] == "market_snapshot");
+    CHECK((*p_sn)["is_paused"] == false);
+  }
+
+  // 8. Test abort over TLS
+  CHECK(mod->send_frame(json{{"type", "abort"}, {"match_id", match_id}}));
+  auto abort_resp = mod->receive_frame(5000, true);
+  CHECK(abort_resp.has_value() && (*abort_resp)["type"] == "abort_result" && (*abort_resp)["ok"]);
+  (void)mod->receive_frame(5000, false); // mod match_aborted
+  (void)mod->receive_frame(5000, false); // mod market_snapshot
+
+  for (auto& p : players) {
+    auto p_ev = p->receive_frame(5000, false);
+    CHECK(p_ev.has_value() && (*p_ev)["type"] == "server_event" && (*p_ev)["event"] == "match_aborted");
+    CHECK((*p_ev)["phase"] == "Finished");
+    CHECK((*p_ev)["outcome"] == "Aborted");
+    auto p_sn = p->receive_frame(5000, false);
+    CHECK(p_sn.has_value() && (*p_sn)["type"] == "market_snapshot");
+    CHECK((*p_sn)["phase"] == "Finished");
+    CHECK((*p_sn)["outcome"] == "Aborted");
+  }
+
+  stop_server(child);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -2118,6 +2258,7 @@ int main(int argc, char** argv) {
   maybe_run(23, "unexpected-eof", "Truncated / unexpected TLS termination (EOF without close_notify)", test_scenario_23_truncated_tls_termination);
   maybe_run(24, "cross-direction", "Reactor state machine cross-direction readiness & KeyUpdate", test_scenario_24_reactor_cross_direction_and_key_update);
   maybe_run(25, "write-cursor", "Persistent TLS FrameWriteCursor and resumable partial writes", test_scenario_25_write_cursor_semantics);
+  maybe_run(26, "push-notifications", "Push notification delivery and moderator controls over TLS", test_scenario_26_tls_push_notifications_and_moderator_controls);
 
   if (g_failures.load() > 0) {
     std::cerr << "FAIL: " << g_failures.load() << " assertions failed\n" << std::flush;

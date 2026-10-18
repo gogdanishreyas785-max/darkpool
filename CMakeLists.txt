@@ -23,20 +23,20 @@ add_library(darkpool_engine src/game_engine.cpp)
 target_include_directories(darkpool_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_engine PUBLIC cxx_std_20)
 
-add_library(darkpool_network src/network.cpp)
-target_include_directories(darkpool_network PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_compile_features(darkpool_network PUBLIC cxx_std_20)
-target_link_libraries(darkpool_network PUBLIC nlohmann_json::nlohmann_json)
+add_library(darkpool_communications src/network.cpp)
+target_include_directories(darkpool_communications PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_compile_features(darkpool_communications PUBLIC cxx_std_20)
+target_link_libraries(darkpool_communications PUBLIC nlohmann_json::nlohmann_json)
 
 add_library(darkpool_coordinator src/match_coordinator.cpp)
 target_include_directories(darkpool_coordinator PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_coordinator PUBLIC cxx_std_20)
-target_link_libraries(darkpool_coordinator PUBLIC darkpool_engine darkpool_network)
+target_link_libraries(darkpool_coordinator PUBLIC darkpool_engine darkpool_communications)
 
 add_library(darkpool_cli src/cli.cpp)
 target_include_directories(darkpool_cli PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_cli PUBLIC cxx_std_20)
-target_link_libraries(darkpool_cli PUBLIC darkpool_network)
+target_link_libraries(darkpool_cli PUBLIC darkpool_communications)
 
 function(darkpool_enable_warnings target)
   if(MSVC)
@@ -53,7 +53,7 @@ function(darkpool_enable_warnings target)
 endfunction()
 
 darkpool_enable_warnings(darkpool_engine)
-darkpool_enable_warnings(darkpool_network)
+darkpool_enable_warnings(darkpool_communications)
 darkpool_enable_warnings(darkpool_coordinator)
 darkpool_enable_warnings(darkpool_cli)
 
@@ -64,7 +64,7 @@ darkpool_enable_warnings(darkpool_engine_tests)
 add_test(NAME darkpool_engine_tests COMMAND darkpool_engine_tests)
 
 add_executable(darkpool_network_tests tests/network_tests.cpp)
-target_link_libraries(darkpool_network_tests PRIVATE darkpool_network)
+target_link_libraries(darkpool_network_tests PRIVATE darkpool_communications)
 darkpool_enable_warnings(darkpool_network_tests)
 add_test(NAME darkpool_network_tests COMMAND darkpool_network_tests)
 
@@ -78,25 +78,31 @@ target_link_libraries(darkpool_cli_tests PRIVATE darkpool_cli)
 darkpool_enable_warnings(darkpool_cli_tests)
 add_test(NAME darkpool_cli_tests COMMAND darkpool_cli_tests)
 
+add_executable(darkpool_market_sensitivity_analysis tests/market_sensitivity_analysis.cpp)
+target_link_libraries(darkpool_market_sensitivity_analysis PRIVATE darkpool_coordinator darkpool_engine)
+darkpool_enable_warnings(darkpool_market_sensitivity_analysis)
+add_test(NAME darkpool_market_sensitivity_analysis COMMAND darkpool_market_sensitivity_analysis --test)
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(OpenSSL 3.0 REQUIRED COMPONENTS SSL Crypto)
 
-  add_library(darkpool_tls_transport src/tls_transport.cpp)
-  target_include_directories(darkpool_tls_transport PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-  target_compile_features(darkpool_tls_transport PUBLIC cxx_std_20)
-  target_link_libraries(darkpool_tls_transport PUBLIC darkpool_network OpenSSL::SSL OpenSSL::Crypto)
-  darkpool_enable_warnings(darkpool_tls_transport)
+  target_sources(darkpool_communications PRIVATE
+    src/tls_transport.cpp
+    src/socket_primitives.cpp
+    src/server_runtime.cpp
+    src/client_runtime.cpp)
+  target_link_libraries(darkpool_communications PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 
   add_executable(darkpool_server src/server_main.cpp)
-  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_tls_transport)
+  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_communications)
   darkpool_enable_warnings(darkpool_server)
 
   add_executable(darkpool_client src/client_main.cpp)
-  target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_tls_transport)
+  target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_communications)
   darkpool_enable_warnings(darkpool_client)
 
   add_executable(darkpool_network_integration_tests tests/network_integration_tests.cpp)
-  target_link_libraries(darkpool_network_integration_tests PRIVATE darkpool_network)
+  target_link_libraries(darkpool_network_integration_tests PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_network_integration_tests)
   add_test(NAME darkpool_network_integration_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server>)
@@ -121,23 +127,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_lan_binding_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> lan-binding)
   set_tests_properties(darkpool_lan_binding_tests PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_notifications_e2e_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> notifications)
+  set_tests_properties(darkpool_notifications_e2e_tests PROPERTIES TIMEOUT 30)
 
   add_executable(darkpool_tls_integration_tests tests/tls_integration_tests.cpp)
-  target_link_libraries(darkpool_tls_integration_tests PRIVATE darkpool_tls_transport darkpool_network)
+  target_link_libraries(darkpool_tls_integration_tests PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_tls_integration_tests)
   add_test(NAME darkpool_tls_integration_tests
     COMMAND darkpool_tls_integration_tests $<TARGET_FILE:darkpool_server>)
   set_tests_properties(darkpool_tls_integration_tests PROPERTIES TIMEOUT 180)
 
   add_executable(darkpool_reactor_dispatch_tests tests/reactor_dispatch_tests.cpp)
-  target_link_libraries(darkpool_reactor_dispatch_tests PRIVATE darkpool_network)
+  target_link_libraries(darkpool_reactor_dispatch_tests PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_reactor_dispatch_tests)
   add_test(NAME darkpool_reactor_dispatch_tests
     COMMAND darkpool_reactor_dispatch_tests)
   set_tests_properties(darkpool_reactor_dispatch_tests PROPERTIES TIMEOUT 20)
 
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
-  target_link_libraries(darkpool_load_tests PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests)
   execute_process(
     COMMAND git rev-parse HEAD
@@ -162,7 +171,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND darkpool_load_tests $<TARGET_FILE:darkpool_server> --smoke-run --players 32)
   set_tests_properties(darkpool_load_l3_functional PROPERTIES TIMEOUT 30)
   add_executable(darkpool_load_tests_64p tests/load_test_64p_harness.cpp)
-  target_link_libraries(darkpool_load_tests_64p PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests_64p PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_64p)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_64p PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
@@ -176,7 +185,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_load_64p_semantic_regression
     COMMAND darkpool_load_tests_64p $<TARGET_FILE:darkpool_server> --test-semantic-response)
   add_executable(darkpool_load_tests_l5 tests/load_test_l5_harness.cpp)
-  target_link_libraries(darkpool_load_tests_l5 PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests_l5 PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_l5)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_l5 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
@@ -189,7 +198,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(darkpool_load_l5_regression PROPERTIES TIMEOUT 60)
 
   add_executable(darkpool_load_tests_l6 tests/load_test_l6_harness.cpp)
-  target_link_libraries(darkpool_load_tests_l6 PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests_l6 PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_l6)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_l6 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
@@ -205,7 +214,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(darkpool_load_l6_sustained_short PROPERTIES TIMEOUT 60)
 
   add_executable(darkpool_load_tests_l7 tests/load_test_l7_harness.cpp)
-  target_link_libraries(darkpool_load_tests_l7 PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests_l7 PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_l7)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_l7 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
@@ -218,7 +227,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(darkpool_load_l7_regression PROPERTIES TIMEOUT 60)
 
   add_executable(darkpool_load_tests_l8 tests/load_test_l8_harness.cpp)
-  target_link_libraries(darkpool_load_tests_l8 PRIVATE darkpool_network)
+  target_link_libraries(darkpool_load_tests_l8 PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_l8)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_l8 PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")
@@ -231,7 +240,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(darkpool_load_l8_regression PROPERTIES TIMEOUT 60)
 
   add_executable(darkpool_load_tests_tls tests/load_test_tls_harness.cpp)
-  target_link_libraries(darkpool_load_tests_tls PRIVATE darkpool_tls_transport darkpool_network)
+  target_link_libraries(darkpool_load_tests_tls PRIVATE darkpool_communications)
   darkpool_enable_warnings(darkpool_load_tests_tls)
   if(DARKPOOL_GIT_COMMIT)
     target_compile_definitions(darkpool_load_tests_tls PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_GIT_COMMIT}")

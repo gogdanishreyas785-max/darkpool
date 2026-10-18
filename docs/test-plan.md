@@ -24,6 +24,11 @@ This plan includes the approved variable-size follow-up. Every execution result 
 | T-I01 | UNIX lifecycle and fragmented/coalesced frames. | Multiple clients; disconnect safe. |
 | T-I02 | Concurrent matches. | Independent state/timers; canaries never leak. |
 | T-I03 | Auth/membership/reconnect. | Forged identity/nonmember rejected; approved cleanup policy. |
+| T-F05 | Stage 2 Match-wide notifications & state versioning. | Asynchronous `server_event` and `market_snapshot` push delivery without polling; strictly monotonic `state_version` increments on mutation; no client out-of-order display; zero canary/secret leakage in public broadcasts. |
+| T-F06 | Stage 3 Timed gameplay and countdown warnings. | Monotonic clock deadlines for Discussion (180s), Trading (120s), and Voting (60s); automatic phase transitions on expiry; 30s and 10s countdown warnings emitted once without version mutation; unsubmitted orders default to HOLD; unsubmitted votes default to abstain. |
+| T-F07 | Stage 3 Hybrid moderator controls. | Moderator-only authorization for `pause`, `resume`, and `abort`; `pause` freezes remaining duration and blocks progressions; `resume` restores monotonic deadline without reset; `abort` terminates match to outcome Aborted and rejects further commands; all controls broadcast push events and increment `state_version`. |
+| T-F08 | Stage 3.1 Clue phase and transition interval decoupling. | Canonical untimed Clue phase decoupled from the 10-second transition interval; private investigator clue submission window, retry idempotence, invalid target rejection, and absence of clue results from public events; separate transition interval with countdown and automatic progression. |
+| T-F09 | Stage 3.1 Transport-specific notification coverage. | Verified asynchronous push notification delivery and moderator controls across all supported transports: Plaintext TCP (`darkpool_notifications_e2e_tests`), TLS 1.3 with OpenSSL certificate validation (`darkpool_tls_integration_tests`), and UNIX domain sockets (`darkpool_unix_socket_tests`). Idle clients and command-waiting clients both receive push notifications correctly. |
 
 ## Protocol, security and reliability
 
@@ -611,6 +616,21 @@ The 32 executed and passed CTest targets verified from `CMakeLists.txt` and the 
 - `darkpool_load_l8_regression`
 - `darkpool_load_tls_functional`
 
+### Stage 1–3.2 Automated CTest Verification (33 Targets)
+
+Following the implementation of communications consolidation (Stage 1), match-wide notifications and state versioning (Stage 2), autonomous timed gameplay and moderator controls (Stage 3), Clue phase decoupling / multi-transport notification verification (Stage 3.1), and the approved timed Clue phase (30s) with automatic transition interval (10s) and automatic Voting opening (60s) (Stage 3.2), the complete test suite comprises 33 targets (including `darkpool_communications_tests`):
+
+- **Total CTest Targets:** 33 tests
+- **Tests Passed:** 33 tests (100% pass rate)
+- **Tests Failed:** 0 tests
+- **Configuration:** Release mode with `-DDARKPOOL_WARNINGS_AS_ERRORS=ON`
+- **Suite Additions:**
+  - `darkpool_communications_tests`: Consolidated framing, JSON payloads, network buffer boundaries.
+  - `darkpool_notifications_e2e_tests`: Live `server_event` and `market_snapshot` push notifications, asynchronous delivery, monotonic state version progression.
+  - `darkpool_coordinator_tests`: Autonomous timers, countdown warnings (30s at Clue entry, 10s at ~10s remaining), 30-second Clue phase, automatic 10-second transition interval, clue rejection during transition, automatic 60-second Voting opening, vote resolution on Voting deadline expiry, private investigator clue submissions and same-target retry replay, delayed tick processing warning ordering, and hybrid moderator controls (`pause`, `resume`, `abort`).
+  - `darkpool_tls_integration_tests`: Asynchronous push notifications and moderator controls over TLS 1.3 with full certificate/fingerprint verification.
+  - `darkpool_unix_socket_tests`: Asynchronous push notifications, snapshots, and moderator controls over UNIX domain stream sockets.
+
 ### Manual Two-Computer LAN Acceptance Verification
 
 Following the automated suite, an end-to-end interactive multiplayer session was conducted across two independent physical hosts on the trusted LAN.
@@ -662,6 +682,60 @@ The operator reported that all 21 steps completed successfully without errors or
 | Public Internet Deployment | **DEFERRED** | Unsupported; non-loopback binding restricted strictly to RFC 1918 private IPv4 addresses |
 
 
+
+## Stage 4 Test Suite — Advanced Market Mechanics, Quantity Trading, and Research/Scouting
+
+Stage 4 introduces automated tests verifying all 28 required gameplay and security properties:
+
+### 1. Advanced Price Model & Market Indicators
+- **T-S4-01 (Formula Replay Determinism)**: Verified in `test_stage4_advanced_market_model()` (`tests/engine_tests.cpp`). Identical initial conditions and event/order sequences produce bitwise-identical canonical states.
+- **T-S4-02 (Factor Coverage)**: Verified in `test_stage4_advanced_market_model()`. Event impact, net demand direction, net demand volume, fundamental health deviations, market sentiment, and low-reserve liquidity penalties each modulate price deterministically according to the documented model.
+- **T-S4-03 (Neutral Conditions)**: In zero-demand, neutral event conditions ($e=0, D=0$), opening price and health remain completely unchanged ($P'=10, H'=5$).
+- **T-S4-04 (Coefficients Architecture)**: Baseline approved coefficients (`approved_baseline()`) maintain 100% backward compatibility with all canonical test suites; proposed candidate coefficients (`candidate_proposal()`) are cleanly centralized without magic numbers and documented in `docs/market-model-proposal.md`.
+- **T-S4-05 (Inclusive Price and Health Bounds)**: Verified across 15,000+ combinations in `test_formula_bounds()`. Price is strictly clamped in $[1, 100]$ and health in $[0, 10]$.
+- **T-S4-06 (Integer Overflow and Safe Math)**: Large demand inputs (e.g. $D=1,000$) and extreme price values saturate safely to bound boundaries without integer overflow.
+- **T-S4-07 (Indicator Consistency & Privacy)**: Public sentiment ($[-10, 10]$), volatility ($[0, 20]$), and liquidity ($[0, 100\%]$) are computed from authoritative state and never leak private event impacts or private player roles.
+
+### 2. Quantity Trading & Supply Conservation
+- **T-S4-08 (Valid Quantity Trades)**: Verified in `test_stage4_quantity_trading()` (`tests/engine_tests.cpp`) and `test_stage4_coordinator_quantity_and_research()` (`tests/match_coordinator_tests.cpp`). Multi-share BUYs and SELLs update player holdings, cash, and market reserve accurately.
+- **T-S4-09 (Quantity Validation & Rejection)**: Quantities with $q=0$, negative integers, non-integer strings, unaffordable costs ($q \times P > \text{credits}$), or insufficient holdings ($q > \text{shares}$) are rejected with `InvalidQuantity`, `InsufficientCredits`, or `NoSharesToSell` without mutating market state.
+- **T-S4-10 (Credit Cap Enforcement)**: Sell orders whose proceeds would exceed $1,000,000$ credits are rejected with `CreditCapExceeded`.
+- **T-S4-11 (Total Supply Conservation)**: Every market resolution invariant-checks $\sum \text{player.shares} + \text{reserve} = \text{total\_supply} = 20N$. Shares are never created or destroyed.
+- **T-S4-12 (Finite Reserve & All-or-Nothing Allocation)**: When opening reserve inventory is insufficient to satisfy a player's full order quantity, the order is rejected entirely (`RejectedInsufficientReserve`, 0 shares filled) without partial-fill semantics.
+- **T-S4-13 (Missing Trade Default)**: Unsubmitted player actions default strictly to `HOLD` (0 shares, no cash change).
+- **T-S4-14 (Single-Share Compatibility)**: Omitting the quantity parameter defaults to 1 share, maintaining full backward compatibility with legacy commands.
+- **T-S4-15 (Deterministic Rotating Priority)**: In round $r$, allocation order strictly follows seat priority $((r - 1) \bmod N)$.
+
+### 3. Research / Scouting Action & Privacy
+- **T-S4-16 (Cost Verification)**: Valid research action debits exactly 10 credits from the requesting active player.
+- **T-S4-17 (Once-Per-Match Enforcement)**: A player can only execute research once per match. Subsequent requests report `already_used: true`, return the cached direction, and do NOT charge credits.
+- **T-S4-18 (Phase Restrictions)**: Research is accepted exclusively during `Phase::Discussion` after event announcement. Calling during `AwaitingEvent`, `Trading`, `Clue`, or `Voting` returns `WrongPhase` and debits 0 credits.
+- **T-S4-19 (Coarse Signal Mapping)**: Returns `"Positive"`, `"Neutral"`, or `"Negative"`. The exact hidden integer impact ($e \in \{-2, -1, 0, 1, 2\}$) is never revealed.
+- **T-S4-20 (Strict Audience Privacy)**: Coordinator produces 0 broadcast notifications for research actions. Only the authenticated session receives `research_result`.
+- **T-S4-21 (Multi-Match Isolation)**: Research state is strictly match-isolated and session-authorized.
+
+### 4. Public Snapshots & CLI Integration
+- **T-S4-22 (Snapshot Indicators)**: Public snapshots and match status include `sentiment`, `volatility`, and `liquidity`.
+- **T-S4-23 (CLI Command Handling)**: Verified in `test_stage4_cli_quantity_and_research()` (`tests/cli_tests.cpp`). CLI parses `buy [q]`, `sell [q]`, `trade <action> [q]`, `research`, `scout`, and formats reports accurately.
+
+### 5. Stage 4.1 Correctness Audit & Targeted Repair Verification
+- **T-S4.1-01 (Negative Floor Division Arithmetic)**: Verified in `test_stage4_negative_floor_division()` (`tests/engine_tests.cpp`). Validates safe mathematical floor division across odd/even boundaries for values `-9, -7, -3, -1, 0, 1, 3, 7, 9`, proving that negative odd values round down rather than truncating towards zero.
+- **T-S4.1-02 (Recalculated Scenarios Verification)**: Verified in `test_stage4_recalculated_scenarios()`. Formally verifies Scenario 2 strong-negative closing price $P'=1$ (corrected from 2), Scenario 5 ($P'=8$), Scenario 9 ($P'=23$), and Scenario 11 ($P'=24$).
+- **T-S4.1-03 (Gross vs Net Volume & Volatility Grounding)**: Verified in `test_stage4_gross_vs_net_volume_and_volatility()`. Equal buys and sells ($B=2, S=2 \implies G=4, D=0$) correctly produce non-zero volatility ($\mathcal{V}=4$) rather than falsely reporting 0 activity. Identical net demand with different gross turnover ($G=3$ vs $G=7$) is distinguished in the public indicator ($\mathcal{V}=3$ vs $\mathcal{V}=7$) while preserving identical directional price pressure.
+- **T-S4.1-04 (Nine Audit Scenarios Reproducibility)**: Verified in `test_stage4_all_nine_reproducible_scenarios()`. Every scenario reproduces exactly from documented mathematical formulas and exposed initial states.
+- **T-S4.1-05 (Settlement Order Provenance & Baseline Default)**: Verified in `test_settlement_order_provenance_and_defaults()`. Confirms default `Match` and `MatchCoordinator` construction uses `approved_baseline()` (`{2, 1, 0, 0, 0, 0}`), rotates priority by $((round - 1) \bmod N)$, enforces all-or-nothing allocation on shortage, and conserves $20N$ total supply.
+
+### 6. Stage 4.2 Pricing Formula Reconciliation & Safe Math Verification
+- **T-S4.2-01 (Safe Floor Division Domain & Boundary Safety)**: Verified in `test_stage4_negative_floor_division()` (`tests/engine_tests.cpp`). Validates 64-bit safe arithmetic avoiding undefined behavior for `INT32_MIN / -1` (clamped to `INT32_MAX`), `INT32_MIN / 1`, `INT32_MIN / 2` (`-1073741824`), `INT32_MAX / 1`, `INT32_MAX / -1`, negative odd/even divisors, and verifies that invalid divisors ($b == 0$) throw `std::invalid_argument` rather than silently returning 0.
+- **T-S4.2-02 (Low-Reserve Scarcity Surcharge Reconciliation)**: Verified in `test_stage4_recalculated_scenarios()`. Formally asserts the positive scarcity surcharge (`+w_l = +2`) when buying into depleted inventory ($\mathcal{L} < 20\%$), yielding $P'=24$ with volatility $\mathcal{V}=4$ (and $P'=23$ without volatility), strictly $+2$ higher than high-reserve liquidity Scenario 7A ($P'=22$ with $\mathcal{V}=4$, and $P'=21$ without volatility).
+- **T-S4.2-03 (Volatility Pricing Factor Coupling & Directionality)**: Verified in `test_stage4_gross_vs_net_volume_and_volatility()`. Demonstrates that in balanced trading ($B=S>0 \implies G=4, \mathcal{V}=4$), neutral market direction ($\text{dir}_{\text{market}} = 0$) ensures zero price bias ($P'=10$). Demonstrates that under equal net demand ($D=+3$), changing gross volume from $G=3$ ($\mathcal{V}=3 \implies \lfloor 3/4 \rfloor = 0$) to $G=7$ ($\mathcal{V}=7 \implies \lfloor 7/4 \rfloor = 1$) directly increases closing price from $P'=23$ to $P'=24$.
+- **T-S4.2-04 (Candidate vs Baseline Model Isolation)**: Verified in `test_settlement_order_provenance_and_defaults()`. Confirms default `Match` and `MatchCoordinator` construction uses `approved_baseline()` (`{2, 1, 0, 0, 0, 0, 0}`), with `volatility_weight == 0`, ensuring 100% backward compatibility with all canonical game rules and test suites.
+
+### 7. Stage 4.3 Reproducible Market-Balance & Sensitivity Analysis Verification
+- **T-S4.3-01 (Single-Round Balance Scenarios)**: Verified in `darkpool_market_sensitivity_analysis` (`tests/market_sensitivity_analysis.cpp`). Measures side-by-side settlement for 9 canonical balance scenarios covering neutral markets, balanced buy/sell trading, mirrored positive/negative event pairs, extreme shocks, liquidity boundaries ($68\%$ vs $19\%$), price bound clamping ($1$ and $100$), and health ceiling/floor limits.
+- **T-S4.3-02 (Systematic OAT Parameter Sensitivity & Interactions)**: Verified across 105 combinatorial evaluations. Evaluates each candidate coefficient ($w_e, w_d, w_v, w_{\text{vol}}, w_h, w_s, w_l$) across lower and higher ranges, and explores critical interactions ($w_e \times w_{\text{vol}}$, $w_v \times w_{\text{vol}}$, $w_h \times w_s$, $w_l \times \text{Reserve}$).
+- **T-S4.3-03 (Deterministic Multi-Round Traces)**: Verified across 6 multi-round sequences (A: Neutral drift-free, B: Persistent positive pressure, C: Persistent negative pressure, D: Alternating reversibility, E: Reserve depletion threshold crossing, F: High turnover with zero net demand). Asserts total share conservation $\sum \text{held} + \text{reserve} = 20N$ across all rounds.
+- **T-S4.3-04 (Global Property Invariants)**: Verified over $1,500+$ state permutations that closing prices strictly remain in $[1, 100]$, health remains in $[0, 10]$, neutral trading produces zero price drift, candidate scarcity surcharge activates strictly when closing reserve $< 20\%$ with buying demand, and ordinary matches strictly preserve `MarketModelCoefficients::approved_baseline()`.
 
 ## Metrics and reporting
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -966,6 +967,553 @@ void test_deterministic_replay() {
   CHECK(arrival_a.canonical_state() == arrival_b.canonical_state());
 }
 
+void test_stage4_quantity_trading() {
+  // 1. Basic quantity BUY and SELL
+  Match match(roster());
+  CHECK(match.start());
+  CHECK(match.publish_event(0));
+  CHECK(match.open_trading());
+
+  // Player 1 buys 3 shares at opening price 10. Cost = 30 credits.
+  CHECK(match.submit_trade(10, TradeAction::Buy, 3));
+  // Player 2 sells 2 shares at opening price 10. Proceeds = 20 credits.
+  CHECK(match.submit_trade(20, TradeAction::Sell, 2));
+  // Player 3 holds
+  CHECK(match.submit_trade(30, TradeAction::Hold, 1));
+  // Missing trades from players 40 and 50 default to Hold.
+
+  const auto res = match.resolve_market();
+  CHECK(res.has_value());
+  CHECK(res->executed_buys == 3U);
+  CHECK(res->executed_sells == 2U);
+  CHECK(match.state().players[0].shares == 13U);
+  CHECK(match.state().players[0].credits == 70U);
+  CHECK(match.state().players[1].shares == 8U);
+  CHECK(match.state().players[1].credits == 120U);
+  CHECK(match.state().players[2].shares == 10U);
+  CHECK(match.state().players[2].credits == 100U);
+  CHECK(match.state().players[3].shares == 10U); // defaulted to hold
+  CHECK(match.state().players[4].shares == 10U); // defaulted to hold
+
+  // Conservation check
+  std::uint32_t total_held = 0;
+  for (const auto& p : match.state().players) total_held += p.shares;
+  CHECK(total_held + match.state().reserve == match.state().total_supply);
+
+  // 2. Quantity validation and rejection without state mutation
+  // Zero quantity rejected
+  Match match_zero(roster());
+  CHECK(match_zero.start());
+  CHECK(match_zero.publish_event(0));
+  CHECK(match_zero.open_trading());
+  auto err = match_zero.submit_trade(10, TradeAction::Buy, 0);
+  CHECK(err.error == ErrorCode::InvalidQuantity);
+  CHECK(match_zero.state().players[0].action_submitted); // slot consumed per game rules
+  CHECK(!match_zero.state().players[0].order.has_value()); // but no order recorded
+
+  // Overflowing / unaffordable buy quantity
+  Match match_unaffordable(roster());
+  CHECK(match_unaffordable.start());
+  CHECK(match_unaffordable.publish_event(0));
+  CHECK(match_unaffordable.open_trading());
+  err = match_unaffordable.submit_trade(10, TradeAction::Buy, 20); // 20 * 10 = 200 > 100 credits
+  CHECK(err.error == ErrorCode::InsufficientCredits);
+  CHECK(!match_unaffordable.state().players[0].order.has_value());
+
+  // Insufficient shares sell quantity
+  Match match_noshares(roster());
+  CHECK(match_noshares.start());
+  CHECK(match_noshares.publish_event(0));
+  CHECK(match_noshares.open_trading());
+  err = match_noshares.submit_trade(10, TradeAction::Sell, 15); // player has 10 shares
+  CHECK(err.error == ErrorCode::NoSharesToSell);
+  CHECK(!match_noshares.state().players[0].order.has_value());
+
+  // Sell that would exceed credit cap
+  auto fixture_cap = base_state();
+  fixture_cap.players[0].credits = kCreditBalanceCap - 10;
+  fixture_cap.players[0].shares = 10;
+  Match match_cap = Match::from_state(std::move(fixture_cap));
+  err = match_cap.submit_trade(10, TradeAction::Sell, 2); // 2 * 10 = 20 > remaining room (10)
+  CHECK(err.error == ErrorCode::CreditCapExceeded);
+
+  // 3. Finite reserve shortage and all-or-nothing allocation (no partial fill)
+  auto shortage_fixture = base_state();
+  shortage_fixture.reserve = 3;
+  shortage_fixture.players[0].shares += 47; // conserve total supply = 100
+  Match match_shortage = Match::from_state(std::move(shortage_fixture));
+  // In round 1, seat 0 (Player 10) goes first, seat 1 (Player 20) goes second
+  CHECK(match_shortage.submit_trade(10, TradeAction::Buy, 2));
+  CHECK(match_shortage.submit_trade(20, TradeAction::Buy, 2));
+
+  const auto shortage_res = match_shortage.resolve_market();
+  CHECK(shortage_res.has_value());
+  CHECK(shortage_res->executed_buys == 2U);
+  CHECK(shortage_res->receipts[0].disposition == TradeDisposition::Executed);
+  CHECK(shortage_res->receipts[0].quantity == 2U);
+  CHECK(shortage_res->receipts[1].disposition == TradeDisposition::RejectedInsufficientReserve);
+  CHECK(shortage_res->receipts[1].quantity == 0U);
+  CHECK(match_shortage.state().reserve == 1U);
+
+  // Supply strictly conserved
+  total_held = 0;
+  for (const auto& p : match_shortage.state().players) total_held += p.shares;
+  CHECK(total_held + match_shortage.state().reserve == match_shortage.state().total_supply);
+
+  // 4. Default single-share compatibility
+  Match match_single(roster());
+  CHECK(match_single.start());
+  CHECK(match_single.publish_event(0));
+  CHECK(match_single.open_trading());
+  CHECK(match_single.submit_trade(10, TradeAction::Buy));
+  CHECK(match_single.state().players[0].order_quantity == 1U);
+}
+
+void test_stage4_research_action() {
+  Match match(roster());
+  CHECK(match.start());
+
+  // 1. Wrong phase check: cannot research before publish_event (in AwaitingEvent)
+  OperationResult res;
+  auto out = match.conduct_research(10, res);
+  CHECK(!res);
+  CHECK(res.error == ErrorCode::WrongPhase);
+  CHECK(!out.has_value());
+  CHECK(match.state().players[0].credits == 100U);
+  CHECK(!match.state().players[0].research_used);
+
+  // 2. Publish positive event (+2)
+  CHECK(match.publish_event(2));
+  CHECK(match.state().phase == Phase::Discussion);
+
+  // 3. Valid research call
+  out = match.conduct_research(10, res);
+  CHECK(res);
+  CHECK(out.has_value());
+  CHECK(out->direction == "Positive");
+  CHECK(!out->already_used);
+  CHECK(out->credits_remaining == 90U);
+  CHECK(match.state().players[0].credits == 90U);
+  CHECK(match.state().players[0].research_used);
+
+  // 4. Idempotency: repeated call does not charge twice and reports already_used
+  out = match.conduct_research(10, res);
+  CHECK(res);
+  CHECK(out.has_value());
+  CHECK(out->direction == "Positive");
+  CHECK(out->already_used);
+  CHECK(out->credits_remaining == 90U);
+  CHECK(match.state().players[0].credits == 90U);
+
+  // 5. Another player researches
+  out = match.conduct_research(20, res);
+  CHECK(res);
+  CHECK(out.has_value());
+  CHECK(out->direction == "Positive");
+  CHECK(!out->already_used);
+  CHECK(out->credits_remaining == 90U);
+  CHECK(match.state().players[1].credits == 90U);
+
+  // 6. Cannot research once trading opens
+  CHECK(match.open_trading());
+  out = match.conduct_research(30, res);
+  CHECK(!res);
+  CHECK(res.error == ErrorCode::WrongPhase);
+  CHECK(match.state().players[2].credits == 100U);
+  CHECK(!match.state().players[2].research_used);
+
+  // 7. Test negative and neutral coarse mapping
+  Match match_neg(roster());
+  CHECK(match_neg.start());
+  CHECK(match_neg.publish_event(-1));
+  out = match_neg.conduct_research(10, res);
+  CHECK(res && out && out->direction == "Negative");
+
+  Match match_neu(roster());
+  CHECK(match_neu.start());
+  CHECK(match_neu.publish_event(0));
+  out = match_neu.conduct_research(10, res);
+  CHECK(res && out && out->direction == "Neutral");
+
+  // 8. Insufficient credits
+  auto state_poor = base_state();
+  state_poor.players[0].credits = 5;
+  state_poor.phase = Phase::Discussion;
+  state_poor.event_impact = 1;
+  Match match_poor = Match::from_state(std::move(state_poor));
+  out = match_poor.conduct_research(10, res);
+  CHECK(!res);
+  CHECK(res.error == ErrorCode::InsufficientCredits);
+  CHECK(match_poor.state().players[0].credits == 5U);
+  CHECK(!match_poor.state().players[0].research_used);
+}
+
+void test_stage4_advanced_market_model() {
+  // 1. Replay determinism with candidate proposal coefficients
+  const auto candidate = MarketModelCoefficients::candidate_proposal();
+  Match m1(roster(), candidate);
+  Match m2(roster(), candidate);
+
+  CHECK(m1.start());
+  CHECK(m2.start());
+  CHECK(m1.publish_event(1));
+  CHECK(m2.publish_event(1));
+  CHECK(m1.open_trading());
+  CHECK(m2.open_trading());
+
+  CHECK(m1.submit_trade(10, TradeAction::Buy, 2));
+  CHECK(m1.submit_trade(20, TradeAction::Sell, 1));
+  CHECK(m2.submit_trade(10, TradeAction::Buy, 2));
+  CHECK(m2.submit_trade(20, TradeAction::Sell, 1));
+
+  const auto res1 = m1.resolve_market();
+  const auto res2 = m2.resolve_market();
+  CHECK(res1.has_value() && res2.has_value());
+  CHECK(res1->closing_price == res2->closing_price);
+  CHECK(res1->closing_health == res2->closing_health);
+  CHECK(res1->sentiment == res2->sentiment);
+  CHECK(res1->volatility == res2->volatility);
+  CHECK(res1->liquidity == res2->liquidity);
+  CHECK(m1.canonical_state() == m2.canonical_state());
+
+  // 2. Neutral conditions with baseline and candidate coefficients
+  const auto base_neutral_p = Match::calculate_price(10, 5, 0, 0, 0, 50, MarketModelCoefficients::approved_baseline());
+  CHECK(base_neutral_p == 10);
+  const auto cand_neutral_p = Match::calculate_price(10, 5, 0, 0, 0, 50, candidate);
+  CHECK(cand_neutral_p == 10);
+
+  // 3. Strict bounding under extreme inputs
+  const auto extreme_high = Match::calculate_price(99, 10, 2, 20, 10, 100, candidate);
+  CHECK(extreme_high == 100);
+  const auto extreme_low = Match::calculate_price(2, 0, -2, -20, -10, 5, candidate);
+  CHECK(extreme_low == 1);
+
+  // Arithmetic overflow safety with large demand
+  const auto safe_clamp = Match::calculate_price(50, 10, 2, 1000, 10, 50, candidate);
+  CHECK(safe_clamp == 100);
+
+  // 4. Indicator consistency
+  CHECK(res1->sentiment >= -10 && res1->sentiment <= 10);
+  CHECK(res1->volatility <= 20U);
+  CHECK(res1->liquidity <= 100U);
+}
+
+void test_stage4_negative_floor_division() {
+  // Test mathematical floor division vs C++ truncating division
+  // For positive numbers: floor division matches C++ truncation
+  CHECK(Match::floor_div(0, 2) == 0);
+  CHECK(Match::floor_div(1, 2) == 0);
+  CHECK(Match::floor_div(2, 2) == 1);
+  CHECK(Match::floor_div(3, 2) == 1);
+  CHECK(Match::floor_div(7, 2) == 3);
+  CHECK(Match::floor_div(9, 2) == 4);
+
+  // For negative odd numbers: mathematical floor rounds DOWN to more negative integer
+  // (C++ truncating division rounds towards zero, which caused Stage 4 bugs)
+  CHECK(Match::floor_div(-1, 2) == -1);  // C++: -1 / 2 == 0
+  CHECK(Match::floor_div(-3, 2) == -2);  // C++: -3 / 2 == -1
+  CHECK(Match::floor_div(-7, 2) == -4);  // C++: -7 / 2 == -3
+  CHECK(Match::floor_div(-9, 2) == -5);  // C++: -9 / 2 == -4
+
+  // For negative even numbers: division is exact
+  CHECK(Match::floor_div(-2, 2) == -1);
+  CHECK(Match::floor_div(-4, 2) == -2);
+  CHECK(Match::floor_div(-6, 2) == -3);
+  CHECK(Match::floor_div(-8, 2) == -4);
+
+  // Odd/even boundaries around zero for net demand
+  CHECK(Match::floor_div(-5, 2) == -3);
+  CHECK(Match::floor_div(-4, 2) == -2);
+  CHECK(Match::floor_div(-3, 2) == -2);
+  CHECK(Match::floor_div(-2, 2) == -1);
+  CHECK(Match::floor_div(-1, 2) == -1);
+  CHECK(Match::floor_div(0, 2) == 0);
+  CHECK(Match::floor_div(1, 2) == 0);
+  CHECK(Match::floor_div(2, 2) == 1);
+  CHECK(Match::floor_div(3, 2) == 1);
+  CHECK(Match::floor_div(4, 2) == 2);
+  CHECK(Match::floor_div(5, 2) == 2);
+
+  // Negative divisor coverage
+  CHECK(Match::floor_div(7, -2) == -4);
+  CHECK(Match::floor_div(-7, -2) == 3);
+  CHECK(Match::floor_div(-1, -2) == 0);
+  CHECK(Match::floor_div(-3, -2) == 1);
+
+  // Extreme arithmetic boundaries and INT32_MIN overflow safety (INT32_MIN / -1 must not UB)
+  CHECK(Match::floor_div(std::numeric_limits<std::int32_t>::min(), -1) == std::numeric_limits<std::int32_t>::max());
+  CHECK(Match::floor_div(std::numeric_limits<std::int32_t>::min(), 1) == std::numeric_limits<std::int32_t>::min());
+  CHECK(Match::floor_div(std::numeric_limits<std::int32_t>::min(), 2) == -1073741824);
+  CHECK(Match::floor_div(std::numeric_limits<std::int32_t>::max(), 1) == std::numeric_limits<std::int32_t>::max());
+  CHECK(Match::floor_div(std::numeric_limits<std::int32_t>::max(), -1) == -std::numeric_limits<std::int32_t>::max());
+
+  // Division by zero throws std::invalid_argument instead of silently returning 0
+  bool threw_zero_pos = false;
+  try { (void)Match::floor_div(10, 0); } catch (const std::invalid_argument&) { threw_zero_pos = true; }
+  CHECK(threw_zero_pos);
+
+  bool threw_zero_neg = false;
+  try { (void)Match::floor_div(-10, 0); } catch (const std::invalid_argument&) { threw_zero_neg = true; }
+  CHECK(threw_zero_neg);
+
+  bool threw_zero_zero = false;
+  try { (void)Match::floor_div(0, 0); } catch (const std::invalid_argument&) { threw_zero_zero = true; }
+  CHECK(threw_zero_zero);
+
+  // Verify candidate pricing explicitly across sentiment values: -9, -7, -3, -1, 0, 1, 3, 7, 9
+  // Candidate coefficients: w_e=2, w_d=1, w_v=1, w_vol=1, w_h=1, w_s=1, w_l=2
+  const auto candidate = MarketModelCoefficients::candidate_proposal();
+  // Neutral opening: P=50, H=5, e=0, D=0, L=50% -> market_dir=0 -> volatility term=0
+  CHECK(Match::calculate_price(50, 5, 0, 0, -9, 50, candidate) == 50 - 5); // 45
+  CHECK(Match::calculate_price(50, 5, 0, 0, -7, 50, candidate) == 50 - 4); // 46
+  CHECK(Match::calculate_price(50, 5, 0, 0, -3, 50, candidate) == 50 - 2); // 48
+  CHECK(Match::calculate_price(50, 5, 0, 0, -1, 50, candidate) == 50 - 1); // 49
+  CHECK(Match::calculate_price(50, 5, 0, 0,  0, 50, candidate) == 50 + 0); // 50
+  CHECK(Match::calculate_price(50, 5, 0, 0,  1, 50, candidate) == 50 + 0); // 50
+  CHECK(Match::calculate_price(50, 5, 0, 0,  3, 50, candidate) == 50 + 1); // 51
+  CHECK(Match::calculate_price(50, 5, 0, 0,  7, 50, candidate) == 50 + 3); // 53
+  CHECK(Match::calculate_price(50, 5, 0, 0,  9, 50, candidate) == 50 + 4); // 54
+}
+
+void test_stage4_recalculated_scenarios() {
+  const auto candidate = MarketModelCoefficients::candidate_proposal();
+
+  // Strong negative scenario (Scenario 2):
+  // Opening P=10, H=5, e=-2, D=-1
+  // Closing health H' = clamp(5 - 2 - 1, 0, 10) = 2
+  // Sentiment S' = -1 -> floor(-1/2) = -1
+  // Gross volume G = 1, e = -2 -> V = clamp(1 + 2*2, 0, 20) = 5
+  // Volatility term: w_vol * dir_market * floor(5/4) = 1 * (-1) * 1 = -1
+  // Components: w_e*e = -4, w_d*sign(D) = -1, w_v = 0, w_vol = -1, w_h*(H'-5) = -3, w_s*floor(S'/2) = -1, w_l = 0
+  // Delta P = -4 - 1 + 0 - 1 - 3 - 1 = -10
+  // Closing price P' = clamp(10 - 10, 1, 100) = 1 (clamped)
+  const auto p_scen2_with_v = Match::calculate_price(10, 2, -2, -1, -1, 51, 5, candidate);
+  CHECK(p_scen2_with_v == 1);
+  const auto p_scen2_default_v = Match::calculate_price(10, 2, -2, -1, -1, 51, candidate);
+  CHECK(p_scen2_default_v == 1);
+
+  // Live match resolution of Scenario 2
+  Match m(roster(), candidate);
+  CHECK(m.start());
+  CHECK(m.publish_event(-2));
+  CHECK(m.open_trading());
+  CHECK(m.submit_trade(10, TradeAction::Sell, 1));
+  const auto res = m.resolve_market();
+  CHECK(res.has_value());
+  CHECK(res->closing_health == 2);
+  CHECK(res->sentiment == -1);
+  CHECK(res->volatility == 5U);
+  CHECK(res->closing_price == 1);
+
+  // Scenario 5 (Low Sentiment Bear Panic):
+  // P=20, H=1, e=-1, D=-4, S'=-7, L=54%
+  // Without volatility (V=0): Delta P = -12 -> P' = 8
+  // With volatility (G=4, e=-1 -> V=6 -> floor(6/4)=1 -> vol term = -1): Delta P = -13 -> P' = 7
+  const auto p_scen5_no_v = Match::calculate_price(20, 1, -1, -4, -7, 54, 0, candidate);
+  CHECK(p_scen5_no_v == 8);
+  const auto p_scen5_with_v = Match::calculate_price(20, 1, -1, -4, -7, 54, 6, candidate);
+  CHECK(p_scen5_with_v == 7);
+
+  // Scenario 11 (Distressed Company):
+  // P=30, H=1, e=0, D=-1, S'=-1, L=51%
+  // G=1, e=0 -> V=1 -> floor(1/4)=0 -> vol term = 0
+  // w_e=0, w_d=-1, w_v=0, w_vol=0, w_h=-4, w_s=floor(-1/2)=-1 -> Delta P = -6 -> P' = 24
+  const auto p_scen11 = Match::calculate_price(30, 1, 0, -1, -1, 51, 1, candidate);
+  CHECK(p_scen11 == 24);
+  CHECK(Match::calculate_price(30, 1, 0, -1, -1, 51, candidate) == 24);
+
+  // Scenario 9 / 7B (Low Liquidity Squeeze):
+  // Opening P=15, H=6, closing H'=8, e=1, D=2, S'=1, closing reserve=10, total supply=100 -> L=10% (< 20%)
+  // G=2, e=1 -> V = clamp(2 + 2*1, 0, 20) = 4 -> floor(4/4)=1 -> vol term = +1
+  // Scarcity surcharge (+w_l = +2) applies when buying into depleted reserve:
+  // With V=4: Delta P = +2 (event) + 1 (demand) + 0 (volume) + 1 (vol) + 3 (health) + 0 (sentiment) + 2 (scarcity) = +9 -> P' = 24
+  // Without volatility (V=0): Delta P = +2 + 1 + 0 + 0 + 3 + 0 + 2 = +8 -> P' = 23
+  const auto p_scen9_with_v = Match::calculate_price(15, 8, 1, 2, 1, 10, 4, candidate);
+  CHECK(p_scen9_with_v == 24);
+  const auto p_scen9_no_v = Match::calculate_price(15, 8, 1, 2, 1, 10, 0, candidate);
+  CHECK(p_scen9_no_v == 23);
+
+  // Low vs High reserve liquidity with otherwise identical inputs:
+  // Scenario 7A (High reserve L=68%): scarcity surcharge does NOT apply
+  const auto p_scen7a_with_v = Match::calculate_price(15, 8, 1, 2, 1, 68, 4, candidate);
+  CHECK(p_scen7a_with_v == 22);
+  const auto p_scen7a_no_v = Match::calculate_price(15, 8, 1, 2, 1, 68, 0, candidate);
+  CHECK(p_scen7a_no_v == 21);
+
+  // Confirm scarcity surcharge difference: 7B is strictly +2 higher than 7A in both cases
+  CHECK(p_scen9_with_v - p_scen7a_with_v == 2);
+  CHECK(p_scen9_no_v - p_scen7a_no_v == 2);
+}
+
+void test_stage4_gross_vs_net_volume_and_volatility() {
+  const auto candidate = MarketModelCoefficients::candidate_proposal();
+
+  // Test 1: Zero trading and neutral event: G=0, D=0 -> Volatility = 0
+  Match m1(roster(), candidate);
+  CHECK(m1.start());
+  CHECK(m1.publish_event(0));
+  CHECK(m1.open_trading());
+  const auto res1 = m1.resolve_market();
+  CHECK(res1.has_value());
+  CHECK(res1->executed_buys == 0U);
+  CHECK(res1->executed_sells == 0U);
+  CHECK(res1->volatility == 0U);
+  CHECK(res1->closing_price == 10);
+
+  // Test 2: Equal gross buys and sells (B=2, S=2, e=0): G=4, D=0
+  // Gross volume G=4 must yield non-zero volatility (V = 4), not 0!
+  // Neutral market direction (D=0, e=0 -> dir_market=0) ensures volatility term is 0.
+  // Preserves neutral price behavior without upward or downward bias!
+  Match m2(roster(), candidate);
+  CHECK(m2.start());
+  CHECK(m2.publish_event(0));
+  CHECK(m2.open_trading());
+  CHECK(m2.submit_trade(10, TradeAction::Buy, 2));
+  CHECK(m2.submit_trade(20, TradeAction::Sell, 2));
+  const auto res2 = m2.resolve_market();
+  CHECK(res2.has_value());
+  CHECK(res2->executed_buys == 2U);
+  CHECK(res2->executed_sells == 2U);
+  CHECK(res2->volatility == 4U);  // Repaired: correctly reflects 4 shares traded!
+  CHECK(res2->closing_price == 10); // Price remains neutral (zero bias in balanced market)
+
+  // Test 3: Same net demand (+3) but different gross volume
+  // Case A: Opening P=10, B=3, S=0 -> G=3, D=+3, e=0 -> V=3 -> floor(3/4)=0 -> vol term = 0 -> Delta P = +3 -> P'=13
+  Match mA(roster(), candidate);
+  CHECK(mA.start());
+  CHECK(mA.publish_event(0));
+  CHECK(mA.open_trading());
+  CHECK(mA.submit_trade(10, TradeAction::Buy, 3));
+  const auto resA = mA.resolve_market();
+  CHECK(resA.has_value());
+  CHECK(resA->executed_buys == 3U);
+  CHECK(resA->executed_sells == 0U);
+  CHECK(resA->volatility == 3U);
+  CHECK(resA->closing_price == 13);
+
+  // Case B: Opening P=10, B=5, S=2 -> G=7, D=+3, e=0 -> V=7 -> floor(7/4)=1 -> vol term = +1 -> Delta P = +4 -> P'=14
+  Match mB(roster(), candidate);
+  CHECK(mB.start());
+  CHECK(mB.publish_event(0));
+  CHECK(mB.open_trading());
+  CHECK(mB.submit_trade(10, TradeAction::Buy, 5));
+  CHECK(mB.submit_trade(20, TradeAction::Sell, 2));
+  const auto resB = mB.resolve_market();
+  CHECK(resB.has_value());
+  CHECK(resB->executed_buys == 5U);
+  CHECK(resB->executed_sells == 2U);
+  CHECK(resB->volatility == 7U); // Repaired: V=7 correctly reflects the 7 shares traded
+  CHECK(resB->closing_price == 14);
+
+  // Volatility explicitly changes closing price when gross volume changes with equal net demand
+  CHECK(resB->closing_price > resA->closing_price);
+  CHECK(resB->closing_price - resA->closing_price == 1);
+
+  // With opening P=20 as in Scenario 5 table:
+  CHECK(Match::calculate_price(20, 6, 0, 3, 1, 47, 3, candidate) == 23);
+  CHECK(Match::calculate_price(20, 6, 0, 3, 1, 47, 7, candidate) == 24);
+}
+
+void test_stage4_all_nine_reproducible_scenarios() {
+  const auto candidate = MarketModelCoefficients::candidate_proposal();
+
+  // Scenario 1: No trading, neutral event (P=10, H=5, e=0, B=0, S=0) -> P'=10, H'=5, V=0
+  CHECK(Match::calculate_price(10, 5, 0, 0, 0, 50, 0, candidate) == 10);
+
+  // Scenario 2: Equal gross buys/sells (P=50, H=5, e=0, B=2, S=2, D=0, G=4) -> P'=50, H'=5, V=4
+  CHECK(Match::calculate_price(50, 5, 0, 0, 0, 50, 4, candidate) == 50);
+
+  // Scenario 3: Large positive net demand (P=50, H=6, e=0, D=+6, S'=+3, L=44%, V=6) -> P'=56
+  // Delta P = 0 (event) + 1 (demand) + 2 (volume) + 1 (vol) + 1 (health) + 1 (sentiment) = +6 -> P'=56
+  CHECK(Match::calculate_price(50, 6, 0, 6, 3, 44, 6, candidate) == 56);
+
+  // Scenario 4: Large negative net demand (P=50, H=4, e=0, D=-6, S'=-3, L=56%, V=6) -> P'=43
+  // Delta P = 0 - 1 - 2 - 1 - 1 - 2 = -7 -> P'=43
+  CHECK(Match::calculate_price(50, 4, 0, -6, -3, 56, 6, candidate) == 43);
+
+  // Scenario 5: Same net demand (+3), different gross volume (P=20, H=6, e=0, D=+3, S'=+1)
+  // 5A: G=3 -> V=3 -> floor(3/4)=0 -> P'=23
+  CHECK(Match::calculate_price(20, 6, 0, 3, 1, 47, 3, candidate) == 23);
+  // 5B: G=7 -> V=7 -> floor(7/4)=1 -> P'=24
+  CHECK(Match::calculate_price(20, 6, 0, 3, 1, 47, 7, candidate) == 24);
+
+  // Scenario 6A: Positive event (P=10, H=8, e=+2, D=+1, S'=+1, L=49%, V=5) -> P'=19
+  CHECK(Match::calculate_price(10, 8, 2, 1, 1, 49, 5, candidate) == 19);
+
+  // Scenario 6B: Negative event (P=10, H=2, e=-2, D=-1, S'=-1, L=51%, V=5) -> P'=1 (clamped)
+  CHECK(Match::calculate_price(10, 2, -2, -1, -1, 51, 5, candidate) == 1);
+
+  // Scenario 7A: High liquidity reserve (P=15, H=8, e=+1, D=+2, S'=+1, L=68%, V=4) -> P'=22
+  CHECK(Match::calculate_price(15, 8, 1, 2, 1, 68, 4, candidate) == 22);
+
+  // Scenario 7B: Low liquidity squeeze (P=15, H=8, e=+1, D=+2, S'=+1, L=10%, V=4) -> P'=24
+  CHECK(Match::calculate_price(15, 8, 1, 2, 1, 10, 4, candidate) == 24);
+
+  // Scenario 8A: Healthy company (P=30, H=10, e=0, D=+1, S'=+1, L=49%, V=1) -> P'=36
+  CHECK(Match::calculate_price(30, 10, 0, 1, 1, 49, 1, candidate) == 36);
+
+  // Scenario 8B: Distressed company (P=30, H=1, e=0, D=-1, S'=-1, L=51%, V=1) -> P'=24
+  CHECK(Match::calculate_price(30, 1, 0, -1, -1, 51, 1, candidate) == 24);
+
+  // Scenario 9A: Upper bound clamping (P=95, H=10, e=+2, D=+5, S'=+2, L=45%, V=9) -> P'=100
+  CHECK(Match::calculate_price(95, 10, 2, 5, 2, 45, 9, candidate) == 100);
+
+  // Scenario 9B: Lower bound clamping (P=5, H=0, e=-2, D=-5, S'=-3, L=55%, V=9) -> P'=1
+  CHECK(Match::calculate_price(5, 0, -2, -5, -3, 55, 9, candidate) == 1);
+}
+
+void test_settlement_order_provenance_and_defaults() {
+  // 1. Verify default Match uses approved_baseline coefficients
+  Match default_match(roster());
+  CHECK(default_match.market_coefficients().event_weight == 2);
+  CHECK(default_match.market_coefficients().demand_weight == 1);
+  CHECK(default_match.market_coefficients().volume_weight == 0);
+  CHECK(default_match.market_coefficients().volatility_weight == 0);
+  CHECK(default_match.market_coefficients().health_weight == 0);
+  CHECK(default_match.market_coefficients().sentiment_weight == 0);
+  CHECK(default_match.market_coefficients().liquidity_penalty == 0);
+
+  // 2. Verify calculate_price() default argument uses approved_baseline
+  CHECK(Match::calculate_price(10, 5, 0, 0, 0, 50) == 10);
+  // With baseline, health dev (H=10), sentiment (S=10), and volatility (V=20) do NOT affect price
+  CHECK(Match::calculate_price(10, 10, 0, 0, 10, 50, 20) == 10);
+  CHECK(Match::calculate_price(10, 10, 0, 0, 10, 50) == 10);
+
+  // 3. Verify settlement order provenance: rotating seat priority ((round - 1) % N)
+  // In round 1, seat priority is 0
+  CHECK(default_match.start());
+  CHECK(default_match.publish_event(0));
+  CHECK(default_match.open_trading());
+  CHECK(default_match.state().seat_priority == 0U);
+
+  // Synthetic match with low reserve to test all-or-nothing allocation in rotating seat order
+  auto st = base_state();
+  st.reserve = 3;
+  st.players[0].shares += 47; // held=97; total remains 100 including reserve
+  Match shortage_match = Match::from_state(std::move(st));
+
+  // Seat 0 requests 2 shares, Seat 1 requests 2 shares
+  CHECK(shortage_match.submit_trade(10, TradeAction::Buy, 2));
+  CHECK(shortage_match.submit_trade(20, TradeAction::Buy, 2));
+
+  // Seat 0 is first in rotating priority: fills 2 shares (reserve drops 3 -> 1)
+  // Seat 1 requests 2 shares, but remaining reserve is 1 < 2: rejected all-or-nothing!
+  const auto res = shortage_match.resolve_market();
+  CHECK(res.has_value());
+  CHECK(res->executed_buys == 2U);
+  CHECK(res->receipts[0].disposition == TradeDisposition::Executed);
+  CHECK(res->receipts[0].quantity == 2U);
+  CHECK(res->receipts[1].disposition == TradeDisposition::RejectedInsufficientReserve);
+  CHECK(res->receipts[1].quantity == 0U);
+
+  // Conservation of 20N supply: sum(shares) + reserve == 20N = 100
+  Shares total_shares = shortage_match.state().reserve;
+  for (const auto& p : shortage_match.state().players) {
+    total_shares += p.shares;
+  }
+  CHECK(total_shares == shortage_match.state().total_supply);
+}
+
 }  // namespace
 
 int main() {
@@ -991,6 +1539,14 @@ int main() {
   test_invalid_votes_and_eliminated_voter();
   test_eliminated_players_cannot_act_or_be_targets();
   test_deterministic_replay();
+  test_stage4_quantity_trading();
+  test_stage4_research_action();
+  test_stage4_advanced_market_model();
+  test_stage4_negative_floor_division();
+  test_stage4_recalculated_scenarios();
+  test_stage4_gross_vs_net_volume_and_volatility();
+  test_stage4_all_nine_reproducible_scenarios();
+  test_settlement_order_provenance_and_defaults();
   if (failures != 0) {
     std::cerr << failures << " test assertion(s) failed\n";
     return EXIT_FAILURE;

@@ -2,7 +2,9 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +22,7 @@ inline constexpr std::uint32_t kRoundCount = 3;
 inline constexpr Credits kStartingCredits = 100;
 inline constexpr Shares kStartingShares = 10;
 inline constexpr Credits kCreditBalanceCap = 1'000'000;
+inline constexpr Credits kResearchCost = 10;
 inline constexpr std::int32_t kInitialHealth = 5;
 inline constexpr std::int32_t kMinHealth = 0;
 inline constexpr std::int32_t kMaxHealth = 10;
@@ -49,7 +52,9 @@ enum class ErrorCode {
   ClueAlreadyUsed,
   InvalidVoteTarget,
   VoteAlreadySubmitted,
-  InvalidState
+  InvalidState,
+  InvalidQuantity,
+  ResearchAlreadyUsed
 };
 
 struct PlayerSetup {
@@ -65,11 +70,14 @@ struct PlayerState {
   bool active{true};
   bool action_submitted{false};
   std::optional<TradeAction> order;
+  Shares order_quantity{0};
   bool vote_submitted{false};
   std::optional<PlayerId> vote_target;  // null means abstention
   bool clue_used{false};
   std::optional<PlayerId> clue_target;
   std::optional<bool> clue_result;
+  bool research_used{false};
+  std::optional<std::string> research_direction;
 };
 
 struct CompanyState {
@@ -89,6 +97,31 @@ struct RoleCounts {
   std::size_t employees{};
 };
 
+struct MarketModelCoefficients {
+  // Candidate coefficients pending explicit user review (documented in docs/market-model-proposal.md)
+  std::int32_t event_weight{2};        // Approved: business event impact multiplier
+  std::int32_t demand_weight{1};       // Approved: net demand direction multiplier sign(B - S)
+  std::int32_t volume_weight{0};       // Candidate: excess quantity impact: volume_weight * sign(D) * floor((|D| - 1) / 2)
+  std::int32_t volatility_weight{0};   // Candidate: volatility magnification: volatility_weight * dir_market * floor(V / 4)
+  std::int32_t health_weight{0};       // Candidate: fundamental valuation impact: (H' - 5) * health_weight
+  std::int32_t sentiment_weight{0};    // Candidate: market sentiment adjustment: sentiment_weight * floor(sentiment / 2)
+  std::int32_t liquidity_penalty{0};   // Candidate: reserve depletion scarcity surcharge (+w_l) when buying and reserve < 20%
+
+  [[nodiscard]] static constexpr MarketModelCoefficients approved_baseline() noexcept {
+    return MarketModelCoefficients{2, 1, 0, 0, 0, 0, 0};
+  }
+
+  [[nodiscard]] static constexpr MarketModelCoefficients candidate_proposal() noexcept {
+    return MarketModelCoefficients{2, 1, 1, 1, 1, 1, 2};
+  }
+};
+
+struct ResearchOutcome {
+  std::string direction;
+  bool already_used{false};
+  Credits credits_remaining{};
+};
+
 // Five seats remain the default; variable-size games support 3..64 active players.
 [[nodiscard]] std::optional<SupplyPlan> supply_plan(std::size_t seated_players) noexcept;
 [[nodiscard]] std::optional<RoleCounts> role_counts(std::size_t seated_players) noexcept;
@@ -106,6 +139,9 @@ struct MatchState {
   bool clue_used{false};
   std::optional<PlayerId> clue_target;
   std::optional<bool> clue_result;
+  std::int32_t sentiment{0};
+  std::uint32_t volatility{0};
+  std::uint32_t liquidity{50};
   Outcome outcome{Outcome::None};
 };
 
@@ -119,6 +155,7 @@ enum class TradeDisposition { Executed, RejectedInsufficientReserve, NoOrder };
 struct TradeReceipt {
   PlayerId player{};
   TradeDisposition disposition{TradeDisposition::NoOrder};
+  Shares quantity{0};
 };
 
 struct MarketResult {
@@ -131,6 +168,9 @@ struct MarketResult {
   std::int32_t closing_health{};
   std::int32_t closing_price{};
   Shares closing_reserve{};
+  std::int32_t sentiment{0};
+  std::uint32_t volatility{0};
+  std::uint32_t liquidity{50};
   Outcome outcome{Outcome::None};
 };
 
@@ -162,24 +202,71 @@ struct VoteResolution {
 class Match {
  public:
   // Role assignment is deterministic and validated against role_counts(N).
-  explicit Match(const std::vector<PlayerSetup>& roster);
+  explicit Match(const std::vector<PlayerSetup>& roster,
+                 MarketModelCoefficients coeffs = MarketModelCoefficients::approved_baseline());
 
   // Allows deterministic, invariant-checked fixtures such as reserve=1.
-  [[nodiscard]] static Match from_state(MatchState state);
+  [[nodiscard]] static Match from_state(MatchState state,
+                                       MarketModelCoefficients coeffs = MarketModelCoefficients::approved_baseline());
 
   [[nodiscard]] const MatchState& state() const noexcept { return state_; }
   [[nodiscard]] const std::vector<std::string>& event_log() const noexcept { return events_; }
 
+  void set_market_coefficients(const MarketModelCoefficients& coeffs) noexcept { coefficients_ = coeffs; }
+  [[nodiscard]] const MarketModelCoefficients& market_coefficients() const noexcept { return coefficients_; }
+
   [[nodiscard]] OperationResult start();
   [[nodiscard]] OperationResult publish_event(std::int32_t impact);
   [[nodiscard]] OperationResult open_trading();
-  [[nodiscard]] OperationResult submit_trade(PlayerId player, TradeAction action);
+  [[nodiscard]] OperationResult submit_trade(PlayerId player, TradeAction action, Shares quantity = 1);
   [[nodiscard]] MarketResolution resolve_market();
   [[nodiscard]] std::optional<bool> use_clue(PlayerId investigator, PlayerId target,
                                                OperationResult& result);
+  [[nodiscard]] std::optional<ResearchOutcome> conduct_research(PlayerId player,
+                                                               OperationResult& result);
   [[nodiscard]] OperationResult open_voting();
   [[nodiscard]] OperationResult submit_vote(PlayerId voter, std::optional<PlayerId> target);
   [[nodiscard]] VoteResolution resolve_votes();
+
+  // Safe mathematical integer floor division helper: floor(a / b)
+  // Valid domain: b != 0. Avoids undefined behavior on INT32_MIN / -1 by clamping or using 64-bit arithmetic.
+  [[nodiscard]] static constexpr std::int32_t floor_div(std::int32_t a, std::int32_t b) {
+    if (b == 0) {
+      throw std::invalid_argument("floor_div: division by zero");
+    }
+    const std::int64_t a64 = a;
+    const std::int64_t b64 = b;
+    std::int64_t q = a64 / b64;
+    const std::int64_t r = a64 % b64;
+    if (r != 0 && ((a64 < 0) ^ (b64 < 0))) {
+      --q;
+    }
+    if (q > std::numeric_limits<std::int32_t>::max()) {
+      return std::numeric_limits<std::int32_t>::max();
+    }
+    if (q < std::numeric_limits<std::int32_t>::min()) {
+      return std::numeric_limits<std::int32_t>::min();
+    }
+    return static_cast<std::int32_t>(q);
+  }
+
+  // Price calculation under specific market model coefficients
+  [[nodiscard]] static std::int32_t calculate_price(std::int32_t opening_price,
+                                                    std::int32_t closing_health,
+                                                    std::int32_t event_impact,
+                                                    std::int32_t demand,
+                                                    std::int32_t sentiment,
+                                                    std::uint32_t liquidity,
+                                                    const MarketModelCoefficients& coeffs = MarketModelCoefficients::approved_baseline()) noexcept;
+
+  [[nodiscard]] static std::int32_t calculate_price(std::int32_t opening_price,
+                                                    std::int32_t closing_health,
+                                                    std::int32_t event_impact,
+                                                    std::int32_t demand,
+                                                    std::int32_t sentiment,
+                                                    std::uint32_t liquidity,
+                                                    std::uint32_t volatility,
+                                                    const MarketModelCoefficients& coeffs = MarketModelCoefficients::approved_baseline()) noexcept;
 
   // The impact is private game information; callers must apply audience authorization.
   [[nodiscard]] std::optional<std::int32_t> insider_hint(PlayerId player,
@@ -194,7 +281,8 @@ class Match {
   [[nodiscard]] static std::string_view to_string(ErrorCode value) noexcept;
 
  private:
-  explicit Match(MatchState state, bool validate);
+  explicit Match(MatchState state, bool validate,
+                 MarketModelCoefficients coeffs = MarketModelCoefficients::approved_baseline());
   [[nodiscard]] PlayerState* find_player(PlayerId id) noexcept;
   [[nodiscard]] const PlayerState* find_player(PlayerId id) const noexcept;
   [[nodiscard]] OperationResult fail(ErrorCode code, std::string detail);
@@ -204,6 +292,7 @@ class Match {
 
   MatchState state_;
   std::vector<std::string> events_;
+  MarketModelCoefficients coefficients_{MarketModelCoefficients::approved_baseline()};
 };
 
 }  // namespace darkpool

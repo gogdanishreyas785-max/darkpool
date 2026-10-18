@@ -35,6 +35,9 @@ class ClientState {
   [[nodiscard]] std::optional<std::string> private_role() const noexcept { return private_role_; }
   void set_private_role(std::string role_name) { private_role_ = std::move(role_name); }
 
+  [[nodiscard]] std::uint64_t latest_state_version() const noexcept { return latest_state_version_; }
+  void set_latest_state_version(std::uint64_t v) noexcept { latest_state_version_ = v; }
+
   [[nodiscard]] std::string prompt() const;
 
   [[nodiscard]] CommandResult process_input(std::string_view raw_line);
@@ -57,6 +60,7 @@ class ClientState {
   std::optional<PlayerId> player_id_{std::nullopt};
   std::optional<std::string> private_role_{std::nullopt};
   PendingPrompt pending_prompt_{PendingPrompt::None};
+  std::uint64_t latest_state_version_{0};
 };
 
 }  // namespace darkpool::cli

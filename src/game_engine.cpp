@@ -12,7 +12,8 @@ std::int32_t sign(std::int32_t value) noexcept {
   return (value > 0) - (value < 0);
 }
 
-std::int32_t clamp_value(std::int32_t value, std::int32_t low, std::int32_t high) noexcept {
+template <typename T>
+T clamp_value(T value, T low, T high) noexcept {
   return std::clamp(value, low, high);
 }
 
@@ -32,7 +33,8 @@ std::optional<RoleCounts> role_counts(std::size_t seated_players) noexcept {
   return RoleCounts{insiders, investigators, seated_players - insiders - investigators};
 }
 
-Match::Match(const std::vector<PlayerSetup>& roster) {
+Match::Match(const std::vector<PlayerSetup>& roster, MarketModelCoefficients coeffs)
+    : coefficients_(coeffs) {
   const auto expected_roles = role_counts(roster.size());
   if (!expected_roles) throw std::invalid_argument("roster must contain between 3 and 64 players");
   std::unordered_set<PlayerId> ids;
@@ -59,12 +61,22 @@ Match::Match(const std::vector<PlayerSetup>& roster) {
   const auto supply = supply_plan(roster.size()).value();
   state_.total_supply = supply.total;
   state_.reserve = supply.reserve;
+  state_.liquidity = (state_.total_supply > 0) ? (state_.reserve * 100) / state_.total_supply : 50;
   events_.push_back("init|players=" + std::to_string(roster.size()) +
                     "|supply=" + std::to_string(supply.total) +
                     "|reserve=" + std::to_string(supply.reserve) + "|health=5|price=10");
 }
 
-Match::Match(MatchState state, bool validate) : state_(std::move(state)) {
+Match::Match(MatchState state, bool validate, MarketModelCoefficients coeffs)
+    : state_(std::move(state)), coefficients_(coeffs) {
+  for (auto& p : state_.players) {
+    if (p.action_submitted && p.order && *p.order != TradeAction::Hold && p.order_quantity == 0) {
+      p.order_quantity = 1;
+    }
+  }
+  if (state_.total_supply > 0 && state_.liquidity == 0 && state_.reserve > 0) {
+    state_.liquidity = (state_.reserve * 100) / state_.total_supply;
+  }
   if (validate) {
     std::string why;
     if (!validate_state(why)) throw std::invalid_argument("invalid match state: " + why);
@@ -72,7 +84,9 @@ Match::Match(MatchState state, bool validate) : state_(std::move(state)) {
   events_.push_back("fixture|validated=true");
 }
 
-Match Match::from_state(MatchState state) { return Match(std::move(state), true); }
+Match Match::from_state(MatchState state, MarketModelCoefficients coeffs) {
+  return Match(std::move(state), true, coeffs);
+}
 
 bool Match::validate_state(std::string& why) const {
   const auto invalid = [&why](const char* message) {
@@ -141,6 +155,18 @@ bool Match::validate_state(std::string& why) const {
   if (state_.company.health < kMinHealth || state_.company.health > kMaxHealth ||
       state_.company.price < kMinPrice || state_.company.price > kMaxPrice) {
     return invalid("company value outside inclusive bounds");
+  }
+  if (state_.sentiment < -10 || state_.sentiment > 10 ||
+      state_.volatility > 20 || state_.liquidity > 100) {
+    return invalid("market metrics outside inclusive bounds");
+  }
+  for (const auto& p : state_.players) {
+    if (p.research_used && !p.research_direction.has_value()) {
+      return invalid("used research requires recorded direction");
+    }
+    if (state_.phase == Phase::Lobby && p.research_used) {
+      return invalid("lobby cannot contain research history");
+    }
   }
   if (state_.round > kRoundCount || state_.event_impact < -2 || state_.event_impact > 2 ||
       state_.seat_priority >= state_.players.size() ||
@@ -354,15 +380,18 @@ bool Match::validate_state(std::string& why) const {
       (state_.phase == Phase::Finished && state_.company.health == 0)) {
     for (const auto& p : state_.players) {
       if (p.action_submitted && p.order) {
+        const auto qty = (p.order_quantity > 0) ? p.order_quantity : 1U;
         if (*p.order == TradeAction::Buy) {
-          if (p.credits < static_cast<Credits>(state_.company.price)) {
+          const auto total_cost = static_cast<std::uint64_t>(qty) * static_cast<std::uint64_t>(state_.company.price);
+          if (p.credits < static_cast<Credits>(total_cost)) {
             return invalid("recorded Buy order requires sufficient opening-price credits");
           }
         } else if (*p.order == TradeAction::Sell) {
-          if (p.shares == 0) {
-            return invalid("recorded Sell order requires at least one share");
+          if (p.shares < qty) {
+            return invalid("recorded Sell order requires owned shares");
           }
-          if (p.credits > kCreditBalanceCap - static_cast<Credits>(state_.company.price)) {
+          const auto total_proceeds = static_cast<std::uint64_t>(qty) * static_cast<std::uint64_t>(state_.company.price);
+          if (p.credits > kCreditBalanceCap - static_cast<Credits>(total_proceeds)) {
             return invalid("recorded Sell order would exceed per-player credit cap");
           }
         }
@@ -450,7 +479,7 @@ OperationResult Match::open_trading() {
   return {};
 }
 
-OperationResult Match::submit_trade(PlayerId id, TradeAction action) {
+OperationResult Match::submit_trade(PlayerId id, TradeAction action, Shares quantity) {
   if (state_.phase != Phase::Trading) return fail(ErrorCode::WrongPhase, "trade requires trading phase");
   auto* player = find_player(id);
   if (player == nullptr) return fail(ErrorCode::UnknownPlayer, "unknown player");
@@ -466,19 +495,105 @@ OperationResult Match::submit_trade(PlayerId id, TradeAction action) {
   if (action != TradeAction::Buy && action != TradeAction::Hold && action != TradeAction::Sell) {
     return reject_order(ErrorCode::InvalidAction, "unknown trade action");
   }
-  if (action == TradeAction::Buy && player->credits < static_cast<Credits>(state_.company.price)) {
-    return reject_order(ErrorCode::InsufficientCredits, "BUY requires opening price credits");
+
+  if (action != TradeAction::Hold) {
+    if (quantity == 0U) {
+      return reject_order(ErrorCode::InvalidQuantity, "trade quantity must be at least 1");
+    }
+    if (quantity > state_.total_supply) {
+      return reject_order(ErrorCode::InvalidQuantity, "trade quantity exceeds total supply");
+    }
+    const auto total_value = static_cast<std::uint64_t>(quantity) * static_cast<std::uint64_t>(state_.company.price);
+    if (total_value > static_cast<std::uint64_t>(kCreditBalanceCap)) {
+      return reject_order(ErrorCode::CreditCapExceeded, "trade value exceeds credit cap");
+    }
+    if (action == TradeAction::Buy && player->credits < static_cast<Credits>(total_value)) {
+      return reject_order(ErrorCode::InsufficientCredits, "BUY requires opening price credits for requested quantity");
+    }
+    if (action == TradeAction::Sell && player->shares < quantity) {
+      return reject_order(ErrorCode::NoSharesToSell, "SELL requires owned shares equal to or greater than quantity");
+    }
+    if (action == TradeAction::Sell &&
+        player->credits > kCreditBalanceCap - static_cast<Credits>(total_value)) {
+      return reject_order(ErrorCode::CreditCapExceeded, "SELL would exceed per-player credit cap");
+    }
   }
-  if (action == TradeAction::Sell && player->shares == 0) {
-    return reject_order(ErrorCode::NoSharesToSell, "SELL requires an owned share");
-  }
-  if (action == TradeAction::Sell &&
-      player->credits > kCreditBalanceCap - static_cast<Credits>(state_.company.price)) {
-    return reject_order(ErrorCode::CreditCapExceeded, "SELL would exceed per-player credit cap");
-  }
+
   player->order = action;
-  record("trade_submitted|player=" + std::to_string(id) + "|action=" + std::string(action == TradeAction::Buy ? "BUY" : action == TradeAction::Sell ? "SELL" : "HOLD"));
+  player->order_quantity = (action == TradeAction::Hold) ? 0U : quantity;
+  record("trade_submitted|player=" + std::to_string(id) +
+         "|action=" + std::string(action == TradeAction::Buy ? "BUY" : action == TradeAction::Sell ? "SELL" : "HOLD") +
+         "|quantity=" + std::to_string(player->order_quantity));
   return {};
+}
+
+std::optional<ResearchOutcome> Match::conduct_research(PlayerId id, OperationResult& result) {
+  if (state_.phase != Phase::Discussion) {
+    result = fail(ErrorCode::WrongPhase, "research requires discussion phase");
+    return std::nullopt;
+  }
+  auto* player = find_player(id);
+  if (player == nullptr) {
+    result = fail(ErrorCode::UnknownPlayer, "unknown player");
+    return std::nullopt;
+  }
+  if (!player->active) {
+    result = fail(ErrorCode::InactivePlayer, "inactive player");
+    return std::nullopt;
+  }
+  if (player->research_used) {
+    result = {};
+    return ResearchOutcome{player->research_direction.value_or("Neutral"), true, player->credits};
+  }
+  if (player->credits < kResearchCost) {
+    result = fail(ErrorCode::InsufficientCredits, "research requires 10 credits");
+    return std::nullopt;
+  }
+
+  player->credits -= kResearchCost;
+  player->research_used = true;
+  std::string dir = state_.event_impact > 0 ? "Positive" : (state_.event_impact < 0 ? "Negative" : "Neutral");
+  player->research_direction = dir;
+  record("research_used|player=" + std::to_string(id));
+  result = {};
+  return ResearchOutcome{dir, false, player->credits};
+}
+
+std::int32_t Match::calculate_price(std::int32_t opening_price, std::int32_t closing_health,
+                                    std::int32_t event_impact, std::int32_t demand,
+                                    std::int32_t sentiment, std::uint32_t liquidity,
+                                    std::uint32_t volatility,
+                                    const MarketModelCoefficients& coeffs) noexcept {
+  const auto demand_sign = sign(demand);
+  const auto event_sign = sign(event_impact);
+  const auto market_dir = (demand != 0) ? demand_sign : ((event_impact != 0) ? event_sign : 0);
+
+  std::int32_t delta_p = 0;
+  delta_p += coeffs.event_weight * event_impact;
+  delta_p += coeffs.demand_weight * demand_sign;
+  if (coeffs.volume_weight != 0 && std::abs(demand) > 1) {
+    delta_p += coeffs.volume_weight * (demand_sign * floor_div(std::abs(demand) - 1, 2));
+  }
+  if (coeffs.volatility_weight != 0 && market_dir != 0) {
+    delta_p += coeffs.volatility_weight * (market_dir * floor_div(static_cast<std::int32_t>(volatility), 4));
+  }
+  if (coeffs.health_weight != 0) {
+    delta_p += (closing_health - 5) * coeffs.health_weight;
+  }
+  if (coeffs.sentiment_weight != 0 && sentiment != 0) {
+    delta_p += coeffs.sentiment_weight * floor_div(sentiment, 2);
+  }
+  if (coeffs.liquidity_penalty != 0 && demand > 0 && liquidity < 20U) {
+    delta_p += coeffs.liquidity_penalty;
+  }
+  return clamp_value(opening_price + delta_p, kMinPrice, kMaxPrice);
+}
+
+std::int32_t Match::calculate_price(std::int32_t opening_price, std::int32_t closing_health,
+                                    std::int32_t event_impact, std::int32_t demand,
+                                    std::int32_t sentiment, std::uint32_t liquidity,
+                                    const MarketModelCoefficients& coeffs) noexcept {
+  return calculate_price(opening_price, closing_health, event_impact, demand, sentiment, liquidity, 0U, coeffs);
 }
 
 MarketResolution Match::resolve_market() {
@@ -497,48 +612,89 @@ MarketResolution Match::resolve_market() {
   for (std::uint32_t offset = 0; offset < count; ++offset) {
     const auto seat = (state_.seat_priority + offset) % count;
     const auto& p = state_.players[seat];
-    if (p.active && p.order == TradeAction::Buy && inventory > 0) {
-      buy_accepted[seat] = true;
-      --inventory;
+    const auto order_qty = (p.order_quantity > 0) ? p.order_quantity : 1U;
+    if (p.active && p.order == TradeAction::Buy) {
+      if (inventory >= order_qty) {
+        buy_accepted[seat] = true;
+        inventory -= order_qty;
+      }
     }
   }
 
   for (std::size_t i = 0; i < state_.players.size(); ++i) {
     auto& p = state_.players[i];
     TradeDisposition disposition = TradeDisposition::NoOrder;
+    Shares executed_qty = 0;
+    const auto order_qty = (p.order_quantity > 0) ? p.order_quantity : 1U;
     if (p.active && p.order == TradeAction::Buy) {
       if (!buy_accepted[i]) {
         disposition = TradeDisposition::RejectedInsufficientReserve;
       } else {
-        p.credits -= static_cast<Credits>(state_.company.price);
-        ++p.shares;
-        --state_.reserve;
-        ++result.executed_buys;
+        const auto cost = static_cast<Credits>(static_cast<std::int64_t>(order_qty) * static_cast<std::int64_t>(state_.company.price));
+        p.credits -= cost;
+        p.shares += order_qty;
+        state_.reserve -= order_qty;
+        result.executed_buys += order_qty;
+        executed_qty = order_qty;
         disposition = TradeDisposition::Executed;
       }
     } else if (p.active && p.order == TradeAction::Sell) {
-      p.credits += static_cast<Credits>(state_.company.price);
-      --p.shares;
-      ++state_.reserve;
-      ++result.executed_sells;
+      const auto proceeds = static_cast<Credits>(static_cast<std::int64_t>(order_qty) * static_cast<std::int64_t>(state_.company.price));
+      p.credits += proceeds;
+      p.shares -= order_qty;
+      state_.reserve += order_qty;
+      result.executed_sells += order_qty;
+      executed_qty = order_qty;
       disposition = TradeDisposition::Executed;
     }
-    result.receipts.push_back({p.id, disposition});
+    result.receipts.push_back({p.id, disposition, executed_qty});
     const auto disposition_text = disposition == TradeDisposition::Executed
         ? "executed"
         : disposition == TradeDisposition::RejectedInsufficientReserve ? "rejected_insufficient_reserve" : "no_order";
-    record("market_order|player=" + std::to_string(p.id) + "|result=" + disposition_text);
+    record("market_order|player=" + std::to_string(p.id) + "|result=" + disposition_text + "|qty=" + std::to_string(executed_qty));
   }
 
   const auto demand = static_cast<std::int32_t>(result.executed_buys) - static_cast<std::int32_t>(result.executed_sells);
   const auto demand_sign = sign(demand);
   state_.company.health = clamp_value(result.opening_health + result.event_impact + demand_sign, kMinHealth, kMaxHealth);
-  state_.company.price = clamp_value(result.opening_price + 2 * result.event_impact + demand_sign, kMinPrice, kMaxPrice);
+
+  // Update market indicators
+  // 1. Liquidity: percentage of total supply in reserve
+  state_.liquidity = (state_.total_supply > 0)
+      ? clamp_value(static_cast<std::uint32_t>((static_cast<std::uint64_t>(state_.reserve) * 100ULL) / static_cast<std::uint64_t>(state_.total_supply)), 0U, 100U)
+      : 50U;
+
+  // 2. Sentiment: deterministic update from net demand
+  std::int32_t sentiment_delta = 0;
+  if (demand != 0) {
+    sentiment_delta = demand_sign;
+    if (std::abs(demand) > 1) {
+      sentiment_delta = clamp_value(floor_div(demand, 2), -3, 3);
+    }
+  }
+  state_.sentiment = clamp_value(state_.sentiment + sentiment_delta, -10, 10);
+
+  // 3. Volatility: measure of price pressure and event uncertainty based on gross volume and event
+  const auto gross_volume = result.executed_buys + result.executed_sells;
+  const auto volatility_input = gross_volume + 2U * static_cast<std::uint32_t>(std::abs(result.event_impact));
+  state_.volatility = clamp_value(volatility_input, 0U, 20U);
+
+  // 4. Calculate closing price using centralized coefficients
+  state_.company.price = calculate_price(result.opening_price, state_.company.health, result.event_impact,
+                                         demand, state_.sentiment, state_.liquidity, state_.volatility, coefficients_);
+
   result.closing_health = state_.company.health;
   result.closing_price = state_.company.price;
   result.closing_reserve = state_.reserve;
+  result.sentiment = state_.sentiment;
+  result.volatility = state_.volatility;
+  result.liquidity = state_.liquidity;
   state_.phase = Phase::Clue;
-  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) + "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.health) + "|P=" + std::to_string(state_.company.price) + "|reserve=" + std::to_string(state_.reserve));
+  record("market|round=" + std::to_string(state_.round) + "|B=" + std::to_string(result.executed_buys) +
+         "|S=" + std::to_string(result.executed_sells) + "|H=" + std::to_string(state_.company.health) +
+         "|P=" + std::to_string(state_.company.price) + "|reserve=" + std::to_string(state_.reserve) +
+         "|sentiment=" + std::to_string(state_.sentiment) + "|volatility=" + std::to_string(state_.volatility) +
+         "|liquidity=" + std::to_string(state_.liquidity));
   if (state_.company.health == 0) finish(Outcome::InsiderWin);
   result.outcome = state_.outcome;
   return {{}, result};
@@ -674,6 +830,8 @@ std::string Match::canonical_state() const {
       << ";health=" << state_.company.health << ";price=" << state_.company.price
       << ";reserve=" << state_.reserve << ";supply=" << state_.total_supply
       << ";event=" << state_.event_impact << ";clue_used=" << (state_.clue_used ? 1 : 0)
+      << ";sentiment=" << state_.sentiment << ";volatility=" << state_.volatility
+      << ";liquidity=" << state_.liquidity
       << ";voters_at_open=" << state_.eligible_voters_at_open
       << ";seat_priority=" << state_.seat_priority
       << ";clue_target=" << (state_.clue_target ? std::to_string(*state_.clue_target) : "-")
@@ -684,9 +842,11 @@ std::string Match::canonical_state() const {
     out << "\nseat" << i << '=' << p.id << ',' << to_string(p.role) << ',' << p.credits << ',' << p.shares
         << ',' << (p.active ? 1 : 0) << ',' << (p.action_submitted ? 1 : 0) << ','
         << (p.order ? (*p.order == TradeAction::Buy ? "BUY" : *p.order == TradeAction::Sell ? "SELL" : "HOLD") : "-")
+        << ",qty=" << p.order_quantity
         << ',' << (p.vote_submitted ? 1 : 0) << ',' << (p.vote_target ? std::to_string(*p.vote_target) : "-")
         << ",clue=" << (p.clue_used ? std::to_string(p.id) + ":" + std::to_string(*p.clue_target) + ":" +
-            (*p.clue_result ? "1" : "0") : "-");
+            (*p.clue_result ? "1" : "0") : "-")
+        << ",research=" << (p.research_used ? p.research_direction.value_or("-") : "-");
   }
   return out.str();
 }
@@ -731,6 +891,7 @@ std::string_view Match::to_string(ErrorCode value) noexcept {
     case ErrorCode::NotInvestigator: return "NotInvestigator"; case ErrorCode::InvalidClueTarget: return "InvalidClueTarget";
     case ErrorCode::ClueAlreadyUsed: return "ClueAlreadyUsed"; case ErrorCode::InvalidVoteTarget: return "InvalidVoteTarget";
     case ErrorCode::VoteAlreadySubmitted: return "VoteAlreadySubmitted"; case ErrorCode::InvalidState: return "InvalidState";
+    case ErrorCode::InvalidQuantity: return "InvalidQuantity"; case ErrorCode::ResearchAlreadyUsed: return "ResearchAlreadyUsed";
   }
   return "UnknownError";
 }

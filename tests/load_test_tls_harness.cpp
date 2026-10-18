@@ -16,6 +16,7 @@ int main() {
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <csignal>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -174,95 +175,104 @@ struct TlsClient {
       }
     }
 
-    // Receive 4-byte header
-    char header[4];
-    std::size_t header_offset = 0;
-    while (header_offset < 4) {
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
-        failures.timeouts++;
-        failures.transport_failures++;
-        failures.last_failure_reason = "header read timed out";
-        return std::nullopt;
+    while (true) {
+      // Receive 4-byte header
+      char header[4];
+      std::size_t header_offset = 0;
+      while (header_offset < 4) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
+          failures.timeouts++;
+          failures.transport_failures++;
+          failures.last_failure_reason = "header read timed out";
+          return std::nullopt;
+        }
+        std::size_t count = 0;
+        std::string err;
+        const auto status = darkpool::transport::tls_read(
+            ssl.get(), header + header_offset, 4 - header_offset, count, err);
+        if (status == darkpool::transport::TlsIoStatus::Ok) {
+          header_offset += count;
+        } else if (status == darkpool::transport::TlsIoStatus::WantRead ||
+                   status == darkpool::transport::TlsIoStatus::WantWrite) {
+          pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
+          (void)poll(&pfd, 1, 1000);
+        } else {
+          failures.transport_failures++;
+          failures.last_failure_reason = "tls_read header failed: " + err;
+          return std::nullopt;
+        }
       }
-      std::size_t count = 0;
-      std::string err;
-      const auto status = darkpool::transport::tls_read(
-          ssl.get(), header + header_offset, 4 - header_offset, count, err);
-      if (status == darkpool::transport::TlsIoStatus::Ok) {
-        header_offset += count;
-      } else if (status == darkpool::transport::TlsIoStatus::WantRead ||
-                 status == darkpool::transport::TlsIoStatus::WantWrite) {
-        pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        failures.transport_failures++;
-        failures.last_failure_reason = "tls_read header failed: " + err;
-        return std::nullopt;
-      }
-    }
 
-    const std::uint32_t body_len =
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[0])) << 24) |
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[1])) << 16) |
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[2])) << 8) |
-        static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[3]));
-    if (body_len == 0 || body_len > 1024 * 1024) {
-      failures.correctness_failures++;
-      failures.last_failure_reason = "invalid frame length in header";
-      return std::nullopt;
-    }
-
-    // Receive body
-    std::string body;
-    body.resize(body_len);
-    std::size_t body_offset = 0;
-    while (body_offset < body_len) {
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
-        failures.timeouts++;
-        failures.transport_failures++;
-        failures.last_failure_reason = "body read timed out";
-        return std::nullopt;
-      }
-      std::size_t count = 0;
-      std::string err;
-      const auto status = darkpool::transport::tls_read(
-          ssl.get(), body.data() + body_offset, body_len - body_offset, count, err);
-      if (status == darkpool::transport::TlsIoStatus::Ok) {
-        body_offset += count;
-      } else if (status == darkpool::transport::TlsIoStatus::WantRead ||
-                 status == darkpool::transport::TlsIoStatus::WantWrite) {
-        pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        failures.transport_failures++;
-        failures.last_failure_reason = "tls_read body failed: " + err;
-        return std::nullopt;
-      }
-    }
-
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-
-    try {
-      const auto resp = json::parse(body);
-      ValidationResult v = ValidationResult::Success();
-      if (validator) {
-        v = validator(resp);
-      }
-      if (!v.correctness_ok) {
+      const std::uint32_t body_len =
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[0])) << 24) |
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[1])) << 16) |
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[2])) << 8) |
+          static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[3]));
+      if (body_len == 0 || body_len > 1024 * 1024) {
         failures.correctness_failures++;
-        failures.last_failure_reason = v.failure_reason;
-        out_metrics.push_back({req_type, us, is_concurrent, true, false, false});
+        failures.last_failure_reason = "invalid frame length in header";
         return std::nullopt;
       }
-      out_metrics.push_back({req_type, us, is_concurrent, true, true, v.is_expected_rejection});
-      return resp;
-    } catch (const std::exception& e) {
-      failures.transport_failures++;
-      failures.last_failure_reason = std::string("json parse error: ") + e.what();
-      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-      return std::nullopt;
+
+      // Receive body
+      std::string body;
+      body.resize(body_len);
+      std::size_t body_offset = 0;
+      while (body_offset < body_len) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
+          failures.timeouts++;
+          failures.transport_failures++;
+          failures.last_failure_reason = "body read timed out";
+          return std::nullopt;
+        }
+        std::size_t count = 0;
+        std::string err;
+        const auto status = darkpool::transport::tls_read(
+            ssl.get(), body.data() + body_offset, body_len - body_offset, count, err);
+        if (status == darkpool::transport::TlsIoStatus::Ok) {
+          body_offset += count;
+        } else if (status == darkpool::transport::TlsIoStatus::WantRead ||
+                   status == darkpool::transport::TlsIoStatus::WantWrite) {
+          pollfd pfd{fd, static_cast<short>((status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT), 0};
+          (void)poll(&pfd, 1, 1000);
+        } else {
+          failures.transport_failures++;
+          failures.last_failure_reason = "tls_read body failed: " + err;
+          return std::nullopt;
+        }
+      }
+
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+
+      try {
+        const auto resp = json::parse(body);
+        if (resp.is_object()) {
+          const auto t = resp.value("type", "");
+          if (t == "server_event" || t == "market_snapshot") {
+            continue;
+          }
+        }
+
+        ValidationResult v = ValidationResult::Success();
+        if (validator) {
+          v = validator(resp);
+        }
+        if (!v.correctness_ok) {
+          failures.correctness_failures++;
+          failures.last_failure_reason = v.failure_reason;
+          out_metrics.push_back({req_type, us, is_concurrent, true, false, false});
+          return std::nullopt;
+        }
+        out_metrics.push_back({req_type, us, is_concurrent, true, true, v.is_expected_rejection});
+        return resp;
+      } catch (const std::exception& e) {
+        failures.transport_failures++;
+        failures.last_failure_reason = std::string("json parse error: ") + e.what();
+        out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
+        return std::nullopt;
+      }
     }
   }
 };
@@ -336,87 +346,96 @@ struct PlaintextTcpClient {
       }
     }
 
-    // Receive 4-byte header
-    char header[4];
-    std::size_t header_offset = 0;
-    while (header_offset < 4) {
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
-        failures.timeouts++;
-        failures.transport_failures++;
-        failures.last_failure_reason = "header read timed out";
-        return std::nullopt;
+    while (true) {
+      // Receive 4-byte header
+      char header[4];
+      std::size_t header_offset = 0;
+      while (header_offset < 4) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
+          failures.timeouts++;
+          failures.transport_failures++;
+          failures.last_failure_reason = "header read timed out";
+          return std::nullopt;
+        }
+        const auto count = ::recv(fd, header + header_offset, 4 - header_offset, 0);
+        if (count > 0) {
+          header_offset += static_cast<std::size_t>(count);
+        } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          pollfd pfd{fd, POLLIN, 0};
+          (void)poll(&pfd, 1, 1000);
+        } else {
+          failures.transport_failures++;
+          failures.last_failure_reason = "recv header failed: " + std::string(std::strerror(errno));
+          return std::nullopt;
+        }
       }
-      const auto count = ::recv(fd, header + header_offset, 4 - header_offset, 0);
-      if (count > 0) {
-        header_offset += static_cast<std::size_t>(count);
-      } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        pollfd pfd{fd, POLLIN, 0};
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        failures.transport_failures++;
-        failures.last_failure_reason = "recv header failed: " + std::string(std::strerror(errno));
-        return std::nullopt;
-      }
-    }
 
-    const std::uint32_t body_len =
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[0])) << 24) |
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[1])) << 16) |
-        (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[2])) << 8) |
-        static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[3]));
-    if (body_len == 0 || body_len > 1024 * 1024) {
-      failures.correctness_failures++;
-      failures.last_failure_reason = "invalid frame length in header";
-      return std::nullopt;
-    }
-
-    // Receive body
-    std::string body;
-    body.resize(body_len);
-    std::size_t body_offset = 0;
-    while (body_offset < body_len) {
-      if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
-        failures.timeouts++;
-        failures.transport_failures++;
-        failures.last_failure_reason = "body read timed out";
-        return std::nullopt;
-      }
-      const auto count = ::recv(fd, &body[body_offset], body_len - body_offset, 0);
-      if (count > 0) {
-        body_offset += static_cast<std::size_t>(count);
-      } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-        pollfd pfd{fd, POLLIN, 0};
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        failures.transport_failures++;
-        failures.last_failure_reason = "recv body failed: " + std::string(std::strerror(errno));
-        return std::nullopt;
-      }
-    }
-
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-
-    try {
-      const auto resp = json::parse(body);
-      ValidationResult v = ValidationResult::Success();
-      if (validator) {
-        v = validator(resp);
-      }
-      if (!v.correctness_ok) {
+      const std::uint32_t body_len =
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[0])) << 24) |
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[1])) << 16) |
+          (static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[2])) << 8) |
+          static_cast<std::uint32_t>(static_cast<std::uint8_t>(header[3]));
+      if (body_len == 0 || body_len > 1024 * 1024) {
         failures.correctness_failures++;
-        failures.last_failure_reason = v.failure_reason;
-        out_metrics.push_back({req_type, us, is_concurrent, true, false, false});
+        failures.last_failure_reason = "invalid frame length in header";
         return std::nullopt;
       }
-      out_metrics.push_back({req_type, us, is_concurrent, true, true, v.is_expected_rejection});
-      return resp;
-    } catch (const std::exception& e) {
-      failures.transport_failures++;
-      failures.last_failure_reason = std::string("json parse error: ") + e.what();
-      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-      return std::nullopt;
+
+      // Receive body
+      std::string body;
+      body.resize(body_len);
+      std::size_t body_offset = 0;
+      while (body_offset < body_len) {
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time).count() > 5000) {
+          failures.timeouts++;
+          failures.transport_failures++;
+          failures.last_failure_reason = "body read timed out";
+          return std::nullopt;
+        }
+        const auto count = ::recv(fd, &body[body_offset], body_len - body_offset, 0);
+        if (count > 0) {
+          body_offset += static_cast<std::size_t>(count);
+        } else if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+          pollfd pfd{fd, POLLIN, 0};
+          (void)poll(&pfd, 1, 1000);
+        } else {
+          failures.transport_failures++;
+          failures.last_failure_reason = "recv body failed: " + std::string(std::strerror(errno));
+          return std::nullopt;
+        }
+      }
+
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+
+      try {
+        const auto resp = json::parse(body);
+        if (resp.is_object()) {
+          const auto t = resp.value("type", "");
+          if (t == "server_event" || t == "market_snapshot") {
+            continue;
+          }
+        }
+
+        ValidationResult v = ValidationResult::Success();
+        if (validator) {
+          v = validator(resp);
+        }
+        if (!v.correctness_ok) {
+          failures.correctness_failures++;
+          failures.last_failure_reason = v.failure_reason;
+          out_metrics.push_back({req_type, us, is_concurrent, true, false, false});
+          return std::nullopt;
+        }
+        out_metrics.push_back({req_type, us, is_concurrent, true, true, v.is_expected_rejection});
+        return resp;
+      } catch (const std::exception& e) {
+        failures.transport_failures++;
+        failures.last_failure_reason = std::string("json parse error: ") + e.what();
+        out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
+        return std::nullopt;
+      }
     }
   }
 };
@@ -1332,6 +1351,7 @@ RunResult execute_tcp_256p_concurrent(
 } // namespace
 
 int main(int argc, char** argv) {
+  std::signal(SIGPIPE, SIG_IGN);
   if (argc < 2) {
     std::cerr << "usage: darkpool_load_tests_tls <path_to_darkpool_server> [output_json]\n";
     return 2;

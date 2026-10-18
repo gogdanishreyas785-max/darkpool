@@ -387,76 +387,85 @@ std::optional<json> timed_request(
     return std::nullopt;
   }
 
-  char header[4];
-  if (!receive_exact(fd, header, sizeof(header))) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    failures.last_failure_reason = "receive header failed for " + req_type;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-    return std::nullopt;
-  }
-
-  const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
-  const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[1]));
-  const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[2]));
-  const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
-  const auto length = (b0 << 24U) | (b1 << 16U) | (b2 << 8U) | b3;
-  if (length == 0U || length > darkpool::network::kMaxMessageSize) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    failures.last_failure_reason = "invalid frame length (" + std::to_string(length) + ") for " + req_type;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-    return std::nullopt;
-  }
-
-  std::string bytes(header, sizeof(header));
-  bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
-  if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    failures.last_failure_reason = "receive payload bytes failed for " + req_type;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-    return std::nullopt;
-  }
-
-  // Monotonic clock ends immediately when complete response frame is received and parsed
-  const auto end_time = std::chrono::steady_clock::now();
-  const auto us = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-
-  std::size_t consumed = 0;
-  try {
-    const auto response = Frame::parse(bytes, consumed);
-    if (!response || consumed != bytes.size()) {
+  while (true) {
+    char header[4];
+    if (!receive_exact(fd, header, sizeof(header))) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
       failures.transport_failures++;
-      failures.last_failure_reason = "Frame::parse failed for " + req_type;
+      failures.last_failure_reason = "receive header failed for " + req_type;
       out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
       return std::nullopt;
     }
 
-    const auto resp_payload = response->payload();
-    const ValidationResult v = validator ? validator(resp_payload) : ValidationResult::Success();
-
-    if (!v.correctness_ok) {
-      failures.correctness_failures++;
-      failures.last_failure_reason = v.failure_reason.empty() ? ("Validation failed for " + req_type) : v.failure_reason;
-      out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/false, /*is_expected_rejection=*/false});
+    const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
+    const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[1]));
+    const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[2]));
+    const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
+    const auto length = (b0 << 24U) | (b1 << 16U) | (b2 << 8U) | b3;
+    if (length == 0U || length > darkpool::network::kMaxMessageSize) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+      failures.transport_failures++;
+      failures.last_failure_reason = "invalid frame length (" + std::to_string(length) + ") for " + req_type;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
       return std::nullopt;
     }
 
-    out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/true, v.is_expected_rejection});
-    return resp_payload;
-  } catch (const std::exception& e) {
-    failures.transport_failures++;
-    failures.last_failure_reason = std::string("Exception during frame parse for ") + req_type + ": " + e.what();
-    out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
-    return std::nullopt;
+    std::string bytes(header, sizeof(header));
+    bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
+    if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+      failures.transport_failures++;
+      failures.last_failure_reason = "receive payload bytes failed for " + req_type;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
+      return std::nullopt;
+    }
+
+    // Monotonic clock ends immediately when complete response frame is received and parsed
+    const auto end_time = std::chrono::steady_clock::now();
+    const auto us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+
+    std::size_t consumed = 0;
+    try {
+      const auto response = Frame::parse(bytes, consumed);
+      if (!response || consumed != bytes.size()) {
+        failures.transport_failures++;
+        failures.last_failure_reason = "Frame::parse failed for " + req_type;
+        out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
+        return std::nullopt;
+      }
+
+      const auto resp_payload = response->payload();
+      if (resp_payload.is_object()) {
+        const auto t = resp_payload.value("type", "");
+        if (t == "server_event" || t == "market_snapshot") {
+          continue;
+        }
+      }
+
+      const ValidationResult v = validator ? validator(resp_payload) : ValidationResult::Success();
+
+      if (!v.correctness_ok) {
+        failures.correctness_failures++;
+        failures.last_failure_reason = v.failure_reason.empty() ? ("Validation failed for " + req_type) : v.failure_reason;
+        out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/false, /*is_expected_rejection=*/false});
+        return std::nullopt;
+      }
+
+      out_metrics.push_back({req_type, us, is_concurrent, /*transport_ok=*/true, /*correctness_ok=*/true, v.is_expected_rejection});
+      return resp_payload;
+    } catch (const std::exception& e) {
+      failures.transport_failures++;
+      failures.last_failure_reason = std::string("Exception during frame parse for ") + req_type + ": " + e.what();
+      out_metrics.push_back({req_type, us, is_concurrent, false, false, false});
+      return std::nullopt;
+    }
   }
 }
 

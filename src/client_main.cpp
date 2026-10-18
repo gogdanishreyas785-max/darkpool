@@ -1,218 +1,22 @@
 #include "darkpool/cli.hpp"
+#include "darkpool/client_runtime.hpp"
 #include "darkpool/network.hpp"
+#include "darkpool/socket_primitives.hpp"
 #include "darkpool/tls_transport.hpp"
 
-#include <arpa/inet.h>
-#include <cerrno>
 #include <chrono>
 #include <cstdlib>
-#include <cstring>
-#include <exception>
-#include <fcntl.h>
-#include <iomanip>
 #include <iostream>
-#include <netdb.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sstream>
 #include <string>
 #include <string_view>
-#include <sys/socket.h>
-#include <sys/types.h>
-#include <sys/un.h>
+#include <poll.h>
 #include <unistd.h>
 #include <vector>
 
 namespace {
 
 using darkpool::network::Frame;
-using darkpool::network::FrameDecoder;
-using darkpool::network::FrameStream;
 using darkpool::network::json;
-
-bool write_all(int fd, SSL* ssl, const std::string& buffer) {
-  if (ssl != nullptr) {
-    std::size_t offset = 0;
-    while (offset < buffer.size()) {
-      std::size_t written = 0;
-      std::string err;
-      const auto status = darkpool::transport::tls_write(
-          ssl, buffer.data() + offset, buffer.size() - offset, written, err);
-      if (status == darkpool::transport::TlsIoStatus::Ok) {
-        offset += written;
-      } else if (status == darkpool::transport::TlsIoStatus::WantWrite ||
-                 status == darkpool::transport::TlsIoStatus::WantRead) {
-        pollfd pfd{};
-        pfd.fd = fd;
-        pfd.events = (status == darkpool::transport::TlsIoStatus::WantWrite) ? POLLOUT : POLLIN;
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  std::size_t offset = 0;
-  while (offset < buffer.size()) {
-    const auto sent = send(fd, buffer.data() + offset, buffer.size() - offset, MSG_NOSIGNAL);
-    if (sent < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    if (sent == 0) return false;
-    offset += static_cast<std::size_t>(sent);
-  }
-  return true;
-}
-
-bool receive_frame(int fd, SSL* ssl, FrameStream& stream, Frame& out_frame) {
-  if (stream.next(out_frame)) return true;
-
-  char buffer[4096];
-  while (true) {
-    if (ssl != nullptr) {
-      std::size_t bytes_read = 0;
-      std::string err;
-      const auto status = darkpool::transport::tls_read(
-          ssl, buffer, sizeof(buffer), bytes_read, err);
-      if (status == darkpool::transport::TlsIoStatus::Ok) {
-        try {
-          stream.feed(std::span<const char>(buffer, bytes_read));
-        } catch (const std::exception& error) {
-          std::cerr << "protocol error: invalid server frame: " << error.what() << '\n';
-          return false;
-        }
-        if (stream.next(out_frame)) return true;
-      } else if (status == darkpool::transport::TlsIoStatus::WantRead ||
-                 status == darkpool::transport::TlsIoStatus::WantWrite) {
-        pollfd pfd{};
-        pfd.fd = fd;
-        pfd.events = (status == darkpool::transport::TlsIoStatus::WantRead) ? POLLIN : POLLOUT;
-        (void)poll(&pfd, 1, 1000);
-      } else {
-        return false;
-      }
-    } else {
-      const auto count = recv(fd, buffer, sizeof(buffer), 0);
-      if (count <= 0) {
-        if (count < 0 && errno == EINTR) continue;
-        return false;
-      }
-      try {
-        stream.feed(std::span<const char>(buffer, static_cast<std::size_t>(count)));
-      } catch (const std::exception& error) {
-        std::cerr << "protocol error: invalid server frame: " << error.what() << '\n';
-        return false;
-      }
-      if (stream.next(out_frame)) return true;
-    }
-  }
-}
-
-bool parse_port(const char* text, std::uint16_t& port) {
-  char* end = nullptr;
-  const auto value = std::strtoul(text, &end, 10);
-  if (end == text || *end != '\0' || value == 0UL || value > 65535UL) return false;
-  port = static_cast<std::uint16_t>(value);
-  return true;
-}
-
-int connect_unix(const std::string& path) {
-  const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) {
-    std::cerr << "unix socket: " << std::strerror(errno) << '\n';
-    return -1;
-  }
-  sockaddr_un address{};
-  address.sun_family = AF_UNIX;
-  if (path.size() >= sizeof(address.sun_path)) {
-    std::cerr << "error: unix socket path exceeds maximum length ("
-              << sizeof(address.sun_path) - 1 << " bytes)\n";
-    (void)close(fd);
-    return -1;
-  }
-  std::strncpy(address.sun_path, path.c_str(), sizeof(address.sun_path) - 1);
-  if (connect(fd, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) {
-    std::cerr << "connect (" << path << "): " << std::strerror(errno) << '\n';
-    (void)close(fd);
-    return -1;
-  }
-  return fd;
-}
-
-int connect_tcp(const std::string& host, std::uint16_t port) {
-  addrinfo hints{};
-  hints.ai_family = AF_INET;
-  hints.ai_socktype = SOCK_STREAM;
-  hints.ai_protocol = IPPROTO_TCP;
-
-  addrinfo* addresses = nullptr;
-  const auto service = std::to_string(port);
-  const int lookup = getaddrinfo(host.c_str(), service.c_str(), &hints, &addresses);
-  if (lookup != 0) {
-    std::cerr << "getaddrinfo: " << gai_strerror(lookup) << '\n';
-    return -1;
-  }
-  int fd = -1;
-  for (auto* address = addresses; address != nullptr; address = address->ai_next) {
-    fd = socket(address->ai_family, address->ai_socktype, address->ai_protocol);
-    if (fd >= 0) {
-      int one = 1;
-      (void)setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-      if (connect(fd, address->ai_addr, address->ai_addrlen) == 0) break;
-      (void)close(fd);
-      fd = -1;
-    }
-  }
-  freeaddrinfo(addresses);
-  if (fd < 0) {
-    std::cerr << "connect (" << host << ":" << port << "): " << std::strerror(errno) << '\n';
-    return -1;
-  }
-  return fd;
-}
-
-bool perform_client_tls_handshake(SSL* ssl, int fd, std::chrono::seconds timeout) {
-  const int flags = fcntl(fd, F_GETFL, 0);
-  (void)fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  while (true) {
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
-      std::cerr << "error: TLS handshake timed out after " << timeout.count() << " seconds\n";
-      (void)fcntl(fd, F_SETFL, flags);
-      return false;
-    }
-    const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now).count();
-    const int poll_timeout = std::clamp(static_cast<int>(remaining_ms), 1, 500);
-
-    bool want_read = false;
-    bool want_write = false;
-    std::string err;
-    const auto status = darkpool::transport::step_tls_handshake(
-        ssl, false, want_read, want_write, err);
-    if (status == darkpool::transport::TlsHandshakeStatus::Established) {
-      break;
-    }
-    if (status == darkpool::transport::TlsHandshakeStatus::Failed) {
-      std::cerr << "error: TLS handshake failed: " << err << '\n';
-      (void)fcntl(fd, F_SETFL, flags);
-      return false;
-    }
-    pollfd pfd{};
-    pfd.fd = fd;
-    pfd.events = (want_read ? POLLIN : 0) | (want_write ? POLLOUT : 0);
-    const int pret = poll(&pfd, 1, poll_timeout);
-    if (pret < 0 && errno != EINTR) {
-      std::cerr << "error: poll during TLS handshake: " << std::strerror(errno) << '\n';
-      (void)fcntl(fd, F_SETFL, flags);
-      return false;
-    }
-  }
-  (void)fcntl(fd, F_SETFL, flags);
-  return true;
-}
 
 struct ParsedClientArgs {
   bool use_tls{false};
@@ -298,7 +102,7 @@ int main(int argc, char** argv) {
     }
     if (positional.size() == 3) {
       args.host = positional[0];
-      if (!parse_port(positional[1].c_str(), args.port)) {
+      if (!darkpool::network::parse_port(positional[1].c_str(), args.port)) {
         std::cerr << "error: invalid port: " << positional[1] << '\n';
         return 2;
       }
@@ -325,7 +129,7 @@ int main(int argc, char** argv) {
   } else {
     if (positional.size() == 3) {
       args.host = positional[0];
-      if (!parse_port(positional[1].c_str(), args.port)) {
+      if (!darkpool::network::parse_port(positional[1].c_str(), args.port)) {
         std::cerr << "error: invalid port: " << positional[1] << '\n';
         return 2;
       }
@@ -354,108 +158,30 @@ int main(int argc, char** argv) {
     return 2;
   }
 
-  int fd = -1;
-  darkpool::transport::SslCtxPtr client_ssl_ctx;
-  darkpool::transport::SslPtr ssl;
-  darkpool::transport::ClientTlsConfig tls_cfg;
+  darkpool::network::ClientConnection conn;
+  std::string conn_err;
 
   if (args.use_tls) {
+    darkpool::transport::ClientTlsConfig tls_cfg;
     tls_cfg.mode = args.verify_mode;
     tls_cfg.ca_file = args.ca_file;
     tls_cfg.pinned_fingerprint_hex = args.fingerprint_hex;
     tls_cfg.target_ip = args.host;
 
-    std::string tls_init_err;
-    client_ssl_ctx = darkpool::transport::create_client_ssl_ctx(tls_cfg, tls_init_err);
-    if (client_ssl_ctx == nullptr) {
-      std::cerr << "error: client TLS initialization failed: " << tls_init_err << '\n';
+    if (!conn.connect_tls(args.host, args.port, tls_cfg, conn_err)) {
+      std::cerr << "error: " << conn_err << '\n';
       return 1;
-    }
-
-    fd = connect_tcp(args.host, args.port);
-    if (fd < 0) {
-      return 1;
-    }
-
-    SSL* raw_ssl = SSL_new(client_ssl_ctx.get());
-    if (raw_ssl == nullptr) {
-      std::cerr << "error: failed to allocate client SSL session\n";
-      (void)close(fd);
-      return 1;
-    }
-    ssl.reset(raw_ssl);
-    SSL_set_app_data(ssl.get(), &tls_cfg);
-    if (SSL_set_fd(ssl.get(), fd) != 1) {
-      std::cerr << "error: failed to attach socket to SSL session\n";
-      (void)close(fd);
-      return 1;
-    }
-
-    if (!perform_client_tls_handshake(ssl.get(), fd, std::chrono::seconds(5))) {
-      (void)close(fd);
-      return 1;
-    }
-
-    X509* peer_cert = SSL_get_peer_certificate(ssl.get());
-    if (peer_cert == nullptr) {
-      std::cerr << "error: server presented no certificate\n";
-      (void)close(fd);
-      return 1;
-    }
-    darkpool::transport::X509Ptr cert_guard(peer_cert);
-    std::string err;
-    if (!darkpool::transport::verify_cert_time_validity(peer_cert, err)) {
-      std::cerr << "error: certificate validity check failed: " << err << '\n';
-      (void)close(fd);
-      return 1;
-    }
-    if (!darkpool::transport::verify_cert_server_purpose(peer_cert, err)) {
-      std::cerr << "error: certificate server purpose check failed: " << err << '\n';
-      (void)close(fd);
-      return 1;
-    }
-    if (!darkpool::transport::verify_cert_ip_san(peer_cert, args.host, err)) {
-      std::cerr << "error: IP SAN verification failed: " << err << '\n';
-      (void)close(fd);
-      return 1;
-    }
-
-    if (args.verify_mode == darkpool::transport::ClientVerifyMode::FingerprintPinning) {
-      const std::string actual_fp = darkpool::transport::compute_cert_fingerprint_sha256(peer_cert);
-      std::array<std::uint8_t, 32> exp_digest{};
-      if (!darkpool::transport::parse_fingerprint_sha256(args.fingerprint_hex, exp_digest, err)) {
-        std::cerr << "error: invalid pinned fingerprint: " << err << '\n';
-        (void)close(fd);
-        return 1;
-      }
-      std::ostringstream oss;
-      oss << std::hex << std::setfill('0');
-      for (const auto b : exp_digest) {
-        oss << std::setw(2) << static_cast<int>(b);
-      }
-      if (actual_fp != oss.str()) {
-        std::cerr << "error: server certificate fingerprint mismatch (pinned "
-                  << oss.str() << ", presented " << actual_fp << ")\n";
-        (void)close(fd);
-        return 1;
-      }
-    } else if (args.verify_mode == darkpool::transport::ClientVerifyMode::LocalCa) {
-      const long verify_res = SSL_get_verify_result(ssl.get());
-      if (verify_res != X509_V_OK) {
-        std::cerr << "error: certificate verification failed: "
-                  << X509_verify_cert_error_string(verify_res) << '\n';
-        (void)close(fd);
-        return 1;
-      }
     }
   } else if (args.is_unix) {
-    fd = connect_unix(args.unix_path);
+    if (!conn.connect_unix(args.unix_path, conn_err)) {
+      std::cerr << "error: " << conn_err << '\n';
+      return 1;
+    }
   } else {
-    fd = connect_tcp(args.host, args.port);
-  }
-
-  if (fd < 0) {
-    return 1;
+    if (!conn.connect_tcp(args.host, args.port, conn_err)) {
+      std::cerr << "error: " << conn_err << '\n';
+      return 1;
+    }
   }
 
   const darkpool::cli::ClientRole client_role = (args.role_str == "moderator")
@@ -463,13 +189,26 @@ int main(int argc, char** argv) {
       : darkpool::cli::ClientRole::Player;
   darkpool::cli::ClientState state(client_role);
 
-  FrameStream response_stream;
-  const auto exchange = [fd, ssl_ptr = ssl.get(), &state, &response_stream](const Frame& outgoing) -> bool {
-    if (!write_all(fd, ssl_ptr, outgoing.serialize())) return false;
-    Frame incoming(json{});
-    if (!receive_frame(fd, ssl_ptr, response_stream, incoming)) return false;
-    std::cout << state.format_response(incoming.payload()) << '\n';
-    return true;
+  const auto is_push_notification = [](const json& payload) {
+    if (!payload.is_object()) return false;
+    const auto type = payload.value("type", std::string{});
+    return type == "server_event" || type == "market_snapshot";
+  };
+
+  const auto exchange = [&conn, &state, &is_push_notification](const Frame& outgoing) -> bool {
+    if (!conn.send_frame(outgoing)) return false;
+    while (true) {
+      Frame incoming(json{});
+      if (!conn.receive_frame(incoming)) return false;
+      const auto& payload = incoming.payload();
+      const auto formatted = state.format_response(payload);
+      if (!formatted.empty()) {
+        std::cout << formatted << '\n';
+      }
+      if (!is_push_notification(payload)) {
+        return true;
+      }
+    }
   };
 
   json connect_payload{{"type", "connect"}, {"role", args.role_str}};
@@ -477,10 +216,7 @@ int main(int argc, char** argv) {
     const char* token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
     if (!token || token[0] == '\0') {
       std::cerr << "error: DARKPOOL_MODERATOR_TOKEN environment variable is required for moderator\n";
-      if (ssl != nullptr) {
-        (void)SSL_shutdown(ssl.get());
-      }
-      (void)close(fd);
+      conn.close();
       return 1;
     }
     connect_payload["token"] = token;
@@ -488,10 +224,7 @@ int main(int argc, char** argv) {
 
   if (!exchange(Frame(connect_payload))) {
     std::cerr << "server rejected connection or closed it\n";
-    if (ssl != nullptr) {
-      (void)SSL_shutdown(ssl.get());
-    }
-    (void)close(fd);
+    conn.close();
     return 1;
   }
 
@@ -500,12 +233,102 @@ int main(int argc, char** argv) {
     std::cout << "Type 'help' for commands, 'status' for game state.\n";
   }
 
+  std::string input_buffer;
+  bool stdin_eof = false;
+
+  const auto drain_incoming_notifications = [&]() {
+    Frame incoming(json{});
+    while (conn.is_open()) {
+      if (conn.has_pending_frame()) {
+        if (!conn.receive_frame(incoming)) break;
+      } else if (conn.poll_frame(incoming, std::chrono::milliseconds(0))) {
+        // frame received
+      } else {
+        break;
+      }
+      const auto formatted = state.format_response(incoming.payload());
+      if (!formatted.empty()) {
+        std::cout << formatted << '\n';
+        if (is_interactive) {
+          std::cout << state.prompt() << input_buffer << std::flush;
+        }
+      }
+    }
+  };
+
+  const auto read_next_line = [&](std::string& out_line) -> bool {
+    while (true) {
+      const auto nl = input_buffer.find('\n');
+      if (nl != std::string::npos) {
+        out_line = input_buffer.substr(0, nl);
+        if (!out_line.empty() && out_line.back() == '\r') {
+          out_line.pop_back();
+        }
+        input_buffer.erase(0, nl + 1);
+        return true;
+      }
+      if (stdin_eof) {
+        if (!input_buffer.empty()) {
+          out_line = input_buffer;
+          if (!out_line.empty() && out_line.back() == '\r') {
+            out_line.pop_back();
+          }
+          input_buffer.clear();
+          return true;
+        }
+        return false;
+      }
+
+      drain_incoming_notifications();
+
+      nfds_t nfds = 1;
+      pollfd pfds[2];
+      pfds[0].fd = fileno(stdin);
+      pfds[0].events = POLLIN;
+      if (conn.is_open()) {
+        pfds[1].fd = conn.native_handle();
+        pfds[1].events = POLLIN;
+        nfds = 2;
+      }
+
+      int timeout_ms = conn.has_pending_data() ? 0 : 50;
+      const int pr = ::poll(pfds, nfds, timeout_ms);
+      if (pr < 0) {
+        if (errno == EINTR) continue;
+        return false;
+      }
+
+      if (nfds == 2 && (pfds[1].revents & (POLLIN | POLLERR | POLLHUP))) {
+        drain_incoming_notifications();
+        if (!conn.is_open()) {
+          return false;
+        }
+      }
+
+      if (pfds[0].revents & (POLLIN | POLLERR | POLLHUP)) {
+        char buf[512];
+        const auto count = ::read(fileno(stdin), buf, sizeof(buf));
+        if (count > 0) {
+          input_buffer.append(buf, static_cast<std::size_t>(count));
+        } else if (count == 0) {
+          stdin_eof = true;
+        } else {
+          if (errno != EINTR) {
+            stdin_eof = true;
+          }
+        }
+      }
+    }
+  };
+
+  drain_incoming_notifications();
+
   std::string line;
   while (true) {
     if (is_interactive) {
       std::cout << state.prompt() << std::flush;
     }
-    if (!std::getline(std::cin, line)) break;
+    if (!read_next_line(line)) break;
 
     auto cmd = state.process_input(line);
     while (cmd.prompt_for_input) {
@@ -513,7 +336,7 @@ int main(int argc, char** argv) {
         std::cout << *cmd.prompt_for_input << std::flush;
       }
       std::string prompt_response;
-      if (!std::getline(std::cin, prompt_response)) {
+      if (!read_next_line(prompt_response)) {
         cmd = darkpool::cli::CommandResult{};
         break;
       }
@@ -530,10 +353,7 @@ int main(int argc, char** argv) {
       try {
         if (!exchange(Frame(cmd.payload))) {
           std::cerr << "connection closed while awaiting response\n";
-          if (ssl != nullptr) {
-            (void)SSL_shutdown(ssl.get());
-          }
-          (void)close(fd);
+          conn.close();
           return 1;
         }
       } catch (const std::exception& error) {
@@ -542,9 +362,6 @@ int main(int argc, char** argv) {
     }
   }
 
-  if (ssl != nullptr) {
-    (void)SSL_shutdown(ssl.get());
-  }
-  (void)close(fd);
+  conn.close();
   return 0;
 }

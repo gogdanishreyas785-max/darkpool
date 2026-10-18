@@ -22,7 +22,7 @@
 6. Eligible players vote; server resolves result and any elimination.
 7. The match ends immediately on the approved health-zero or Insider-elimination outcome; otherwise evaluate the Insider win after round three's vote.
 
-Draft 3 does not define deadlines. The approved S1 engine exposes phase transitions without timers; clue use occurs after market resolution and before voting.
+Draft 3 does not define deadlines. Under the approved Stage 3.2 rules, Clue is timed for 30 seconds following market resolution, automatically followed by a distinct 10-second transition interval, which automatically opens Voting with its 60-second deadline.
 
 ## S1-approved share supply and trading
 
@@ -67,11 +67,17 @@ To test the finite-reserve rejection boundary without changing those rules, init
 
 The examples illustrate the S1-approved formulas and reserve boundary fixture; reserve exhaustion remains synthetic, not ordinary gameplay.
 
-## S1-approved clue
+## S1-approved clue and Stage 3.2 timed progression
 
 Draft 3 only says one limited clue per match. A randomly revealed player's trade may be weak or redundant if trades are visible.
 
 **Approved clue:** each active Investigator may use one clue per match after trade resolution and before that round's vote. The Investigator selects one other active player and privately receives a binary result: “target is an Insider” or “target is not an Insider.” A same-target retry by the same Investigator returns the same result without consuming another use; a different target after a successful clue is rejected. Clues and clue-use state are independent per Investigator. A target eliminated later does not invalidate its historical clue.
+
+**Stage 3.2 Approved Timing Sequence:**
+- **Clue (30 seconds):** Entered automatically after authoritative market resolution with a 30-second monotonic deadline. Emits `phase_started` and an immediate 30-second countdown warning (`seconds_remaining: 30`) at phase entry, followed by a 10-second countdown warning (`seconds_remaining: 10`) at ~10 seconds remaining. Active Investigators may submit their private clue request throughout this 30-second window. Voting is not open and votes are not accepted during Clue.
+- **Transition Interval (10 seconds):** When the 30-second Clue deadline expires, the server automatically starts the distinct 10-second transition interval. Emits a `transition_interval` announcement reporting 10 seconds remaining before the upcoming `Voting` phase. Clue requests are rejected once the transition interval begins. Voting commands are not accepted before the transition interval ends.
+- **Voting (60 seconds):** When the 10-second transition interval expires, the server automatically opens Voting with its 60-second deadline and broadcasts the phase-start event with a public market snapshot. Votes resolve automatically upon Voting deadline expiry.
+- **Pause/Resume/Abort:** Pausing freezes remaining time during Clue or the transition interval; resuming restores the exact saved duration. Aborting permanently cancels all subsequent scheduled transitions and market/vote resolutions.
 
 ## S1-approved voting
 
@@ -95,6 +101,46 @@ Draft 3 requires final evaluation but gives no victory rules.
 - No draw under this proposal. Immediate outcomes avoid conflicts: the match ends on zero health or Insider elimination.
 
 These outcomes and precedence are approved for S1 by the user's follow-up; they are not rules supplied by the PDF.
+
+## Stage 4 — Advanced Market Mechanics, Quantity Trading, and Research/Scouting
+
+The following mechanics were introduced in Stage 4:
+
+### 1. Quantity-Based Trading
+- **Syntax**: `buy [quantity]`, `sell [quantity]`, `trade <buy|sell|hold> [quantity]`.
+- **Default Compatibility**: If `quantity` is omitted, the order defaults to 1 share, preserving complete compatibility with single-share commands.
+- **Validation**:
+  - Quantity must be a strictly positive integer ($q \ge 1$). Zero, negative, overflowing, or malformed quantities are rejected without state mutation.
+  - BUY requires opening-price cash: $player.credits \ge q \times P$.
+  - SELL requires owned inventory: $player.shares \ge q$.
+  - SELL cannot exceed the credit cap: $player.cre- **Finite Reserve and All-or-Nothing Allocation**:
+  - Reserve shares are strictly finite ($10N$ initial for $N$ players; total supply $20N$).
+  - Allocation resolves in deterministic rotating seat order starting at $((round - 1) \bmod N)$. *(Provenance Note: Rotating seat priority is a canonical S1-approved rule established in S0/S1 under DEC-04 and lines 36 & 46. Stage 4 preserves this canonical ordering for multi-quantity orders with all-or-nothing allocation).*
+  - If remaining reserve inventory $\ge q$, the order is filled completely (`Executed`).
+  - If remaining reserve inventory $< q$, the order is rejected entirely (`RejectedInsufficientReserve`). Partial fills and limit order books are strictly forbidden.
+- **Supply Conservation**: Every transaction conserves total shares: $\sum player.shares + reserve = total\_supply = 20N$. Shares are never created or destroyed.
+- **Missing Orders**: Default to `HOLD` (0 shares, no cash change).
+
+### 2. Research / Scouting Action
+- **Cost**: Exactly 10 credits debited from the requesting active player.
+- **Usage Limit**: At most once per player per match.
+- **Timing Window**: Available strictly during the pre-trading information window (`Phase::Discussion`), after the business event is announced and before trading opens. Rejected outside this phase without charge.
+- **Result & Privacy**: Returns a private, coarse direction signal:
+  - `"Positive"` if $e > 0$
+  - `"Neutral"` if $e = 0$
+  - `"Negative"` if $e < 0$
+  - The exact hidden numeric impact $e \in \{-2, -1, 0, 1, 2\}$ is never leaked.
+- **Idempotency**: Repeated requests by the same player return the cached direction, report `already_used: true`, and do NOT charge credits again.
+- **Audience Isolation**: The report is sent strictly to the requesting session and never appears in public broadcasts, snapshots, or other players' queues.
+
+### 3. Public vs. Private Market Information
+- **Authoritative Public Fields**: `phase`, `round`, `health` (0–10), `price` (1–100), `sentiment` (-10..+10), `volatility` (0..20, grounded in gross volume $G = B + S$), `liquidity` (0..100%), `total_supply`, `reserve`, `shares_held_by_players`, `outcome`, `state_version`.
+- **Confidential Private Fields**: Individual cash balances, individual share holdings, private roles, Investigator clue results, and player research reports remain strictly confidential to each authenticated player.
+
+### 4. Advanced Deterministic Price Model
+- Implements deterministic pricing combining business event effects, net trade demand direction and volume, volatility magnification, company health deviations, market sentiment, and low-reserve scarcity surcharges, strictly computed using mathematical integer floor division via safe helper `Match::floor_div`.
+- Numerical coefficients are maintained centrally in `struct MarketModelCoefficients` and documented in `docs/market-model-proposal.md`.
+- Baseline coefficients (`approved_baseline()`) remain active by default for complete canonical compatibility; proposed candidate coefficients (`candidate_proposal()`) are pending user review.
 
 ## Proposed scoring — separate decision still open
 

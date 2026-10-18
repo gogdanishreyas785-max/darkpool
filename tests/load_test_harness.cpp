@@ -144,61 +144,70 @@ std::optional<json> timed_request(
     return std::nullopt;
   }
 
-  char header[4];
-  if (!receive_exact(fd, header, sizeof(header))) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
-    return std::nullopt;
-  }
-
-  const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
-  const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[1]));
-  const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[2]));
-  const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
-  const auto length = (b0 << 24U) | (b1 << 16U) | (b2 << 8U) | b3;
-  if (length == 0U || length > darkpool::network::kMaxMessageSize) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
-    return std::nullopt;
-  }
-
-  std::string bytes(header, sizeof(header));
-  bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
-  if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) {
-    const auto end_time = std::chrono::steady_clock::now();
-    const auto us = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-    failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
-    return std::nullopt;
-  }
-
-  // Timing ends immediately when complete response frame is received
-  const auto end_time = std::chrono::steady_clock::now();
-  const auto us = static_cast<std::uint64_t>(
-      std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
-
-  std::size_t consumed = 0;
-  try {
-    const auto response = Frame::parse(bytes, consumed);
-    if (!response || consumed != bytes.size()) {
+  while (true) {
+    char header[4];
+    if (!receive_exact(fd, header, sizeof(header))) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
       failures.transport_failures++;
       out_metrics.push_back({req_type, us, is_concurrent, false, false});
       return std::nullopt;
     }
-    // Successfully received and parsed frame over transport
-    out_metrics.push_back({req_type, us, is_concurrent, true, true});
-    return response->payload();
-  } catch (const std::exception&) {
-    failures.transport_failures++;
-    out_metrics.push_back({req_type, us, is_concurrent, false, false});
-    return std::nullopt;
+
+    const auto b0 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[0]));
+    const auto b1 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[1]));
+    const auto b2 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[2]));
+    const auto b3 = static_cast<std::uint32_t>(static_cast<unsigned char>(header[3]));
+    const auto length = (b0 << 24U) | (b1 << 16U) | (b2 << 8U) | b3;
+    if (length == 0U || length > darkpool::network::kMaxMessageSize) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+      failures.transport_failures++;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false});
+      return std::nullopt;
+    }
+
+    std::string bytes(header, sizeof(header));
+    bytes.resize(static_cast<std::size_t>(length) + sizeof(header));
+    if (!receive_exact(fd, bytes.data() + sizeof(header), static_cast<std::size_t>(length))) {
+      const auto end_time = std::chrono::steady_clock::now();
+      const auto us = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+      failures.transport_failures++;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false});
+      return std::nullopt;
+    }
+
+    // Timing ends immediately when complete response frame is received
+    const auto end_time = std::chrono::steady_clock::now();
+    const auto us = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count());
+
+    std::size_t consumed = 0;
+    try {
+      const auto response = Frame::parse(bytes, consumed);
+      if (!response || consumed != bytes.size()) {
+        failures.transport_failures++;
+        out_metrics.push_back({req_type, us, is_concurrent, false, false});
+        return std::nullopt;
+      }
+      const auto resp_payload = response->payload();
+      if (resp_payload.is_object()) {
+        const auto t = resp_payload.value("type", "");
+        if (t == "server_event" || t == "market_snapshot") {
+          continue;
+        }
+      }
+      // Successfully received and parsed frame over transport
+      out_metrics.push_back({req_type, us, is_concurrent, true, true});
+      return resp_payload;
+    } catch (const std::exception&) {
+      failures.transport_failures++;
+      out_metrics.push_back({req_type, us, is_concurrent, false, false});
+      return std::nullopt;
+    }
   }
 }
 
