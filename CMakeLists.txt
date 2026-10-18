@@ -23,7 +23,7 @@ add_library(darkpool_engine src/game_engine.cpp)
 target_include_directories(darkpool_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_engine PUBLIC cxx_std_20)
 
-add_library(darkpool_communications src/network.cpp)
+add_library(darkpool_communications src/network.cpp src/token_store.cpp)
 target_include_directories(darkpool_communications PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_features(darkpool_communications PUBLIC cxx_std_20)
 target_link_libraries(darkpool_communications PUBLIC nlohmann_json::nlohmann_json)
@@ -133,6 +133,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_phase_timers_and_late_actions_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> phase-timers)
   set_tests_properties(darkpool_phase_timers_and_late_actions_tests PROPERTIES TIMEOUT 30)
+
+  add_executable(darkpool_token_store_tests tests/token_store_tests.cpp)
+  target_link_libraries(darkpool_token_store_tests PRIVATE darkpool_communications)
+  darkpool_enable_warnings(darkpool_token_store_tests)
+  add_test(NAME darkpool_token_store_tests COMMAND darkpool_token_store_tests)
 
   add_executable(darkpool_tls_integration_tests tests/tls_integration_tests.cpp)
   target_link_libraries(darkpool_tls_integration_tests PRIVATE darkpool_communications)

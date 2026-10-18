@@ -256,7 +256,7 @@ Treat these as separate security controls:
 3. **Match admission:** a protected match's join token controls entry to that match.
 4. **Action authorization:** the coordinator checks the session's permissions, match membership, game phase, and requested action.
 
-The current setup scripts do not automatically distribute each new match's join token to every player client; the moderator must securely share it with intended players. See the [User Guide: Match tokens and access control](user-guide.md#8-match-tokens-and-access-control).
+The server launcher stores protected match tokens in an owner-only token directory, and the player launcher can synchronize those files through the SSH account saved during setup. This synchronization runs when the player launcher starts, so create the match first or relaunch the player client after token creation. See the [User Guide: Match tokens and access control](user-guide.md#8-match-tokens-and-access-control).
 
 Public-Internet deployment, persistent player accounts, mutual TLS player identity, durable crash recovery, and dynamic in-process certificate reload are not currently supported. For setup instructions and troubleshooting, see the [User Guide](user-guide.md).
 

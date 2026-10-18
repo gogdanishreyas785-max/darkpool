@@ -42,6 +42,8 @@ struct MatchTimer {
 
 class MatchCoordinator {
  public:
+  MatchCoordinator() = default;
+  ~MatchCoordinator() = default;
   void register_session(std::uint64_t session, SessionRole role);
   void unregister_session(std::uint64_t session) noexcept;
 

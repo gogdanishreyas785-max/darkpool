@@ -780,13 +780,31 @@ VoteResolution Match::resolve_votes() {
   if (state_.phase != Phase::Voting) return {fail(ErrorCode::WrongPhase, "vote resolution requires voting phase"), std::nullopt};
   VoteResult result;
   result.eligible_voters = state_.eligible_voters_at_open;
+
+  std::uint32_t cast_count = 0;
+  std::uint32_t abstained_count = 0;
   std::vector<std::uint32_t> counts(state_.players.size(), 0);
+
   for (const auto& voter : state_.players) {
-    if (!voter.active || !voter.vote_submitted || !voter.vote_target) continue;  // missing is abstain
-    const auto target = std::find_if(state_.players.begin(), state_.players.end(),
-                                     [&voter](const PlayerState& p) { return p.id == *voter.vote_target; });
-    if (target != state_.players.end()) ++counts[static_cast<std::size_t>(std::distance(state_.players.begin(), target))];
+    if (!voter.active) continue;
+    if (voter.vote_submitted) {
+      ++cast_count;
+      if (!voter.vote_target.has_value()) {
+        ++abstained_count;
+      } else {
+        const auto target = std::find_if(state_.players.begin(), state_.players.end(),
+                                         [&voter](const PlayerState& p) { return p.id == *voter.vote_target; });
+        if (target != state_.players.end() && target->active) {
+          ++counts[static_cast<std::size_t>(std::distance(state_.players.begin(), target))];
+        }
+      }
+    }
   }
+
+  result.votes_cast = cast_count;
+  result.votes_abstained = abstained_count;
+  result.votes_missing = (result.eligible_voters >= cast_count) ? (result.eligible_voters - cast_count) : 0U;
+
   const auto threshold = result.eligible_voters / 2U;
   bool last_insider_eliminated = false;
   for (std::size_t i = 0; i < counts.size(); ++i) {
@@ -801,7 +819,12 @@ VoteResolution Match::resolve_votes() {
       break;
     }
   }
-  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) + "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") + "|votes=" + std::to_string(result.votes_received));
+  record("vote_resolved|eligible=" + std::to_string(result.eligible_voters) +
+         "|cast=" + std::to_string(result.votes_cast) +
+         "|abstained=" + std::to_string(result.votes_abstained) +
+         "|missing=" + std::to_string(result.votes_missing) +
+         "|eliminated=" + (result.eliminated ? std::to_string(*result.eliminated) : "none") +
+         "|votes=" + std::to_string(result.votes_received));
   if (last_insider_eliminated) finish(Outcome::EmployeesWin);
   else if (state_.round == kRoundCount) finish(Outcome::InsiderWin);
   else {

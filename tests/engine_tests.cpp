@@ -1514,9 +1514,143 @@ void test_settlement_order_provenance_and_defaults() {
   CHECK(total_shares == shortage_match.state().total_supply);
 }
 
+void test_voting_regression_cases_a_through_f() {
+  // Case A — one vote, four eligible voters
+  // One player submits a vote for Player 2. The other three players do not submit votes.
+  // Resolution produces no elimination.
+  // Result reports: 1 submitted vote, 0 explicit abstentions, 3 missing votes, 4 eligible voters.
+  // Must not claim 0 votes submitted.
+  {
+    Match match(scaled_roster(4));
+    CHECK(match.start());
+    round_to_voting(match, 0);
+    CHECK(match.submit_vote(1, 2));
+    const auto res = match.resolve_votes();
+    CHECK(res.has_value());
+    CHECK(!res->eliminated.has_value());
+    CHECK(res->eligible_voters == 4U);
+    CHECK(res->votes_cast == 1U);
+    CHECK(res->votes_abstained == 0U);
+    CHECK(res->votes_missing == 3U);
+    CHECK(res->votes_received == 0U);
+  }
+
+  // Case B — successful strict-majority elimination
+  // Four eligible voters. Three valid votes target the same active player.
+  // Resolution eliminates that player. The eliminated candidate's received-vote count is 3.
+  {
+    Match match(scaled_roster(4));
+    CHECK(match.start());
+    round_to_voting(match, 0);
+    CHECK(match.submit_vote(1, 2));
+    CHECK(match.submit_vote(3, 2));
+    CHECK(match.submit_vote(4, 2));
+    CHECK(match.submit_vote(2, std::nullopt));
+    const auto res = match.resolve_votes();
+    CHECK(res.has_value());
+    CHECK(res->eliminated.has_value() && *res->eliminated == 2U);
+    CHECK(res->votes_received == 3U);
+    CHECK(res->eligible_voters == 4U);
+    CHECK(res->votes_cast == 4U);
+    CHECK(res->votes_abstained == 1U);
+    CHECK(res->votes_missing == 0U);
+  }
+
+  // Case C — insufficient majority
+  // Four eligible voters. Two votes target one player and two target another.
+  // Nobody is eliminated. Reporting correctly reflects four submitted votes without leaking individual ballots.
+  {
+    Match match(scaled_roster(4));
+    CHECK(match.start());
+    round_to_voting(match, 0);
+    CHECK(match.submit_vote(1, 3));
+    CHECK(match.submit_vote(2, 3));
+    CHECK(match.submit_vote(3, 2));
+    CHECK(match.submit_vote(4, 2));
+    const auto res = match.resolve_votes();
+    CHECK(res.has_value());
+    CHECK(!res->eliminated.has_value());
+    CHECK(res->eligible_voters == 4U);
+    CHECK(res->votes_cast == 4U);
+    CHECK(res->votes_abstained == 0U);
+    CHECK(res->votes_missing == 0U);
+  }
+
+  // Case D — explicit abstentions
+  // Three players submit explicit abstentions and one votes for a candidate.
+  // Resolution records four submitted votes, three explicit abstentions and zero missing votes.
+  // No candidate is eliminated.
+  {
+    Match match(scaled_roster(4));
+    CHECK(match.start());
+    round_to_voting(match, 0);
+    CHECK(match.submit_vote(1, std::nullopt));
+    CHECK(match.submit_vote(2, std::nullopt));
+    CHECK(match.submit_vote(3, std::nullopt));
+    CHECK(match.submit_vote(4, 2));
+    const auto res = match.resolve_votes();
+    CHECK(res.has_value());
+    CHECK(!res->eliminated.has_value());
+    CHECK(res->eligible_voters == 4U);
+    CHECK(res->votes_cast == 4U);
+    CHECK(res->votes_abstained == 3U);
+    CHECK(res->votes_missing == 0U);
+  }
+
+  // Case E — deadline and duplicate behavior
+  // A vote accepted before the authoritative deadline is included in resolution.
+  // A vote arriving after deadline is rejected.
+  // Duplicate submissions do not increase counts.
+  {
+    Match match(scaled_roster(4));
+    CHECK(match.start());
+    round_to_voting(match, 0);
+    CHECK(match.submit_vote(1, 2));
+    CHECK(match.submit_vote(1, 3).error == ErrorCode::VoteAlreadySubmitted);
+    CHECK(match.submit_vote(1, std::nullopt).error == ErrorCode::VoteAlreadySubmitted);
+    CHECK(match.submit_vote(2, 2).error == ErrorCode::InvalidVoteTarget);
+    const auto res = match.resolve_votes();
+    CHECK(res.has_value());
+    CHECK(match.submit_vote(2, 3).error == ErrorCode::WrongPhase);
+  }
+
+  // Case F — end-of-match behavior
+  // Final-round InsiderWin and immediate EmployeesWin precedence
+  {
+    Match match_emp_win(scaled_roster(4));
+    CHECK(match_emp_win.start());
+    round_to_voting(match_emp_win, 0);
+    CHECK(match_emp_win.submit_vote(2, 1));
+    CHECK(match_emp_win.submit_vote(3, 1));
+    CHECK(match_emp_win.submit_vote(4, 1));
+    const auto res1 = match_emp_win.resolve_votes();
+    CHECK(res1.has_value());
+    CHECK(res1->eliminated.has_value() && *res1->eliminated == 1U);
+    CHECK(res1->outcome == Outcome::EmployeesWin);
+    CHECK(match_emp_win.state().phase == Phase::Finished);
+
+    Match match_insider_survives(scaled_roster(4));
+    CHECK(match_insider_survives.start());
+    for (int r = 1; r <= 3; ++r) {
+      round_to_voting(match_insider_survives, 0);
+      const auto res = match_insider_survives.resolve_votes();
+      CHECK(res.has_value());
+      if (r < 3) {
+        CHECK(!res->eliminated.has_value());
+        CHECK(res->outcome == Outcome::None);
+      } else {
+        CHECK(!res->eliminated.has_value());
+        CHECK(res->outcome == Outcome::InsiderWin);
+        CHECK(match_insider_survives.state().phase == Phase::Finished);
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
+  test_voting_regression_cases_a_through_f();
   test_state_fixture_invariants();
   test_initialization_and_supply();
   test_role_distribution_boundaries();

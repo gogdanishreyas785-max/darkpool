@@ -34,11 +34,13 @@ In the moderator terminal:
 create 5
 ~~~
 
-Copy the generated **match join token** privately to the intended players. In each player terminal:
+The local server launcher stores protected match tokens in the private token store. In each player terminal, you can join without copying the token:
 
 ~~~text
-join 1 <MATCH_JOIN_TOKEN>
+join
 ~~~
+
+You can also specify the match explicitly with `join 1`. If you run the binaries directly instead of using the launcher scripts, pass the match join token explicitly: `join 1 <MATCH_JOIN_TOKEN>`.
 
 Wait until all five players have joined, then in the moderator terminal:
 
@@ -53,4 +55,4 @@ For an open lobby without a match join token, use **create 5 open**. This disabl
 
 ## Multiple computers
 
-Use the [TLS 1.3 private-LAN setup in the user guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan). Setup scripts provision TLS trust and moderator authentication, but match join tokens are currently shared separately by the moderator. Do not expose the moderator authentication token to players.
+Use the [TLS 1.3 private-LAN setup in the user guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan). Create the protected match in the moderator client before launching player clients; each player launcher then synchronizes protected match-token files over SSH/SCP using the server SSH account saved during setup. If no token was present during launch, relaunch the player script after the moderator creates the match or use the manually shared match token. Never share the moderator authentication token with players.

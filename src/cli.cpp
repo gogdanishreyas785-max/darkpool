@@ -1,4 +1,5 @@
 #include "darkpool/cli.hpp"
+#include "darkpool/token_store.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -82,6 +83,7 @@ std::string ClientState::help_text(ClientRole role) {
         << "DARKPOOL MODERATOR COMMANDS:\n"
         << "  create [player_count] [tok] Create a 3-64 player match (default: 5; roles assigned by server)\n"
         << "  match <id>                Select active match ID (default: 1)\n"
+        << "  matches / list            List active and waiting matches on server\n"
         << "  start                     Start match once all configured players have joined\n"
         << "  event <impact>            Publish business event impact (-2 to 2)\n"
         << "  trading                   Open trading phase for player orders\n"
@@ -99,7 +101,9 @@ std::string ClientState::help_text(ClientRole role) {
   } else {
     oss << "============================================================\n"
         << "DARKPOOL PLAYER COMMANDS:\n"
-        << "  join [match_id] [token]   Join match (default: 1) and receive private role\n"
+        << "  join [match_id] [token]   Join match (default: active/latest) and receive private role\n"
+        << "  enroll [match_id] [sec]   Securely obtain and store match admission token\n"
+        << "  matches / list            List active and waiting matches on server\n"
         << "  status                    View public company health, stock price, and round phase\n"
         << "  hint                      [Insider only] Secretly inspect current round event impact\n"
         << "  research / scout          Cost 10 credits, once/match. Private event direction signal\n"
@@ -312,22 +316,75 @@ CommandResult ClientState::handle_player_command(std::string_view command,
                                                  const std::vector<std::string>& args) {
   const auto active_match = match_id_.value_or(1U);
 
+  if (command == "MATCHES" || command == "LIST") {
+    return CommandResult{.send_frame = true,
+                         .payload = network::json{{"type", "list_matches"}}};
+  }
+
+  if (command == "ENROLL" || command == "TOKEN" || command == "GET_TOKEN") {
+    std::uint64_t target_match = active_match;
+    std::string enroll_token;
+    if (!args.empty()) {
+      if (const auto p = parse_uint64(args[0]); p && *p > 0U) {
+        target_match = *p;
+        if (args.size() >= 2U) {
+          enroll_token = args[1];
+        }
+      } else {
+        enroll_token = args[0];
+      }
+    }
+    if (enroll_token.empty()) {
+      if (const char* env_e = std::getenv("DARKPOOL_ENROLLMENT_TOKEN")) {
+        enroll_token = std::string(env_e);
+      } else if (const char* env_p = std::getenv("DARKPOOL_PLAYER_SECRET")) {
+        enroll_token = std::string(env_p);
+      }
+    }
+    if (enroll_token.empty()) {
+      return CommandResult{.local_message = "[ERROR] Enrollment authorization token required. Pass as argument or set DARKPOOL_ENROLLMENT_TOKEN."};
+    }
+    return CommandResult{.send_frame = true,
+                         .payload = network::json{{"type", "get_match_token"},
+                                                  {"match_id", target_match},
+                                                  {"enrollment_token", enroll_token}}};
+  }
+
   if (command == "JOIN") {
     std::uint64_t target_match = active_match;
-    std::string token;
+    bool auto_requested = false;
     if (!args.empty()) {
       const auto parsed = parse_uint64(args[0]);
       if (!parsed || *parsed == 0U) {
         return CommandResult{.local_message = "[ERROR] Invalid match ID to join."};
       }
       target_match = *parsed;
+    } else {
+      auto_requested = true;
+      const auto latest = security::TokenStore::latest_match_id();
+      if (latest) {
+        target_match = *latest;
+      }
     }
+    std::string token;
     if (args.size() >= 2U) {
-      token = args[1];
-    } else if (const char* env_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
-      token = std::string(env_token);
-    } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
-      token = std::string(env_j_token);
+      if (args[1] == "auto" || args[1] == "--auto") {
+        auto_requested = true;
+      } else {
+        token = args[1];
+      }
+    }
+    if (token.empty()) {
+      if (const char* env_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
+        token = std::string(env_token);
+      } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
+        token = std::string(env_j_token);
+      } else if (auto_requested || std::getenv("DARKPOOL_AUTO_JOIN")) {
+        const auto loaded = security::TokenStore::load_match_token(target_match);
+        if (loaded) {
+          token = *loaded;
+        }
+      }
     }
     match_id_ = target_match;
     network::json payload{{"type", "join_match"}, {"match_id", target_match}};
@@ -584,15 +641,23 @@ std::string ClientState::format_response(const network::json& response) {
       return oss.str();
     }
     if (event == "vote_resolved") {
+      const auto eligible = response.value("eligible_voters", 0U);
+      const auto votes_submitted = response.value("votes_submitted", response.value("votes_cast", 0U));
+      const auto abstained = response.value("votes_abstained", 0U);
+      const auto missing = response.value("votes_missing", (eligible >= votes_submitted ? eligible - votes_submitted : 0U));
+
       oss << "============================================================\n"
           << "[VOTE RESOLVED]\n";
       if (response.contains("eliminated_player") && !response["eliminated_player"].is_null()) {
         oss << "  Elimination    : Player " << response["eliminated_player"].get<PlayerId>() << " was eliminated.\n";
+        oss << "  Votes Received : " << response.value("votes_received", 0U) << " / "
+            << eligible << " eligible voters\n";
       } else {
         oss << "  Elimination    : None (tie or no majority reached)\n";
       }
-      oss << "  Votes Received : " << response.value("votes_received", 0U) << " / "
-          << response.value("eligible_voters", 0U) << " eligible voters\n"
+      oss << "  Votes Submitted: " << votes_submitted << " / " << eligible << "\n"
+          << "  Explicit Abstentions: " << abstained << "\n"
+          << "  Missing Votes  : " << missing << "\n"
           << "  Round Outcome  : " << response.value("outcome", "None") << "\n"
           << "============================================================";
       return oss.str();
@@ -689,6 +754,27 @@ std::string ClientState::format_response(const network::json& response) {
       oss << "============================================================";
       return oss.str();
     }
+  }
+
+  if (type == "match_token_result") {
+    const auto id = response.value("match_id", 0ULL);
+    if (response.value("open_lobby", false)) {
+      return "[INFO] Match #" + std::to_string(id) + " is an open lobby; no admission token is needed.";
+    }
+    if (!response.value("ok", false) || !response.contains("join_token") ||
+        !response["join_token"].is_string()) {
+      return "[ERROR] The server did not return an admission token for Match #" + std::to_string(id) + ".";
+    }
+    const auto tok = response["join_token"].get<std::string>();
+    if (id == 0U || tok.empty()) {
+      return "[ERROR] The server returned an invalid admission token response.";
+    }
+    if (!security::TokenStore::save_match_token(id, tok)) {
+      return "[ERROR] Token received for Match #" + std::to_string(id) +
+          " but could not be stored securely. Check token-directory permissions.";
+    }
+    return "[TOKEN ENROLLED] Admission token for Match #" + std::to_string(id) +
+        " stored securely. Run 'join " + std::to_string(id) + "' or 'join' to enter.";
   }
 
   if (type == "joined_match") {
@@ -803,18 +889,26 @@ std::string ClientState::format_response(const network::json& response) {
     return oss.str();
   }
 
-  if (type == "vote_resolution") {
+  if (type == "vote_resolution" || type == "vote_resolved") {
     const auto outcome = response.value("outcome", "None");
+    const auto eligible = response.value("eligible_voters", 0U);
+    const auto votes_submitted = response.value("votes_submitted", response.value("votes_cast", 0U));
+    const auto abstained = response.value("votes_abstained", 0U);
+    const auto missing = response.value("votes_missing", (eligible >= votes_submitted ? eligible - votes_submitted : 0U));
+
     oss << "============================================================\n"
         << "[VOTE RESOLUTION]\n";
     if (response.contains("eliminated_player") && !response["eliminated_player"].is_null()) {
       const auto elim = response["eliminated_player"].get<PlayerId>();
       oss << "  ELIMINATION    : Player " << elim << " WAS ELIMINATED!\n";
+      oss << "  Votes Received : " << response.value("votes_received", 0U) << " / "
+          << eligible << " eligible voters\n";
     } else {
       oss << "  ELIMINATION    : None (tie or no majority reached)\n";
     }
-    oss << "  Votes Received : " << response.value("votes_received", 0U) << " / "
-        << response.value("eligible_voters", 0U) << " eligible voters\n"
+    oss << "  Votes Submitted: " << votes_submitted << " / " << eligible << "\n"
+        << "  Explicit Abstentions: " << abstained << "\n"
+        << "  Missing Votes  : " << missing << "\n"
         << "  Game Outcome   : " << outcome << "\n";
     if (outcome == "EmployeesWin") {
       oss << "************************************************************\n"
@@ -824,6 +918,27 @@ std::string ClientState::format_response(const network::json& response) {
       oss << "************************************************************\n"
           << "[GAME OVER] The Insider survived! The INSIDER WINS!\n"
           << "************************************************************\n";
+    }
+    oss << "============================================================";
+    return oss.str();
+  }
+
+  if (type == "matches_list") {
+    oss << "============================================================\n"
+        << "[SERVER MATCHES]\n";
+    if (response.contains("matches") && response["matches"].is_array() && !response["matches"].empty()) {
+      for (const auto& m : response["matches"]) {
+        const auto id = m.value("match_id", 0U);
+        const auto phase = m.value("phase", "Unknown");
+        const auto total_p = m.value("player_count", 0U);
+        const auto joined_p = m.value("joined_players", 0U);
+        const bool open = m.value("open_lobby", false);
+        oss << "  Match #" << id << ": Phase=" << phase << " | Players: "
+            << joined_p << "/" << total_p
+            << " | Mode: " << (open ? "Open Lobby" : "Protected") << "\n";
+      }
+    } else {
+      oss << "  No active matches found.\n";
     }
     oss << "============================================================";
     return oss.str();
@@ -902,12 +1017,15 @@ std::string ClientState::format_response(const network::json& response) {
       oss << "------------------------------------------------------------\n"
           << "  Last Vote Resolution:\n";
       if (lv.contains("eliminated_player") && !lv["eliminated_player"].is_null()) {
-        oss << "    Eliminated: Player " << lv["eliminated_player"].get<PlayerId>();
+        oss << "    Eliminated: Player " << lv["eliminated_player"].get<PlayerId>()
+            << " (Votes Received: " << lv.value("votes_received", 0U) << "/"
+            << lv.value("eligible_voters", 0U) << ")\n";
       } else {
-        oss << "    Eliminated: None";
+        oss << "    Eliminated: None\n";
       }
-      oss << " (Votes: " << lv.value("votes_received", 0U) << "/"
-          << lv.value("eligible_voters", 0U) << ")\n";
+      oss << "    Votes Submitted: "
+          << lv.value("votes_submitted", lv.value("votes_cast", 0U)) << "/"
+          << lv.value("eligible_voters", 0U) << "\n";
     }
 
     if (outcome != "None") {

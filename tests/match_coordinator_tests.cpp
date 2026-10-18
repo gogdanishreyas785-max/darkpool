@@ -11,6 +11,22 @@ void check(bool condition, const char* expression, int line) {
 }
 #define CHECK(value) check(static_cast<bool>(value), #value, __LINE__)
 
+inline int test_setenv(const char* name, const char* value) {
+#if defined(_WIN32)
+  return _putenv_s(name, value);
+#else
+  return ::setenv(name, value, 1);
+#endif
+}
+
+inline int test_unsetenv(const char* name) {
+#if defined(_WIN32)
+  return _putenv_s(name, "");
+#else
+  return ::unsetenv(name);
+#endif
+}
+
 using darkpool::network::json;
 using darkpool::server::MatchCoordinator;
 using darkpool::server::SessionRole;
@@ -1673,6 +1689,71 @@ void test_player_admission_security_and_identity() {
   CHECK(open_join && (*open_join)["type"] == "joined_match");
 }
 
+void test_list_matches_and_enrollment_token_authorization() {
+  MatchCoordinator coord;
+  coord.register_session(10, SessionRole::Moderator);
+  coord.register_session(20, SessionRole::Player);
+  coord.register_session(21, SessionRole::Player);
+
+  // 1. Create protected match with token
+  const auto created = coord.handle(10, json{
+    {"type", "create_match"},
+    {"player_count", 4},
+    {"join_token", "prot-secret-88"}
+  });
+  CHECK(created && (*created)["type"] == "match_created");
+  const auto mid = (*created)["match_id"].get<std::uint64_t>();
+
+  // 2. list_matches
+  const auto list_res = coord.handle(20, json{{"type", "list_matches"}});
+  CHECK(list_res && (*list_res)["type"] == "matches_list");
+  CHECK((*list_res)["matches"].size() == 1U);
+  CHECK((*list_res)["matches"][0]["match_id"] == mid);
+  CHECK((*list_res)["matches"][0]["player_count"] == 4U);
+  CHECK((*list_res)["matches"][0]["open_lobby"] == false);
+
+  // 3. get_match_token when server has no enrollment token configured
+  test_unsetenv("DARKPOOL_ENROLLMENT_TOKEN");
+  test_unsetenv("DARKPOOL_PLAYER_SECRET");
+  const auto unauth_token_req = coord.handle(20, json{
+    {"type", "get_match_token"},
+    {"match_id", mid},
+    {"enrollment_token", "some-token"}
+  });
+  CHECK(unauth_token_req && (*unauth_token_req)["type"] == "error");
+
+  // 4. Set server enrollment secret
+  test_setenv("DARKPOOL_ENROLLMENT_TOKEN", "valid-enroll-token");
+
+  // Wrong enrollment token -> rejected
+  const auto bad_req = coord.handle(20, json{
+    {"type", "get_match_token"},
+    {"match_id", mid},
+    {"enrollment_token", "wrong-enroll-token"}
+  });
+  CHECK(bad_req && (*bad_req)["type"] == "error");
+
+  // Correct enrollment token -> succeeds
+  const auto good_req = coord.handle(20, json{
+    {"type", "get_match_token"},
+    {"match_id", mid},
+    {"enrollment_token", "valid-enroll-token"}
+  });
+  CHECK(good_req && (*good_req)["type"] == "match_token_result");
+  CHECK((*good_req)["ok"] == true);
+  CHECK((*good_req)["join_token"] == "prot-secret-88");
+
+  // Player joins using retrieved token
+  const auto join_res = coord.handle(20, json{
+    {"type", "join_match"},
+    {"match_id", mid},
+    {"join_token", (*good_req)["join_token"]}
+  });
+  CHECK(join_res && (*join_res)["type"] == "joined_match");
+
+  test_unsetenv("DARKPOOL_ENROLLMENT_TOKEN");
+}
+
 }  // namespace
 
 int main() {
@@ -1690,6 +1771,7 @@ int main() {
   test_stage3_state_version_and_notification_ordering();
   test_stage4_coordinator_quantity_and_research();
   test_player_admission_security_and_identity();
+  test_list_matches_and_enrollment_token_authorization();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Match coordinator isolation tests passed.\n";
   return EXIT_SUCCESS;

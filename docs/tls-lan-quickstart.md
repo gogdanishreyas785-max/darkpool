@@ -29,20 +29,20 @@ bash scripts/setup_tls_lan.sh server
 bash scripts/run_tls_server.sh
 ~~~
 
-On each player computer:
-
-~~~bash
-bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 SERVER_SSH_USER player
-bash scripts/run_tls_client.sh player
-~~~
-
-On the moderator computer:
+On the moderator computer, set up the client and start it:
 
 ~~~bash
 bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 SERVER_SSH_USER moderator
 bash scripts/run_tls_client.sh moderator
 ~~~
 
-Each client computer requires a repository checkout and authorized SSH access to the server for setup. The scripts install dependencies, build the program, establish TLS server trust, and retrieve the moderator credential only for moderator setup. They do **not** distribute each newly created match's join token automatically; the moderator must securely share the match ID and match token with intended players.
+Create the protected match in the moderator CLI. Then, on each player computer, set up and launch the player client:
+
+~~~bash
+bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 SERVER_SSH_USER player
+bash scripts/run_tls_client.sh player
+~~~
+
+Each client computer requires a repository checkout and authorized SSH access to the server for setup. The scripts install dependencies, build the program, establish TLS server trust, and retrieve the moderator credential only for moderator setup. After a match is created, the player launcher synchronizes match-token files over SSH/SCP. If the player client was launched before the match existed, relaunch it after creation or use the manually shared match token.
 
 Use TLS port 4783 and trusted private networking only. Do not expose the server to the public Internet. For full details, see the [user guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan).
