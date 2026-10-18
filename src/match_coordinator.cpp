@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <random>
@@ -40,6 +41,42 @@ std::optional<std::uint64_t> role_shuffle_seed() noexcept {
 #endif
 }
 
+std::string generate_secure_join_token() noexcept {
+  unsigned char bytes[16] = {0};
+#if defined(__linux__)
+  std::size_t offset = 0;
+  while (offset < sizeof(bytes)) {
+    const auto received = getrandom(bytes + offset, sizeof(bytes) - offset, 0);
+    if (received < 0 && errno == EINTR) continue;
+    if (received <= 0) break;
+    offset += static_cast<std::size_t>(received);
+  }
+  if (offset < sizeof(bytes)) {
+    try {
+      std::random_device rd;
+      for (std::size_t i = offset; i < sizeof(bytes); ++i) {
+        bytes[i] = static_cast<unsigned char>(rd() & 0xFF);
+      }
+    } catch (...) {}
+  }
+#else
+  try {
+    std::random_device rd;
+    for (std::size_t i = 0; i < sizeof(bytes); ++i) {
+      bytes[i] = static_cast<unsigned char>(rd() & 0xFF);
+    }
+  } catch (...) {}
+#endif
+  static constexpr char kHexDigits[] = "0123456789abcdef";
+  std::string token;
+  token.reserve(sizeof(bytes) * 2);
+  for (unsigned char b : bytes) {
+    token.push_back(kHexDigits[(b >> 4) & 0x0F]);
+    token.push_back(kHexDigits[b & 0x0F]);
+  }
+  return token;
+}
+
 network::json error(std::string message) {
   return network::json{{"type", "error"}, {"error", std::move(message)}};
 }
@@ -51,7 +88,8 @@ network::json operation_error(const OperationResult& result) {
 
 bool has_client_identity(const network::json& command) {
   return command.contains("player_id") || command.contains("voter_id") ||
-      command.contains("investigator_id");
+      command.contains("investigator_id") || command.contains("seat") ||
+      command.contains("role") || command.contains("private_role");
 }
 
 std::optional<std::uint64_t> read_match_id(const network::json& command) {
@@ -635,13 +673,44 @@ std::optional<network::json> MatchCoordinator::handle(
     try {
       auto match = std::make_unique<Match>(roster, default_market_coefficients_);
       const auto match_id = next_match_id_++;
+
+      bool is_open_lobby = default_open_lobby_;
+      if (command.contains("open_lobby") && command["open_lobby"].is_boolean()) {
+        is_open_lobby = command["open_lobby"].get<bool>();
+      } else if (const char* env_open = std::getenv("DARKPOOL_OPEN_LOBBY")) {
+        if (std::strcmp(env_open, "1") == 0 || std::strcmp(env_open, "true") == 0 || std::strcmp(env_open, "TRUE") == 0) {
+          is_open_lobby = true;
+        }
+      }
+
+      std::optional<std::string> join_token;
+      if (!is_open_lobby) {
+        if (command.contains("join_token") && command["join_token"].is_string()) {
+          const auto tok = command["join_token"].get<std::string>();
+          if (!tok.empty()) join_token = tok;
+        } else if (const char* env_token = std::getenv("DARKPOOL_MATCH_JOIN_TOKEN")) {
+          if (std::strlen(env_token) > 0) join_token = std::string(env_token);
+        } else if (const char* env_p_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
+          if (std::strlen(env_p_token) > 0) join_token = std::string(env_p_token);
+        }
+        if (!join_token) {
+          // Production default: auto-generate unpredictable 128-bit hex token
+          join_token = generate_secure_join_token();
+        }
+      }
+
       MatchRecord record{std::move(match), session,
-          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt, 1U, false, {}};
+          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt, 1U, false, {}, join_token};
       matches_.emplace(match_id, std::move(record));
       connection->second.moderator_matches.push_back(match_id);
-      return network::json{{"type", "match_created"}, {"match_id", match_id},
+      network::json resp{{"type", "match_created"}, {"match_id", match_id},
           {"player_count", *player_count}, {"insiders", counts->insiders},
-          {"investigators", counts->investigators}, {"employees", counts->employees}};
+          {"investigators", counts->investigators}, {"employees", counts->employees},
+          {"open_lobby", is_open_lobby}};
+      if (join_token) {
+        resp["join_token"] = *join_token;
+      }
+      return resp;
     } catch (const std::exception& exception) {
       return error(exception.what());
     }
@@ -659,6 +728,24 @@ std::optional<network::json> MatchCoordinator::handle(
     if (connection->second.player_match) return error("connection already belongs to a match");
     if (match->second.is_aborted) return error("match has been aborted");
     if (match->second.match->state().phase != Phase::Lobby) return error("match is not joinable");
+
+    if (match->second.join_token.has_value()) {
+      std::string provided_token;
+      if (command.contains("join_token") && command["join_token"].is_string()) {
+        provided_token = command["join_token"].get<std::string>();
+      } else if (command.contains("token") && command["token"].is_string()) {
+        provided_token = command["token"].get<std::string>();
+      } else if (const char* env_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
+        provided_token = std::string(env_token);
+      } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
+        provided_token = std::string(env_j_token);
+      }
+
+      if (provided_token.empty() || provided_token != *match->second.join_token) {
+        return error("invalid or missing match join token");
+      }
+    }
+
     for (std::size_t seat = 0; seat < match->second.player_sessions.size(); ++seat) {
       if (!match->second.player_sessions[seat]) {
         const auto player_id = static_cast<PlayerId>(seat + 1U);

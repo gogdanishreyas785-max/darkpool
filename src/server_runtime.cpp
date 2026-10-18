@@ -453,7 +453,9 @@ bool ServerRuntime::step(int timeout_ms) {
     if (signal_fd_ >= 0 && fd == signal_fd_) {
       signalfd_siginfo info{};
       const auto read_bytes = read(signal_fd_, &info, sizeof(info));
-      (void)read_bytes;
+      if (read_bytes == sizeof(info) && info.ssi_signo == SIGPIPE) {
+        continue;
+      }
       should_terminate_ = true;
       break;
     }

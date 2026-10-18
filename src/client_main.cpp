@@ -203,7 +203,7 @@ int main(int argc, char** argv) {
       const auto& payload = incoming.payload();
       const auto formatted = state.format_response(payload);
       if (!formatted.empty()) {
-        std::cout << formatted << '\n';
+        std::cout << formatted << std::endl;
       }
       if (!is_push_notification(payload)) {
         return true;
@@ -248,7 +248,7 @@ int main(int argc, char** argv) {
       }
       const auto formatted = state.format_response(incoming.payload());
       if (!formatted.empty()) {
-        std::cout << formatted << '\n';
+        std::cout << formatted << std::endl;
         if (is_interactive) {
           std::cout << state.prompt() << input_buffer << std::flush;
         }
@@ -344,7 +344,7 @@ int main(int argc, char** argv) {
     }
 
     if (!cmd.local_message.empty()) {
-      std::cout << cmd.local_message << '\n';
+      std::cout << cmd.local_message << std::endl;
     }
     if (cmd.should_exit) {
       break;

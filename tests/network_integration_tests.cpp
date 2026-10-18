@@ -2166,15 +2166,165 @@ void test_notifications_and_market_snapshots(const char* server_path) {
   cleanup();
 }
 
+void test_automatic_phase_timers_and_late_actions(const char* server_path) {
+  const auto port = reserve_port();
+  CHECK(port != 0U);
+  if (port == 0U) return;
+
+  // Launch server with fast timers enabled (2s discussion, 2s trading, 2s voting, 1s trans, 1s clue)
+  const auto child = fork();
+  CHECK(child >= 0);
+  if (child < 0) return;
+  if (child == 0) {
+    setenv("DARKPOOL_MODERATOR_TOKEN", "fast-timer-mod-token", 1);
+    setenv("DARKPOOL_FAST_TIMERS", "1", 1);
+    const auto port_text = std::to_string(port);
+    execl(server_path, server_path, port_text.c_str(), static_cast<char*>(nullptr));
+    _exit(127);
+  }
+
+  std::vector<int> connected;
+  const auto cleanup = [&]() {
+    for (const auto fd : connected) if (fd >= 0) (void)close(fd);
+    (void)kill(child, SIGTERM);
+    (void)waitpid(child, nullptr, 0);
+  };
+
+  int moderator = connect_with_retry(port);
+  CHECK(moderator >= 0);
+  if (moderator < 0) { cleanup(); return; }
+  connected.push_back(moderator);
+  timeval timeout{4, 0};
+  (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+  const auto mod_reply = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "fast-timer-mod-token"}});
+  CHECK(mod_reply && (*mod_reply)["type"] == "connect" && (*mod_reply)["role"] == "moderator");
+
+  std::vector<int> players;
+  for (std::size_t i = 0; i < 5; ++i) {
+    const int fd = connect_to(port);
+    CHECK(fd >= 0);
+    if (fd < 0) continue;
+    connected.push_back(fd);
+    players.push_back(fd);
+    (void)setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    const auto p_reply = request_json(fd, json{{"type", "connect"}, {"role", "player"}});
+    CHECK(p_reply && (*p_reply)["type"] == "connect" && (*p_reply)["role"] == "player");
+  }
+  if (players.size() != 5) { cleanup(); return; }
+
+  const auto created = request_json(moderator, json{{"type", "create_match"}, {"player_count", 5}});
+  CHECK(created && (*created)["type"] == "match_created");
+  const auto match_id = (*created)["match_id"].get<std::uint64_t>();
+
+  int insider_fd = -1;
+  int investigator_fd = -1;
+  int employee_fd = -1;
+
+  for (std::size_t i = 0; i < players.size(); ++i) {
+    const auto joined = request_json(players[i], json{{"type", "join_match"}, {"match_id", match_id}});
+    CHECK(joined && (*joined)["type"] == "joined_match");
+    const auto role = (*joined)["private_role"].get<std::string>();
+    if (role == "Insider") insider_fd = players[i];
+    else if (role == "Investigator") investigator_fd = players[i];
+    else if (role == "Employee" && employee_fd < 0) employee_fd = players[i];
+  }
+  CHECK(insider_fd >= 0 && investigator_fd >= 0 && employee_fd >= 0);
+
+  // Moderator starts match
+  const auto started = command(moderator, match_id, "start_match");
+  CHECK(started && (*started)["type"] == "transition_result" && (*started)["ok"]);
+
+  // Moderator publishes event -> Discussion phase begins (2 second fast timer)
+  const auto event_pub = request_json(moderator, json{{"type", "publish_event"}, {"match_id", match_id}, {"impact", 0}});
+  CHECK(event_pub && (*event_pub)["type"] == "transition_result" && (*event_pub)["phase"] == "Discussion");
+
+  // Valid research during Discussion
+  const auto res_valid = request_json(players[0], json{{"type", "research"}, {"match_id", match_id}});
+  CHECK(res_valid && (*res_valid)["type"] == "research_result" && (*res_valid)["ok"]);
+
+  // Wait 2.5 seconds for Discussion timer to expire naturally and automatically advance to Trading!
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+  // Verify that players observe the automatic phase transition to Trading via pushed notifications
+  bool saw_trading_phase = false;
+  for (int iter = 0; iter < 10; ++iter) {
+    const auto p_trading_ev = read_single_frame(players[0]);
+    if (p_trading_ev && p_trading_ev->value("phase", std::string{}) == "Trading") {
+      saw_trading_phase = true;
+      break;
+    }
+  }
+  CHECK(saw_trading_phase);
+
+  // Late action rejection: Research submitted after Discussion deadline expired must be rejected!
+  const auto late_research = request_json(players[0], json{{"type", "research"}, {"match_id", match_id}});
+  CHECK(late_research && (*late_research)["type"] == "operation_result" && !(*late_research)["ok"] && (*late_research)["code"] == "WrongPhase");
+
+  // Submit valid trade in Trading phase (2s timer)
+  const auto valid_trade = request_json(players[0], json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}});
+  CHECK(valid_trade && (*valid_trade)["type"] == "trade_result" && (*valid_trade)["ok"]);
+
+  // Wait 2.5 seconds for Trading timer to expire naturally and automatically resolve market -> advance to Clue!
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+  // Verify that Clue phase was entered automatically
+  bool saw_clue_phase = false;
+  for (int iter = 0; iter < 10; ++iter) {
+    const auto p_clue_ev = read_single_frame(players[0]);
+    if (p_clue_ev && p_clue_ev->value("phase", std::string{}) == "Clue") {
+      saw_clue_phase = true;
+      break;
+    }
+  }
+  CHECK(saw_clue_phase);
+
+  // Late trade rejection: Trade submitted after Trading deadline expired must be rejected!
+  const auto late_trade = request_json(players[1], json{{"type", "trade"}, {"match_id", match_id}, {"action", "HOLD"}});
+  CHECK(late_trade && (*late_trade)["type"] == "operation_result" && !(*late_trade)["ok"] && (*late_trade)["code"] == "WrongPhase");
+
+  // Clue phase has 1s timer, followed by 1s transition interval -> wait 2.5s for automatic transition to Voting!
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+  // Verify Voting phase was entered automatically
+  bool saw_voting_phase = false;
+  for (int iter = 0; iter < 10; ++iter) {
+    const auto p_voting_ev = read_single_frame(players[0]);
+    if (p_voting_ev && p_voting_ev->value("phase", std::string{}) == "Voting") {
+      saw_voting_phase = true;
+      break;
+    }
+  }
+  CHECK(saw_voting_phase);
+
+  // Late clue rejection: Clue submitted after Clue deadline expired must be rejected!
+  const auto late_clue = request_json(investigator_fd, json{{"type", "request_clue"}, {"match_id", match_id}, {"target_id", 1}});
+  CHECK(late_clue && (*late_clue)["type"] == "error" && (*late_clue)["error"] == "clue phase has ended");
+
+  // In Voting phase (2s timer): submit vote for player 0
+  const auto valid_vote = request_json(players[0], json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}});
+  CHECK(valid_vote && (*valid_vote)["type"] == "vote_result" && (*valid_vote)["ok"]);
+
+  // Wait 2.5 seconds for Voting timer to expire naturally and automatically resolve votes -> advance to Round 2!
+  std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+
+  // Late vote rejection: Vote submitted after Voting deadline expired must be rejected!
+  const auto late_vote = request_json(players[1], json{{"type", "vote"}, {"match_id", match_id}, {"target_id", nullptr}});
+  CHECK(late_vote && (*late_vote)["type"] == "operation_result" && !(*late_vote)["ok"] && (*late_vote)["code"] == "WrongPhase");
+
+  cleanup();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (argc != 2 && argc != 3) {
-    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|min-player|malformed|unix|lan-binding|notifications|all]\n";
+    std::cerr << "expected server executable path [capacity|timeout|auth|gameplay|variable-gameplay|min-player|malformed|unix|lan-binding|notifications|phase-timers|all]\n";
     return EXIT_FAILURE;
   }
   if (argc == 3 && std::string(argv[2]) == "gameplay") {
     test_complete_three_round_match(argv[1], 5U);
+  } else if (argc == 3 && std::string(argv[2]) == "phase-timers") {
+    test_automatic_phase_timers_and_late_actions(argv[1]);
   } else if (argc == 3 && std::string(argv[2]) == "variable-gameplay") {
     test_complete_three_round_match(argv[1], 3U);
     test_complete_three_round_match(argv[1], 8U);
@@ -2203,6 +2353,7 @@ int main(int argc, char** argv) {
     test_unix_socket_lifecycle_and_gameplay(argv[1]);
     test_lan_binding(argv[1]);
     test_notifications_and_market_snapshots(argv[1]);
+    test_automatic_phase_timers_and_late_actions(argv[1]);
   } else {
     test_server_capacity_and_echo(argv[1]);
   }

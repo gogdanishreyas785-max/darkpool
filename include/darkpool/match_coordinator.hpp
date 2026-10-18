@@ -57,6 +57,8 @@ class MatchCoordinator {
   [[nodiscard]] PhaseDurations phase_durations() const noexcept { return phase_durations_; }
   void set_default_market_coefficients(MarketModelCoefficients coeffs) noexcept { default_market_coefficients_ = coeffs; }
   [[nodiscard]] const MarketModelCoefficients& default_market_coefficients() const noexcept { return default_market_coefficients_; }
+  void set_default_open_lobby(bool open_lobby) noexcept { default_open_lobby_ = open_lobby; }
+  [[nodiscard]] bool default_open_lobby() const noexcept { return default_open_lobby_; }
 
  private:
   struct Session {
@@ -74,6 +76,7 @@ class MatchCoordinator {
     std::uint64_t state_version{1};
     bool is_aborted{false};
     MatchTimer timer{};
+    std::optional<std::string> join_token;
   };
 
   OperationResult apply_open_trading(std::uint64_t match_id, MatchRecord& record,
@@ -97,6 +100,7 @@ class MatchCoordinator {
   std::optional<std::chrono::steady_clock::time_point> simulated_time_{std::nullopt};
   PhaseDurations phase_durations_{};
   MarketModelCoefficients default_market_coefficients_{MarketModelCoefficients::approved_baseline()};
+  bool default_open_lobby_{false};
 };
 
 }  // namespace darkpool::server
