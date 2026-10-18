@@ -224,7 +224,7 @@ These are the default durations in the current coordinator, not player-selected 
 
 ### Business events, health, price, and shares
 
-Each round's event impact is one of -2, -1, 0, +1, or +2. The event is public; the exact signed health impact is private to the Insider via hint. The same impact applies throughout the round; the hint is not separately randomized on each request.
+The moderator currently enters a numeric impact from -2, -1, 0, +1, or +2 with the event command. The current implementation does not include a public narrative event description or an automatic scenario deck. The impact is stored for market resolution and can be retrieved privately by the Insider using hint; it is not separately randomized on each request.
 
 At match start, each player has 100 fictional credits and 10 shares. Company health begins at 5 (bounded 0–10), stock price at 10 (bounded 1–100), and total share supply is 20N: 10N player-held shares and 10N in reserve.
 
