@@ -156,6 +156,27 @@ For encrypted, tamper-resistant multiplayer over a private local network, launch
    ```
 
 
+### Automated TLS LAN Setup (Recommended)
+
+For encrypted multi-machine play, the repository now includes a one-command setup/bootstrap workflow. It installs build dependencies, builds and tests DARKPOOL, creates or reuses the private LAN CA and server certificate, and distributes trust material over authenticated SSH. It transfers the moderator token only when setting up the moderator client; players do not need that token.
+
+On the server machine:
+
+    bash scripts/setup_tls_lan.sh server
+    bash scripts/run_tls_server.sh
+
+On each player/client machine (replace the address and SSH username):
+
+    bash scripts/setup_tls_lan.sh client 192.168.1.50 SERVER_SSH_USER player
+    bash scripts/run_tls_client.sh player
+
+On the moderator machine, use the moderator role:
+
+    bash scripts/setup_tls_lan.sh client 192.168.1.50 SERVER_SSH_USER moderator
+    bash scripts/run_tls_client.sh moderator
+
+The scripts use the standard SSH host-key check and SSH login; no manual certificate, fingerprint, or token copy/paste is needed. Full instructions and troubleshooting are in [docs/tls-lan-quickstart.md](docs/tls-lan-quickstart.md).
+
 ### LAN Troubleshooting Guide
 
 - **Connection refused / Timed out**:
