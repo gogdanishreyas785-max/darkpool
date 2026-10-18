@@ -130,6 +130,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_notifications_e2e_tests
     COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> notifications)
   set_tests_properties(darkpool_notifications_e2e_tests PROPERTIES TIMEOUT 30)
+  add_test(NAME darkpool_phase_timers_and_late_actions_tests
+    COMMAND darkpool_network_integration_tests $<TARGET_FILE:darkpool_server> phase-timers)
+  set_tests_properties(darkpool_phase_timers_and_late_actions_tests PROPERTIES TIMEOUT 30)
 
   add_executable(darkpool_tls_integration_tests tests/tls_integration_tests.cpp)
   target_link_libraries(darkpool_tls_integration_tests PRIVATE darkpool_communications)
@@ -247,7 +250,46 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
   add_test(NAME darkpool_load_tls_functional
     COMMAND darkpool_load_tests_tls $<TARGET_FILE:darkpool_server>)
+  set(DARKPOOL_LEGACY_TESTS
+    darkpool_network_integration_tests
+    darkpool_timeout_tests
+    darkpool_auth_tests
+    darkpool_gameplay_e2e_tests
+    darkpool_variable_gameplay_e2e_tests
+    darkpool_min_player_tests
+    darkpool_malformed_tcp_tests
+    darkpool_unix_socket_tests
+    darkpool_lan_binding_tests
+    darkpool_notifications_e2e_tests
+    darkpool_phase_timers_and_late_actions_tests
+    darkpool_tls_integration_tests
+    darkpool_load_tests
+    darkpool_load_regression_tests
+    darkpool_load_l1_functional
+    darkpool_load_l3_functional
+    darkpool_load_64p_functional
+    darkpool_load_64p_regression
+    darkpool_load_64p_semantic_regression
+    darkpool_load_l5_functional
+    darkpool_load_l5_regression
+    darkpool_load_l6_functional
+    darkpool_load_l6_regression
+    darkpool_load_l6_sustained_short
+    darkpool_load_l7_functional
+    darkpool_load_l7_regression
+    darkpool_load_l8_functional
+    darkpool_load_l8_regression
+    darkpool_load_tls_functional
+  )
+  set_tests_properties(${DARKPOOL_LEGACY_TESTS} PROPERTIES ENVIRONMENT "DARKPOOL_OPEN_LOBBY=1")
   set_tests_properties(darkpool_load_tls_functional PROPERTIES TIMEOUT 180)
+
+  find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_FOUND)
+    add_test(NAME darkpool_playable_match_e2e
+      COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_playable_match.py $<TARGET_FILE_DIR:darkpool_server>)
+    set_tests_properties(darkpool_playable_match_e2e PROPERTIES TIMEOUT 60)
+  endif()
 
   option(DARKPOOL_ENABLE_SUSTAINED_TESTS "Enable 10-minute and 30-minute sustained load tests in CTest" OFF)
   if(DARKPOOL_ENABLE_SUSTAINED_TESTS)

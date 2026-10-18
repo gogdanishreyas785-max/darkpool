@@ -28,6 +28,10 @@ ctest --test-dir build --output-on-failure
 
 Configure with warnings-as-errors using `-DDARKPOOL_WARNINGS_AS_ERRORS=ON`.
 
+## Quickstart
+
+For a complete, verified step-by-step walkthrough—from prerequisite installation, certificate generation, starting the server, connecting the moderator and 5 players, playing through all 3 rounds, to terminal victory resolution—refer to the [Quickstart Guide](docs/quickstart.md).
+
 ## Playable CLI Gameplay
 
 Moderator connections require an authentication secret supplied via the `DARKPOOL_MODERATOR_TOKEN` environment variable on both the server and the moderator client. If the server does not have `DARKPOOL_MODERATOR_TOKEN` set, it fails closed and rejects all moderator connection attempts. Players connect without a token.

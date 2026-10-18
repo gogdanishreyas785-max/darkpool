@@ -17,7 +17,7 @@ using darkpool::server::SessionRole;
 
 json create(MatchCoordinator& coordinator, std::uint64_t moderator,
             std::optional<std::size_t> player_count = std::nullopt) {
-  json command{{"type", "create_match"}};
+  json command{{"type", "create_match"}, {"open_lobby", true}};
   if (player_count) command["player_count"] = *player_count;
   return *coordinator.handle(moderator, command);
 }
@@ -1397,7 +1397,7 @@ void test_stage4_coordinator_quantity_and_research() {
   coordinator.register_session(100, SessionRole::Moderator);
   for (std::uint64_t s = 1; s <= 5; ++s) coordinator.register_session(s, SessionRole::Player);
 
-  const auto created = coordinator.handle(100, json{{"type", "create_match"}, {"player_count", 5}});
+  const auto created = coordinator.handle(100, json{{"type", "create_match"}, {"player_count", 5}, {"open_lobby", true}});
   CHECK(created && (*created)["type"] == "match_created");
   const auto match_id = (*created)["match_id"].get<std::uint64_t>();
 
@@ -1503,6 +1503,176 @@ void test_stage4_coordinator_quantity_and_research() {
   CHECK(status && status->contains("sentiment") && status->contains("volatility") && status->contains("liquidity"));
 }
 
+void test_player_admission_security_and_identity() {
+  MatchCoordinator coordinator;
+  // Register moderator session 100
+  coordinator.register_session(100, SessionRole::Moderator);
+  // Register player sessions 1..5
+  for (std::uint64_t s = 1; s <= 5; ++s) {
+    coordinator.register_session(s, SessionRole::Player);
+  }
+
+  // 1. Moderator creates match with admission token
+  const auto created = coordinator.handle(100, json{
+    {"type", "create_match"},
+    {"player_count", 5},
+    {"join_token", "protected-token-abc"}
+  });
+  CHECK(created && (*created)["type"] == "match_created");
+  const auto match_id = (*created)["match_id"].get<std::uint64_t>();
+  CHECK((*created)["join_token"] == "protected-token-abc");
+
+  // 2. Player joins without join token -> rejected
+  const auto no_token = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id}
+  });
+  CHECK(no_token && (*no_token)["type"] == "error");
+  CHECK((*no_token)["error"] == "invalid or missing match join token");
+
+  // 3. Player joins with wrong join token -> rejected
+  const auto bad_token = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "invalid-token-xyz"}
+  });
+  CHECK(bad_token && (*bad_token)["type"] == "error");
+  CHECK((*bad_token)["error"] == "invalid or missing match join token");
+
+  // 4. Player attempts to spoof seat or role -> rejected
+  const auto spoof_seat = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "protected-token-abc"},
+    {"seat", 1}
+  });
+  CHECK(spoof_seat && (*spoof_seat)["type"] == "error");
+  CHECK((*spoof_seat)["error"] == "client identity fields are not accepted");
+
+  const auto spoof_role = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "protected-token-abc"},
+    {"role", "Insider"}
+  });
+  CHECK(spoof_role && (*spoof_role)["type"] == "error");
+  CHECK((*spoof_role)["error"] == "client identity fields are not accepted");
+
+  // 5. Authorized player joins with valid token -> accepted
+  const auto valid_join = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "protected-token-abc"}
+  });
+  CHECK(valid_join && (*valid_join)["type"] == "joined_match");
+  CHECK((*valid_join)["player_id"] == 1U);
+  CHECK((*valid_join)["seat"] == 1U);
+  CHECK(valid_join->contains("private_role"));
+
+  // 6. Impersonation / seat bypass test
+  // Cannot join a second time from same session
+  const auto rejoin = coordinator.handle(1, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "protected-token-abc"}
+  });
+  CHECK(rejoin && (*rejoin)["type"] == "error");
+  CHECK((*rejoin)["error"] == "connection already belongs to a match");
+
+  // 7. Moderator / player separation
+  // Moderator cannot join as player
+  const auto mod_join = coordinator.handle(100, json{
+    {"type", "join_match"},
+    {"match_id", match_id},
+    {"join_token", "protected-token-abc"}
+  });
+  CHECK(mod_join && (*mod_join)["type"] == "error");
+  CHECK((*mod_join)["error"] == "player permission required");
+
+  // Player cannot invoke moderator commands
+  const auto player_start = coordinator.handle(1, json{
+    {"type", "start_match"},
+    {"match_id", match_id}
+  });
+  CHECK(player_start && (*player_start)["type"] == "error");
+  CHECK((*player_start)["error"] == "creating moderator permission required");
+
+  // 8. Join remaining players
+  for (std::uint64_t s = 2; s <= 5; ++s) {
+    const auto j = coordinator.handle(s, json{
+      {"type", "join_match"},
+      {"match_id", match_id},
+      {"join_token", "protected-token-abc"}
+    });
+    CHECK(j && (*j)["type"] == "joined_match");
+  }
+
+  // 9. Privacy checks: public status and snapshots do NOT leak join_token or private roles
+  const auto status = coordinator.handle(100, json{{"type", "match_status"}, {"match_id", match_id}});
+  CHECK(status && (*status)["type"] == "match_status");
+  CHECK(!status->contains("join_token"));
+  CHECK(!status->contains("private_role"));
+  CHECK(!status->contains("token"));
+
+  const auto notifs = coordinator.drain_notifications();
+  for (const auto& n : notifs) {
+    CHECK(!n.payload.contains("join_token"));
+    CHECK(!n.payload.contains("token"));
+  }
+
+  // 10. Production Default: Auto-generated token when none specified
+  MatchCoordinator coord_autogen;
+  coord_autogen.register_session(200, SessionRole::Moderator);
+  coord_autogen.register_session(201, SessionRole::Player);
+  const auto autogen_created = coord_autogen.handle(200, json{
+    {"type", "create_match"},
+    {"player_count", 5}
+  });
+  CHECK(autogen_created && (*autogen_created)["type"] == "match_created");
+  const auto m_auto_id = (*autogen_created)["match_id"].get<std::uint64_t>();
+  CHECK((*autogen_created)["open_lobby"] == false);
+  CHECK(autogen_created->contains("join_token"));
+  const auto autogen_tok = (*autogen_created)["join_token"].get<std::string>();
+  CHECK(autogen_tok.size() == 32U); // 128-bit hex string
+
+  // Player without token rejected on default protected match
+  const auto auto_fail = coord_autogen.handle(201, json{
+    {"type", "join_match"},
+    {"match_id", m_auto_id}
+  });
+  CHECK(auto_fail && (*auto_fail)["type"] == "error");
+  CHECK((*auto_fail)["error"] == "invalid or missing match join token");
+
+  // Player with autogen token joins successfully
+  const auto auto_ok = coord_autogen.handle(201, json{
+    {"type", "join_match"},
+    {"match_id", m_auto_id},
+    {"join_token", autogen_tok}
+  });
+  CHECK(auto_ok && (*auto_ok)["type"] == "joined_match");
+
+  // 11. Explicit Open Lobby mode allows unauthenticated join
+  MatchCoordinator coord_open;
+  coord_open.register_session(300, SessionRole::Moderator);
+  coord_open.register_session(301, SessionRole::Player);
+  const auto open_created = coord_open.handle(300, json{
+    {"type", "create_match"},
+    {"player_count", 5},
+    {"open_lobby", true}
+  });
+  CHECK(open_created && (*open_created)["type"] == "match_created");
+  const auto m_open_id = (*open_created)["match_id"].get<std::uint64_t>();
+  CHECK((*open_created)["open_lobby"] == true);
+  CHECK(!open_created->contains("join_token"));
+
+  // Player joins without token in explicit open lobby
+  const auto open_join = coord_open.handle(301, json{
+    {"type", "join_match"},
+    {"match_id", m_open_id}
+  });
+  CHECK(open_join && (*open_join)["type"] == "joined_match");
+}
+
 }  // namespace
 
 int main() {
@@ -1519,6 +1689,7 @@ int main() {
   test_canonical_clue_phase_and_investigator_window();
   test_stage3_state_version_and_notification_ordering();
   test_stage4_coordinator_quantity_and_research();
+  test_player_admission_security_and_identity();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Match coordinator isolation tests passed.\n";
   return EXIT_SUCCESS;

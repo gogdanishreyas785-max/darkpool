@@ -80,7 +80,7 @@ std::string ClientState::help_text(ClientRole role) {
   if (role == ClientRole::Moderator) {
     oss << "============================================================\n"
         << "DARKPOOL MODERATOR COMMANDS:\n"
-        << "  create [player_count]     Create a 3-64 player match (default: 5; roles assigned by server)\n"
+        << "  create [player_count] [tok] Create a 3-64 player match (default: 5; roles assigned by server)\n"
         << "  match <id>                Select active match ID (default: 1)\n"
         << "  start                     Start match once all configured players have joined\n"
         << "  event <impact>            Publish business event impact (-2 to 2)\n"
@@ -99,7 +99,7 @@ std::string ClientState::help_text(ClientRole role) {
   } else {
     oss << "============================================================\n"
         << "DARKPOOL PLAYER COMMANDS:\n"
-        << "  join [match_id]           Join match (default: 1) and receive private role\n"
+        << "  join [match_id] [token]   Join match (default: 1) and receive private role\n"
         << "  status                    View public company health, stock price, and round phase\n"
         << "  hint                      [Insider only] Secretly inspect current round event impact\n"
         << "  research / scout          Cost 10 credits, once/match. Private event direction signal\n"
@@ -157,16 +157,40 @@ CommandResult ClientState::handle_moderator_command(std::string_view command,
   const auto active_match = match_id_.value_or(1U);
 
   if (command == "CREATE") {
-    if (args.size() > 1U) return CommandResult{.local_message = "[ERROR] Use 'create [player_count]' (3-64)."};
+    if (args.size() > 2U) return CommandResult{.local_message = "[ERROR] Use 'create [player_count] [join_token|open]' (3-64)."};
+    std::optional<std::uint64_t> count;
+    std::string token;
+    bool explicit_open = false;
+
     if (!args.empty()) {
-      const auto count = parse_uint64(args[0]);
-      if (!count || *count < 3U || *count > 64U)
-        return CommandResult{.local_message = "[ERROR] Player count must be an integer from 3 through 64."};
-      return CommandResult{.send_frame = true,
-                           .payload = {{"type", "create_match"}, {"player_count", *count}}};
+      if (args[0] == "open" || args[0] == "--open-lobby" || args[0] == "--open") {
+        explicit_open = true;
+      } else {
+        const auto count_parsed = parse_uint64(args[0]);
+        if (!count_parsed || *count_parsed < 3U || *count_parsed > 64U)
+          return CommandResult{.local_message = "[ERROR] Player count must be an integer from 3 through 64."};
+        count = *count_parsed;
+      }
     }
-    return CommandResult{.send_frame = true,
-                         .payload = {{"type", "create_match"}}};
+    if (args.size() >= 2U) {
+      if (args[1] == "open" || args[1] == "--open-lobby" || args[1] == "--open") {
+        explicit_open = true;
+      } else {
+        token = args[1];
+      }
+    } else if (const char* env_token = std::getenv("DARKPOOL_MATCH_JOIN_TOKEN")) {
+      token = std::string(env_token);
+    } else if (const char* env_p_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
+      token = std::string(env_p_token);
+    }
+    network::json payload{{"type", "create_match"}};
+    if (count) payload["player_count"] = *count;
+    if (explicit_open) {
+      payload["open_lobby"] = true;
+    } else if (!token.empty()) {
+      payload["join_token"] = token;
+    }
+    return CommandResult{.send_frame = true, .payload = std::move(payload)};
   }
 
   if (command == "MATCH") {
@@ -290,6 +314,7 @@ CommandResult ClientState::handle_player_command(std::string_view command,
 
   if (command == "JOIN") {
     std::uint64_t target_match = active_match;
+    std::string token;
     if (!args.empty()) {
       const auto parsed = parse_uint64(args[0]);
       if (!parsed || *parsed == 0U) {
@@ -297,9 +322,17 @@ CommandResult ClientState::handle_player_command(std::string_view command,
       }
       target_match = *parsed;
     }
+    if (args.size() >= 2U) {
+      token = args[1];
+    } else if (const char* env_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
+      token = std::string(env_token);
+    } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
+      token = std::string(env_j_token);
+    }
     match_id_ = target_match;
-    return CommandResult{.send_frame = true,
-                         .payload = {{"type", "join_match"}, {"match_id", target_match}}};
+    network::json payload{{"type", "join_match"}, {"match_id", target_match}};
+    if (!token.empty()) payload["join_token"] = token;
+    return CommandResult{.send_frame = true, .payload = std::move(payload)};
   }
 
   if (command == "STATUS") {
@@ -642,10 +675,18 @@ std::string ClientState::format_response(const network::json& response) {
           << "[MATCH CREATED] Match #" << id << " created successfully.\n"
           << "  Roster: " << response.value("insiders", 1U) << " Insiders, "
           << response.value("investigators", 1U) << " Investigators, "
-          << response.value("employees", 3U) << " Employees\n"
-          << "  Waiting for " << response.value("player_count", 5U)
-          << " players to connect and run: join " << id << "\n"
-          << "============================================================";
+          << response.value("employees", 3U) << " Employees\n";
+      if (response.contains("join_token") && response["join_token"].is_string()) {
+        const auto tok = response["join_token"].get<std::string>();
+        oss << "  Join Token  : " << tok << "\n"
+            << "  Waiting for " << response.value("player_count", 5U)
+            << " players to connect and run: join " << id << " " << tok << "\n";
+      } else {
+        oss << "  Mode        : Open Lobby (unauthenticated player admission enabled)\n"
+            << "  Waiting for " << response.value("player_count", 5U)
+            << " players to connect and run: join " << id << "\n";
+      }
+      oss << "============================================================";
       return oss.str();
     }
   }

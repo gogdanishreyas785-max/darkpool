@@ -49,6 +49,7 @@ struct ServerConfig {
   bool explicit_tls_bind_address{false};
   std::string tls_cert_path;
   std::string tls_key_path;
+  bool open_lobby{false};
 };
 
 bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string& error_msg) {
@@ -190,6 +191,8 @@ bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string&
     } else if (arg.rfind("--tls-key=", 0) == 0) {
       config.tls_key_path = std::string(arg.substr(10));
       config.enable_tls = true;
+    } else if (arg == "--open-lobby") {
+      config.open_lobby = true;
     } else {
       std::uint16_t p = 0;
       if (darkpool::network::parse_port(argv[i], p)) {
@@ -230,7 +233,7 @@ int main(int argc, char** argv) {
     }
     std::cerr << "usage: darkpool_server [--bind-address <IPv4>] [--port <port>] [--socket <path>] "
                  "[--tls-bind-address <IPv4>] [--tls-port <port>] [--tls-cert <cert.pem>] [--tls-key <key.pem>] "
-                 "[--no-tcp] [--no-unix] [port] [socket_path]\n";
+                 "[--open-lobby] [--no-tcp] [--no-unix] [port] [socket_path]\n";
     return 2;
   }
 
@@ -270,6 +273,19 @@ int main(int argc, char** argv) {
 
   std::map<std::uint64_t, ClientKind> session_kinds;
   darkpool::server::MatchCoordinator coordinator;
+  if (config.open_lobby) {
+    coordinator.set_default_open_lobby(true);
+  }
+  const char* fast_timers_env = std::getenv("DARKPOOL_FAST_TIMERS");
+  if (fast_timers_env && (std::string(fast_timers_env) == "1" || std::string(fast_timers_env) == "true")) {
+    coordinator.set_phase_durations(darkpool::server::PhaseDurations{
+      .discussion = std::chrono::seconds(2),
+      .trading = std::chrono::seconds(2),
+      .voting = std::chrono::seconds(2),
+      .transition = std::chrono::seconds(1),
+      .clue = std::chrono::seconds(1),
+    });
+  }
   std::size_t players = 0;
   std::size_t moderators = 0;
 
