@@ -1,5 +1,9 @@
 # DARKPOOL — game rules, five-player baseline, and approved variable-size rules
 
+**Operator guide:** See [the User, Game, and Operator Guide](user-guide.md) for setup, commands, current runtime behavior, and troubleshooting. This file is the detailed game-mechanics reference.
+
+**Implementation note:** The moderator currently supplies a numeric event impact with the `event` command. A public narrative event deck and automatic production event selection are not implemented.
+
 **Source status:** Draft 3 directly specifies the five-player baseline and round sequence. The user's S1 follow-up approved the listed baseline mechanics. A later explicit follow-up approves variable-size matches and role scaling below. Scoring remains open.
 
 ## Roles and scaling
@@ -14,7 +18,7 @@
 
 ## Three rounds
 
-1. Server announces round and business event; privately sends Insider hint.
+1. The moderator supplies the round's numeric impact. The Insider can retrieve the exact impact privately with `hint`; the current implementation does not publish a separate narrative event description.
 2. Public discussion and authorized private messages.
 3. Each eligible active player submits one BUY, HOLD, or SELL.
 4. Server validates and resolves trades; updates cash/shares, company health and price.
@@ -41,7 +45,7 @@ These values and mechanics are approved for S1 by the user's follow-up; they are
 
 Draft 3 requires business events and updates to health/price but supplies no impacts or formulas.
 
-Each event has signed impact e in {-2, -1, 0, +1, +2}. **S1-approved event/hint behavior:** publish the event description to all players and privately tell the Insider its true signed health impact before trading; do not reveal the numeric impact to other players during the match. Production may select from an approved fixed table using a server-generated seed recorded in restricted audit. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
+Each round stores a signed impact e in {-2, -1, 0, +1, +2}. In the current implementation, the moderator supplies this number through `event <impact>`; this starts Discussion and the coordinator starts its timer. The Insider can retrieve the exact signed impact through the private `hint` command. A public narrative event-description deck and automated production event selection are not implemented; event text/table and random-seed selection remain open. Tests inject an exact event sequence. Identical initial state, event sequence, accepted actions and votes must produce identical results.
 
 At round start freeze opening health H, price P, and reserve. At trading close, validate submissions, resolve BUYs against opening inventory in rotating seat order, then settle accepted trades at P. Let B and S be executed BUY and SELL counts; sign(x) is -1 for x<0, 0 for x=0, and +1 for x>0.
 
@@ -113,7 +117,8 @@ The following mechanics were introduced in Stage 4:
   - Quantity must be a strictly positive integer ($q \ge 1$). Zero, negative, overflowing, or malformed quantities are rejected without state mutation.
   - BUY requires opening-price cash: $player.credits \ge q \times P$.
   - SELL requires owned inventory: $player.shares \ge q$.
-  - SELL cannot exceed the credit cap: $player.cre- **Finite Reserve and All-or-Nothing Allocation**:
+  - SELL requires sufficient owned shares and must not raise the player's balance above the per-player credit cap of 1,000,000 credits.
+- **Finite Reserve and All-or-Nothing Allocation**:
   - Reserve shares are strictly finite ($10N$ initial for $N$ players; total supply $20N$).
   - Allocation resolves in deterministic rotating seat order starting at $((round - 1) \bmod N)$. *(Provenance Note: Rotating seat priority is a canonical S1-approved rule established in S0/S1 under DEC-04 and lines 36 & 46. Stage 4 preserves this canonical ordering for multi-quantity orders with all-or-nothing allocation).*
   - If remaining reserve inventory $\ge q$, the order is filled completely (`Executed`).
