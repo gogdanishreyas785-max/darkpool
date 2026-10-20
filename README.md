@@ -55,13 +55,26 @@ Vote-resolution messages report aggregate ballot counts (submitted, explicitly a
 
 | CMake target | Purpose |
 |---|---|
-| darkpool_engine | Deterministic rules and match state. |
-| darkpool_communications | JSON framing, stream decoding, socket primitives, TLS 1.3, client/server I/O runtime. |
-| darkpool_coordinator | Session-to-match routing, authorization, token checks, timers, notifications. |
-| darkpool_cli | Terminal command parsing and output formatting. |
-| darkpool_server, darkpool_client | Linux server and interactive client executables. |
+| `darkpool_engine` | Deterministic rules and match state. |
+| `darkpool_communications` | JSON framing, stream decoding, socket primitives, TLS 1.3, client/server I/O runtime. |
+| `darkpool_coordinator` | Session-to-match routing, authorization, token checks, timers, notifications. |
+| `darkpool_cli` | Terminal command parsing and output formatting. |
+| `darkpool_server`, `darkpool_client` | Linux server and interactive client executables. |
 
-The communications implementation is in include/darkpool/network.hpp, src/network.cpp, include/darkpool/socket_primitives.hpp, src/socket_primitives.cpp, include/darkpool/tls_transport.hpp, src/tls_transport.cpp, include/darkpool/server_runtime.hpp, and include/darkpool/client_runtime.hpp. The coordinator also uses a private token store for protected match admission. See the [communications section](docs/user-guide.md#9-communication-library-and-code-map) for details.
+### Communications library: source files
+
+The communications library is built as the CMake target `darkpool_communications`. Its key implementation files are linked below so you can open them directly in GitHub:
+
+- [`include/darkpool/network.hpp`](include/darkpool/network.hpp) — public communication interfaces and message/stream abstractions.
+- [`src/network.cpp`](src/network.cpp) — message framing, stream decoding, and output queue implementation.
+- [`include/darkpool/socket_primitives.hpp`](include/darkpool/socket_primitives.hpp) — socket primitive declarations.
+- [`src/socket_primitives.cpp`](src/socket_primitives.cpp) — socket primitive implementation.
+- [`include/darkpool/tls_transport.hpp`](include/darkpool/tls_transport.hpp) — TLS transport interface.
+- [`src/tls_transport.cpp`](src/tls_transport.cpp) — TLS transport implementation.
+- [`include/darkpool/server_runtime.hpp`](include/darkpool/server_runtime.hpp) — server-side network runtime interface.
+- [`include/darkpool/client_runtime.hpp`](include/darkpool/client_runtime.hpp) — client-side network runtime interface.
+
+For the broader architecture and how these components work together, see the [communications section of the user guide](docs/user-guide.md#9-communication-library-and-code-map) and the [protocol documentation](docs/protocol.md).
 
 ## Build and tests
 
