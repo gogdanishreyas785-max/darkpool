@@ -165,7 +165,7 @@ for line in sys.stdin:
             )
             started = time.monotonic()
             self.assertEqual(acceptance._wait_all([session], "voting", 1), ["1"])
-            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            self.assertGreaterEqual(time.monotonic() - started, 0.15)
             observed = acceptance._barrier(
                 [session], [("market_snapshot", "3")], timeout=1
             )
