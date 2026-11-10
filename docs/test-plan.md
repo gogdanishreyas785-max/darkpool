@@ -64,3 +64,101 @@ When fixing a bug:
 
 The deterministic game engine, communications library components that do not require Linux-specific APIs, coordinator, and CLI have separate CMake targets. The runnable server/client executables and their socket/TLS integration suite require Linux facilities including epoll, signalfd, and UNIX-domain sockets. The supported setup path is documented in the User Guide.
 
+## LAN-TLS-64-MH-1: 64-player multi-computer TLS acceptance
+
+This acceptance procedure validates a protected 64-seat match across separate Linux computers. It complements the loopback TLS and load tests; those tests do not establish multi-host capacity. Record physical execution as **NOT RUN** unless separate computers actually completed the procedure.
+
+### Topology and prerequisites
+
+- One Linux DARKPOOL server computer, reachable only on the trusted private LAN at TCP 4783; SSH/SCP on TCP 22 is used for existing token provisioning.
+- One separate Linux player computer with the repository, `build/darkpool_client`, player TLS setup, and enough local process/file-descriptor capacity for 64 client processes.
+- A moderator CLI session on a separate moderator computer (or a separate terminal on the server computer). It remains a non-player session and keeps the moderator credential on that host.
+- All machines run the same recorded commit. The player host must not have `moderator.token` or `DARKPOOL_MODERATOR_TOKEN`.
+- Default player CLI phase timeouts are retained; the operator should advance the match promptly after each prompt.
+
+### Commands and expected results
+
+On the server computer, configure and start the existing TLS listener:
+
+~~~bash
+bash scripts/setup_tls_lan.sh server SERVER_LAN_IPV4
+bash scripts/run_tls_server.sh
+~~~
+
+On the moderator computer, configure the moderator role and run the normal moderator CLI:
+
+~~~bash
+bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 SERVER_SSH_USER moderator
+bash scripts/run_tls_client.sh moderator
+~~~
+
+Enter `create 64`. Record the non-secret match ID. Do not copy the moderator credential to the player host. On the player computer, configure only the player role and build the client if needed:
+
+~~~bash
+bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 SERVER_SSH_USER player
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON
+cmake --build build --parallel
+python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID
+~~~
+
+The harness synchronizes the existing protected-match token once over the configured SSH/SCP path, then starts 64 instances of the actual `darkpool_client` with TLS 1.3 and CA verification. It asks the operator to enter each moderator command and press Enter after it is accepted. Follow these commands in order when prompted:
+
+1. `start`
+2. For each round (1 through 3): `event 0`, `trading`, `market`, `voting`, `resolve`
+
+The harness submits HOLD and abstain actions from all 64 player CLIs. In round 1 it sends `hint` from an Insider and a clue from an Investigator targeting an Employee. Per-connection status responses act as delivery barriers; the harness checks the normal CLI's private-message markers and public market notifications without recording response contents. All votes abstain, so the expected final outcome is `InsiderWin` if the match reaches round 3 with positive health.
+
+Expected checkpoints:
+
+- TLS connections succeed with the configured CA and the server identity check; no plaintext fallback is attempted.
+- 64 distinct player IDs join the requested protected match. The current documented 64-player role policy yields 8 Insiders, 4 Investigators, and 52 Employees.
+- The moderator remains outside those 64 player IDs.
+- Each public phase/market/vote result reaches the player sessions. Hint and clue private markers reach only their authorized recipient.
+- All three rounds resolve and every player CLI receives `InsiderWin`.
+- The harness exits every player process in its `finally` cleanup, including on admission, command, or timeout failure. A failure names the stage and affected session without printing client output, tokens, roles, or clue contents.
+- After the harness reports player cleanup, the operator stops the server orderly (`Ctrl+C`, or `sudo systemctl stop darkpool` when installed as a systemd service) and records the service/process exit result. The harness does not stop the remote server itself.
+
+### Failure-path checks and evidence record
+
+The runner has bounded connection, admission, phase, and action waits. Before a physical acceptance, verify failure cleanup in a controlled test match. After the protected match token is synchronized, the following diagnostic overrides can be used; they do not change TLS verification or production server settings:
+
+~~~bash
+# Unreachable private-LAN test address; token sync still uses the configured server.
+python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --server-address 192.0.2.1 --timeout 5
+
+# Untrusted CA copied to a separate file; the regular client CA is left untouched.
+python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --ca-cert /tmp/untrusted-ca.pem --timeout 5
+
+# Invalid admission credential in a disposable owner-only token directory.
+mkdir -m 700 -p /tmp/darkpool-bad-token
+printf 'invalid-test-token\n' > /tmp/darkpool-bad-token/match_MATCH_ID.token
+chmod 600 /tmp/darkpool-bad-token/match_MATCH_ID.token
+python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --token-dir /tmp/darkpool-bad-token --skip-token-sync --timeout 5
+rm -rf /tmp/darkpool-bad-token
+~~~
+
+An unreachable endpoint and untrusted CA must fail during TLS connection within the timeout; an invalid token must fail with a session-specific admission rejection. Each attempt must stop any client processes it created. A missing SSH token sync must fail before any client starts. To check a client process that exits during admission, terminate one player CLI before the 64-client join step completes in a disposable run; the harness must name that session and clean up the rest. Do not alter the production CA or expose a live token for these checks. Record each attempted case; unrun cases remain **NOT RUN**.
+
+Record results using this template:
+
+~~~text
+Test ID: LAN-TLS-64-MH-1
+Status: NOT RUN | PASS | FAIL | BLOCKED
+Server computer / OS:
+Player computer / OS:
+Moderator computer / OS:
+Repository commit:
+TLS server identity / CA verification: NOT RUN | PASS | FAIL
+Connected and admitted player sessions: ____ / 64
+Role counts (Insider / Investigator / Employee): ____ / ____ / ____
+Moderator separate from player seats: NOT RUN | PASS | FAIL
+Public phase/market/vote notifications: NOT RUN | PASS | FAIL
+Private hint/clue authorization: NOT RUN | PASS | FAIL
+Three-round outcome: NOT RUN | PASS | FAIL (expected InsiderWin)
+Client cleanup / server orderly shutdown: NOT RUN | PASS | FAIL
+Failure-path checks and diagnostics:
+Evidence location (exclude tokens, private roles/clues, and credentials):
+~~~
+
+Historical loopback load results and five-player LAN records remain separate. Do not use a same-host 64-player result as evidence for this multi-computer acceptance.
+

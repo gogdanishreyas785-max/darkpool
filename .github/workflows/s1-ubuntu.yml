@@ -38,3 +38,5 @@ jobs:
         run: |
           python3 tools/validate_l8_evidence.py
           python3 tests/test_validate_l8_evidence.py
+      - name: Test 64-player LAN acceptance harness
+        run: python3 tests/test_tls_lan_64_acceptance.py
