@@ -13,6 +13,7 @@ DARKPOOL is a C++20, terminal-based social-deduction and market game. One author
 - [Protocol](docs/protocol.md) — implemented framing, commands, and phase notifications.
 - [Threat model](docs/threat-model.md) — security assets, boundaries, and residual risks.
 - [Test and evidence plan](docs/test-plan.md) — developer verification and performance evidence.
+- [systemd service deployment](docs/systemd.md) — optional readiness and watchdog integration.
 
 ## Recommended setup paths
 

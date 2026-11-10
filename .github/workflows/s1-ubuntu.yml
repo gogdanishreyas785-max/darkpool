@@ -26,6 +26,8 @@ jobs:
         run: cmake --build build --parallel
       - name: Run malformed TCP integration test
         run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
+      - name: Run systemd notification integration test
+        run: ctest --test-dir build --output-on-failure -R '^darkpool_systemd_notify_tests$'
       - name: Run full test suite
         run: ctest --test-dir build --output-on-failure
       - name: Validate L6 sustained evidence and run validator regression tests
