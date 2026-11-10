@@ -249,10 +249,15 @@ def run(args: argparse.Namespace) -> None:
     token_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.chmod(token_dir, 0o700)
     player_env = os.environ.copy()
-    player_env.pop("DARKPOOL_MODERATOR_TOKEN", None)
-    player_env.pop("DARKPOOL_ENROLLMENT_TOKEN", None)
-    player_env.pop("DARKPOOL_PLAYER_TOKEN", None)
-    player_env.pop("DARKPOOL_JOIN_TOKEN", None)
+    for secret_name in (
+        "DARKPOOL_MODERATOR_TOKEN",
+        "DARKPOOL_ENROLLMENT_TOKEN",
+        "DARKPOOL_PLAYER_SECRET",
+        "DARKPOOL_PLAYER_TOKEN",
+        "DARKPOOL_JOIN_TOKEN",
+        "DARKPOOL_MATCH_JOIN_TOKEN",
+    ):
+        player_env.pop(secret_name, None)
     player_env["DARKPOOL_TOKEN_DIR"] = str(token_dir)
     player_env["DARKPOOL_AUTO_JOIN"] = "1"
     if shutil.which("bash") is None:

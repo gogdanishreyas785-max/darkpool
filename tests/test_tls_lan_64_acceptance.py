@@ -2,7 +2,6 @@
 """Focused tests for the 64-player LAN acceptance driver output handling."""
 
 import os
-import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -49,6 +48,19 @@ class PlayerSessionTests(unittest.TestCase):
     def test_wait_timeout_is_bounded_and_descriptive(self):
         with self.assertRaisesRegex(acceptance.AcceptanceFailure, "session 1: timed out waiting for voting"):
             self.session.wait("voting", timeout=0.03)
+
+    def test_admission_rejection_does_not_include_server_text(self):
+        rejected = acceptance.PlayerSession(
+            2,
+            [sys.executable, "-u", "-c", "import sys; print('[ERROR] invalid token contents', flush=True); sys.stdin.readline()"],
+            os.environ.copy(),
+        )
+        try:
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "session 2: server rejected match admission") as failure:
+                rejected.wait("joined")
+            self.assertNotIn("invalid token contents", str(failure.exception))
+        finally:
+            rejected.close()
 
 
 if __name__ == "__main__":
