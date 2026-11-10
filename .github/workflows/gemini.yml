@@ -43,6 +43,8 @@ jobs:
 
       - name: Run Gemini on branch
         uses: google-github-actions/run-gemini-cli@main
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
         with:
           gemini_api_key: ${{ secrets.GEMINI_KEY }}
           gemini_model: ${{ github.event.inputs.model }}
@@ -75,6 +77,8 @@ jobs:
 
       - name: Run Gemini on comment
         uses: google-github-actions/run-gemini-cli@main
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
         with:
           gemini_api_key: ${{ secrets.GEMINI_KEY }}
           gemini_model: 'gemini-2.5-pro'
