@@ -40,6 +40,15 @@ class PlayerSessionTests(unittest.TestCase):
         self.assertEqual(self.session.wait("round_start"), "1")
         self.assertEqual(self.session.wait("round_start"), "2")
 
+    def test_match_started_captures_actual_cli_round(self):
+        session = self._session_with_output(
+            "[MATCH STARTED] Match has begun. Round 1 (AwaitingEvent).\n"
+        )
+        try:
+            self.assertEqual(session.wait("match_started"), "1")
+        finally:
+            session.close()
+
     def test_private_markers_are_detected_without_retaining_output_text(self):
         self.assertEqual(self.session.wait("clue_private"), "")
         self.assertIn("clue_private", self.session.seen)
@@ -100,6 +109,26 @@ for line in sys.stdin:
                 acceptance._barrier(
                     [session], [("market_snapshot", None)], timeout=1
                 )
+        finally:
+            session.close()
+
+    def test_transition_barrier_validates_warning_then_snapshot_after_transition(self):
+        session = self._session_with_output(
+            "[COUNTDOWN WARNING] Clue phase has 10 seconds remaining!\n"
+            "[TRANSITION INTERVAL] Upcoming phase: Voting (10s remaining).\n"
+            "[MARKET SNAPSHOT] Match #7 (Version 2)\n"
+        )
+        try:
+            self.assertEqual(session.wait("transition"), "")
+            observed = acceptance._barrier(
+                [session],
+                [("phase_warning", None), ("market_snapshot", "2")],
+                timeout=1,
+            )
+            self.assertEqual(
+                [name for name, _ in observed[0]],
+                ["phase_warning", "market_snapshot"],
+            )
         finally:
             session.close()
 

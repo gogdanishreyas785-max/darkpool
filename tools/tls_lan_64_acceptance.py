@@ -36,7 +36,9 @@ class PlayerSession:
         "connected": re.compile(r"\[CONNECTED\] Session established as player"),
         "joined": re.compile(r"\[MATCH JOINED\] Match #"),
         "error": re.compile(r"\[ERROR\]"),
-        "match_started": re.compile(r"\[MATCH STARTED\] Match has begun"),
+        "match_started": re.compile(
+            r"\[MATCH STARTED\] Match has begun\. Round (\d+) \(AwaitingEvent\)"
+        ),
         "player_id": re.compile(r"Player ID\s*:\s*(\d+)"),
         "role": re.compile(r"Private Role\s*:\s*(Insider|Investigator|Employee)"),
         "discussion": re.compile(r"\[PHASE START\] Discussion(?: — Round (\d+))?"),
@@ -52,7 +54,6 @@ class PlayerSession:
         "match_finished": re.compile(r"\[MATCH FINISHED\] Final outcome: InsiderWin"),
         "trade_success": re.compile(r"\[TRADE SUCCESS\]"),
         "vote_recorded": re.compile(r"\[VOTE RECORDED\]"),
-        "market_snapshot": re.compile(r"\[MARKET SNAPSHOT\]"),
         "insider_hint_private": re.compile(r"\[CONFIDENTIAL INSIDER HINT\]"),
         "clue_private": re.compile(r"\[CONFIDENTIAL INVESTIGATION RESULT\]"),
     }
@@ -205,7 +206,7 @@ def _operator_step(label: str, command: str) -> None:
 
 def _barrier(
     sessions: list[PlayerSession],
-    expected: list[tuple[str, str | None]] = (),
+    expected: list[tuple[str, str | None]] | None = None,
     timeout: float = DEFAULT_TIMEOUT,
 ) -> list[list[tuple[str, str]]]:
     # The server enqueues a command response before draining notifications
@@ -217,7 +218,7 @@ def _barrier(
     observed = [session.collect_pending()[:] for session in sessions]
     for session in sessions:
         session.pending.clear()
-    if expected:
+    if expected is not None:
         expected_names = [name for name, _ in expected]
         for session, events in zip(sessions, observed):
             actual_names = [name for name, _ in events]
@@ -381,7 +382,7 @@ def run(args: argparse.Namespace) -> None:
             _operator_step(f"round {round_number} trading", "trading")
             _barrier(sessions, [("trading", str(round_number)), ("market_snapshot", None)], args.timeout)
             _send_all(sessions, "hold", "trade_success")
-            _barrier(sessions, timeout=args.timeout)
+            _barrier(sessions, expected=[], timeout=args.timeout)
 
             _operator_step(f"round {round_number} market resolution", "market")
             _barrier(
@@ -398,7 +399,11 @@ def run(args: argparse.Namespace) -> None:
                 print("PASS: Investigator clue reached only the authorized session.", flush=True)
 
             _wait_all(sessions, "transition", args.timeout + 35.0)
-            _barrier(sessions, [("phase_warning", None)], args.timeout)
+            _barrier(
+                sessions,
+                [("phase_warning", None), ("market_snapshot", None)],
+                args.timeout,
+            )
             _barrier(sessions, [("voting", str(round_number)), ("market_snapshot", None)], args.timeout + 15.0)
             _send_all(sessions, "vote abstain", "vote_recorded")
             _wait_all(sessions, "vote_resolution", args.timeout + 65.0)
