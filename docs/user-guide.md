@@ -176,6 +176,8 @@ The player launcher synchronizes token files from the server over SSH/SCP using 
 
 There is no fixed number of participating computers. The server limits are four concurrent matches, 3–64 players per match, up to 256 player connections, and up to four moderator connections total.
 
+For a repeatable 64-player multi-computer TLS acceptance run, use the operator procedure in [the test and verification guide](test-plan.md#lan-tls-64-mh-1). It starts 64 player CLI processes on a separate Linux client host and requires a separate moderator to advance the manual event, trading, and market commands; Clue, the transition interval, Voting, and vote resolution remain automatic. Loopback load tests are not evidence of this LAN acceptance, and physical acceptance remains **NOT RUN** unless separate computers actually complete the procedure.
+
 ### Network and security notes
 
 - TLS game traffic uses TCP port 4783. SSH bootstrap uses TCP port 22.
