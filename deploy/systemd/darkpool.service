@@ -7,6 +7,7 @@ Type=notify
 NotifyAccess=main
 User=darkpool
 Group=darkpool
+EnvironmentFile=/etc/darkpool/darkpool.env
 RuntimeDirectory=darkpool
 RuntimeDirectoryMode=0700
 ExecStart=/usr/local/bin/darkpool_server --no-tcp --socket /run/darkpool/darkpool.sock
