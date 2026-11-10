@@ -3,6 +3,7 @@
 
 import os
 import sys
+import time
 import unittest
 from unittest import mock
 from pathlib import Path
@@ -128,6 +129,48 @@ for line in sys.stdin:
             self.assertEqual(
                 [name for name, _ in observed[0]],
                 ["phase_warning", "market_snapshot"],
+            )
+        finally:
+            session.close()
+
+    def test_voting_wait_handles_delayed_notification_before_snapshot_barrier(self):
+        response_loop = """import sys
+import threading
+import time
+print('[COUNTDOWN WARNING] Clue phase has 10 seconds remaining!', flush=True)
+print('[TRANSITION INTERVAL] Upcoming phase: Voting (10s remaining).', flush=True)
+print('[MARKET SNAPSHOT] Match #7 (Version 2)', flush=True)
+def emit_voting():
+    time.sleep(0.3)
+    print('[VOTING STARTED] Voting is now open — Round 1.', flush=True)
+    time.sleep(0.05)
+    print('[MARKET SNAPSHOT] Match #7 (Version 3)', flush=True)
+threading.Thread(target=emit_voting, daemon=True).start()
+for line in sys.stdin:
+    if line.strip() == 'status':
+        time.sleep(0.1)
+        print('MATCH #7 STATUS', flush=True)
+"""
+        session = acceptance.PlayerSession(
+            8,
+            [sys.executable, "-u", "-c", response_loop],
+            os.environ.copy(),
+        )
+        try:
+            self.assertEqual(session.wait("transition"), "")
+            acceptance._barrier(
+                [session],
+                [("phase_warning", None), ("market_snapshot", "2")],
+                timeout=1,
+            )
+            started = time.monotonic()
+            self.assertEqual(acceptance._wait_all([session], "voting", 1), ["1"])
+            self.assertGreaterEqual(time.monotonic() - started, 0.2)
+            observed = acceptance._barrier(
+                [session], [("market_snapshot", "3")], timeout=1
+            )
+            self.assertEqual(
+                [name for name, _ in observed[0]], ["market_snapshot"]
             )
         finally:
             session.close()

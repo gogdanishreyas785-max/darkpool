@@ -404,7 +404,8 @@ def run(args: argparse.Namespace) -> None:
                 [("phase_warning", None), ("market_snapshot", None)],
                 args.timeout,
             )
-            _barrier(sessions, [("voting", str(round_number)), ("market_snapshot", None)], args.timeout + 15.0)
+            _wait_all(sessions, "voting", args.timeout + 15.0)
+            _barrier(sessions, [("market_snapshot", None)], args.timeout)
             _send_all(sessions, "vote abstain", "vote_recorded")
             _wait_all(sessions, "vote_resolution", args.timeout + 65.0)
             if round_number < 3:
