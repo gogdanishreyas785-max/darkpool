@@ -1,15 +1,68 @@
-name: Gemini AI Assistant
+name: Gemini Anywhere
 
 on:
+  # 1. Run manually on ANY branch from the GitHub Actions tab with a custom prompt
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: 'What do you want Gemini to do on this branch?'
+        required: true
+        default: 'Review the codebase and summarize any potential improvements.'
+      commit_changes:
+        description: 'Commit and push file edits back to this branch?'
+        type: boolean
+        required: true
+        default: false
+      model:
+        description: 'Gemini Model'
+        type: choice
+        options:
+          - gemini-2.5-pro
+          - gemini-2.5-flash
+        default: 'gemini-2.5-pro'
+
+  # 2. Run by typing @gemini in ANY Issue or Pull Request comment
   issue_comment:
     types: [created]
   pull_request_review_comment:
     types: [created]
 
 jobs:
-  gemini-chat:
-    # Triggers whenever someone types @gemini-cli in an issue or PR comment
-    if: contains(github.event.comment.body, '@gemini-cli')
+  # JOB A: Runs when triggered manually from the Actions tab on any branch
+  manual-branch-task:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+
+      - name: Run Gemini on branch
+        uses: google-github-actions/run-gemini-cli@main
+        with:
+          gemini_api_key: ${{ secrets.GEMINI_KEY }}
+          gemini_model: ${{ github.event.inputs.model }}
+          prompt: ${{ github.event.inputs.prompt }}
+
+      - name: Commit and push changes (if enabled)
+        if: ${{ github.event.inputs.commit_changes == 'true' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@://github.com"
+          git add .
+          git diff --staged --quiet || git commit -m "chore: apply Gemini changes"
+          git push origin ${{ github.ref_name }}
+
+  # JOB B: Runs when you mention @gemini in any Issue or PR comment
+  comment-assistant:
+    if: |
+      (github.event_name == 'issue_comment' || github.event_name == 'pull_request_review_comment') &&
+      contains(github.event.comment.body, '@gemini') &&
+      github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,13 +73,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Run Gemini CLI
+      - name: Run Gemini on comment
         uses: google-github-actions/run-gemini-cli@main
         with:
           gemini_api_key: ${{ secrets.GEMINI_KEY }}
           gemini_model: 'gemini-2.5-pro'
           prompt: |
-            A user left the following comment on GitHub:
+            A user mentioned @gemini in a GitHub comment:
             "${{ github.event.comment.body }}"
-            
-            Analyze the repository context and respond helpfully to their request.
+
+            Respond directly to their request using the repository context.
