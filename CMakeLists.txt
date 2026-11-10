@@ -90,6 +90,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     src/tls_transport.cpp
     src/socket_primitives.cpp
     src/server_runtime.cpp
+    src/systemd_notify.cpp
     src/client_runtime.cpp)
   target_link_libraries(darkpool_communications PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 
@@ -152,6 +153,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_reactor_dispatch_tests
     COMMAND darkpool_reactor_dispatch_tests)
   set_tests_properties(darkpool_reactor_dispatch_tests PROPERTIES TIMEOUT 20)
+
+  add_executable(darkpool_systemd_notify_tests tests/systemd_notify_tests.cpp)
+  target_link_libraries(darkpool_systemd_notify_tests PRIVATE darkpool_communications)
+  darkpool_enable_warnings(darkpool_systemd_notify_tests)
+  add_test(NAME darkpool_systemd_notify_tests
+    COMMAND darkpool_systemd_notify_tests $<TARGET_FILE:darkpool_server>)
+  set_tests_properties(darkpool_systemd_notify_tests PROPERTIES TIMEOUT 20)
 
   add_executable(darkpool_load_tests tests/load_test_harness.cpp)
   target_link_libraries(darkpool_load_tests PRIVATE darkpool_communications)

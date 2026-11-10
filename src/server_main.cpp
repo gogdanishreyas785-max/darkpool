@@ -13,6 +13,7 @@ int main() {
 #include "darkpool/network.hpp"
 #include "darkpool/server_runtime.hpp"
 #include "darkpool/socket_primitives.hpp"
+#include "darkpool/systemd_notify.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -253,6 +254,7 @@ int main(int argc, char** argv) {
     }
   }
 
+  darkpool::systemd::Notifier systemd_notifier;
   darkpool::network::ServerRuntimeConfig runtime_cfg;
   runtime_cfg.enable_tcp = config.enable_tcp;
   runtime_cfg.tcp_port = config.tcp_port;
@@ -268,6 +270,8 @@ int main(int argc, char** argv) {
   runtime_cfg.tls_key_path = config.tls_key_path;
 
   runtime_cfg.max_connections = kMaxConnections;
+  runtime_cfg.epoll_timeout_ms =
+      systemd_notifier.max_poll_timeout_ms(runtime_cfg.epoll_timeout_ms);
 
   darkpool::network::ServerRuntime runtime(std::move(runtime_cfg));
 
@@ -364,6 +368,7 @@ int main(int argc, char** argv) {
   });
 
   runtime.set_tick_handler([&]() {
+    systemd_notifier.check_watchdog();
     coordinator.tick();
     const auto notifications = coordinator.drain_notifications();
     for (const auto& notif : notifications) {
@@ -378,6 +383,7 @@ int main(int argc, char** argv) {
     std::cerr << "error: server startup failed: " << start_err << '\n';
     return 1;
   }
+  systemd_notifier.ready();
 
   if (config.enable_tcp) {
     if (config.bind_address != "127.0.0.1") {
@@ -396,7 +402,10 @@ int main(int argc, char** argv) {
               << '\n';
   }
 
-  return runtime.run();
+  const int run_result = runtime.run();
+  runtime.stop();
+  systemd_notifier.stopping();
+  return run_result;
 }
 
 #endif  // !defined(__linux__)

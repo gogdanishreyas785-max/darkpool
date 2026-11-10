@@ -1,0 +1,25 @@
+[Unit]
+Description=DARKPOOL game server
+After=network.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=darkpool
+Group=darkpool
+EnvironmentFile=/etc/darkpool/darkpool.env
+RuntimeDirectory=darkpool
+RuntimeDirectoryMode=0700
+ExecStart=/usr/local/bin/darkpool_server --no-tcp --socket /run/darkpool/darkpool.sock
+Restart=on-failure
+RestartSec=2s
+WatchdogSec=30s
+TimeoutStopSec=15s
+KillSignal=SIGTERM
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
