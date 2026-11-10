@@ -104,9 +104,9 @@ python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID
 The harness synchronizes the existing protected-match token once over the configured SSH/SCP path, then starts 64 instances of the actual `darkpool_client` with TLS 1.3 and CA verification. It asks the operator to enter each moderator command and press Enter after it is accepted. Follow these commands in order when prompted:
 
 1. `start`
-2. For each round (1 through 3): `event 0`, `trading`, `market`, `voting`, `resolve`
+2. For each round (1 through 3): `event 0`, `trading`, `market`
 
-The harness submits HOLD and abstain actions from all 64 player CLIs. In round 1 it sends `hint` from an Insider and a clue from an Investigator targeting an Employee. Per-connection status responses act as delivery barriers; the harness checks the normal CLI's private-message markers and public market notifications without recording response contents. All votes abstain, so the expected final outcome is `InsiderWin` if the match reaches round 3 with positive health.
+The coordinator automatically enters Clue after `market`, starts a transition interval after the Clue timer, opens Voting, and resolves votes when the Voting timer expires. The harness therefore does not issue `voting` or `resolve`; those commands remain available for the normal moderator CLI but are not part of this timed acceptance procedure. The harness submits HOLD and abstain actions from all 64 player CLIs. In round 1 it sends `hint` from an Insider and a clue from an Investigator targeting an Employee. A per-connection `status` response is used only after the server's ordered response/notification processing has been established; the harness checks the complete notification sequence for the current phase and rejects stale or duplicate events. It does not record response contents. All votes abstain, so the expected final outcome is `InsiderWin` if the match reaches round 3 with positive health.
 
 Expected checkpoints:
 
@@ -116,7 +116,7 @@ Expected checkpoints:
 - Each public phase/market/vote result reaches the player sessions. Hint and clue private markers reach only their authorized recipient.
 - All three rounds resolve and every player CLI receives `InsiderWin`.
 - The harness exits every player process in its `finally` cleanup, including on admission, command, or timeout failure. A failure names the stage and affected session without printing client output, tokens, roles, or clue contents.
-- After the harness reports player cleanup, the operator stops the server orderly (`Ctrl+C`, or `sudo systemctl stop darkpool` when installed as a systemd service) and records the service/process exit result. The harness does not stop the remote server itself.
+- After the harness reports player cleanup, the operator stops the server orderly (`Ctrl+C`, or `sudo systemctl stop darkpool` when installed as a systemd service), verifies the TCP listener is closed, and separately verifies that the server process/service terminated (`systemctl is-active darkpool.service` must be inactive, or the foreground server PID must no longer exist). The harness does not stop the remote server itself. Player-process cleanup, listener closure, and server-process termination are separate checks.
 
 ### Failure-path checks and evidence record
 
@@ -126,18 +126,27 @@ The runner has bounded connection, admission, phase, and action waits. Before a 
 # Unreachable private-LAN test address; token sync still uses the configured server.
 python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --server-address 192.0.2.1 --timeout 5
 
-# Untrusted CA copied to a separate file; the regular client CA is left untouched.
-python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --ca-cert /tmp/untrusted-ca.pem --timeout 5
+MATCH_ID=123
+# Reproducible untrusted CA and invalid-admission-credential checks.
+diagnostic_dir="$(mktemp -d)"
+trap 'rm -rf -- "$diagnostic_dir"' EXIT
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout "$diagnostic_dir/untrusted-ca.key" \
+  -out "$diagnostic_dir/untrusted-ca.pem" \
+  -days 1 -subj '/CN=DARKPOOL diagnostic untrusted CA' >/dev/null 2>&1
+chmod 600 "$diagnostic_dir/untrusted-ca.key" "$diagnostic_dir/untrusted-ca.pem"
+python3 tools/tls_lan_64_acceptance.py --match-id "$MATCH_ID" \
+  --ca-cert "$diagnostic_dir/untrusted-ca.pem" --timeout 5
 
-# Invalid admission credential in a disposable owner-only token directory.
-mkdir -m 700 -p /tmp/darkpool-bad-token
-printf 'invalid-test-token\n' > /tmp/darkpool-bad-token/match_MATCH_ID.token
-chmod 600 /tmp/darkpool-bad-token/match_MATCH_ID.token
-python3 tools/tls_lan_64_acceptance.py --match-id MATCH_ID --token-dir /tmp/darkpool-bad-token --skip-token-sync --timeout 5
-rm -rf /tmp/darkpool-bad-token
+bad_token_dir="$diagnostic_dir/darkpool-bad-token"
+install -d -m 700 "$bad_token_dir"
+printf 'invalid-test-token\n' > "$bad_token_dir/match_${MATCH_ID}.token"
+chmod 600 "$bad_token_dir/match_${MATCH_ID}.token"
+python3 tools/tls_lan_64_acceptance.py --match-id "$MATCH_ID" \
+  --token-dir "$bad_token_dir" --skip-token-sync --timeout 5
 ~~~
 
-An unreachable endpoint and untrusted CA must fail during TLS connection within the timeout; an invalid token must fail with a session-specific admission rejection. Each attempt must stop any client processes it created. A missing SSH token sync must fail before any client starts. To check a client process that exits during admission, terminate one player CLI before the 64-client join step completes in a disposable run; the harness must name that session and clean up the rest. Do not alter the production CA or expose a live token for these checks. Record each attempted case; unrun cases remain **NOT RUN**.
+An unreachable endpoint and untrusted CA must fail during TLS connection within the timeout; the invalid token file is explicitly passed through `--token-dir` and must fail with a session-specific admission rejection. Each attempt must stop any client processes it created, and the `trap` removes all diagnostic files. A missing SSH token sync must fail before any client starts. To check a client process that exits during admission or a later phase, terminate one player CLI during that stage in a disposable run; the harness must name that session and clean up the rest. Do not alter the production CA or expose a live token for these checks. Record each attempted case; unrun cases remain **NOT RUN**.
 
 Record results using this template:
 
@@ -161,4 +170,3 @@ Evidence location (exclude tokens, private roles/clues, and credentials):
 ~~~
 
 Historical loopback load results and five-player LAN records remain separate. Do not use a same-host 64-player result as evidence for this multi-computer acceptance.
-

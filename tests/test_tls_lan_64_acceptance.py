@@ -4,6 +4,7 @@
 import os
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
@@ -61,6 +62,113 @@ class PlayerSessionTests(unittest.TestCase):
             self.assertNotIn("invalid token contents", str(failure.exception))
         finally:
             rejected.close()
+
+    def _session_with_output(self, output, respond_to_status=True):
+        response_loop = f"""import sys
+print({output!r}, end='', flush=True)
+for line in sys.stdin:
+    if line.strip() == 'status':
+{"        print('MATCH #7 STATUS', flush=True)" if respond_to_status else "        pass"}
+"""
+        return acceptance.PlayerSession(
+            3,
+            [sys.executable, "-u", "-c", response_loop],
+            os.environ.copy(),
+        )
+
+    def test_status_barrier_rejects_stale_phase_event(self):
+        session = self._session_with_output(
+            "[PHASE START] Discussion — Round 1\n[MARKET SNAPSHOT] Match #7 (Version 2)\n"
+        )
+        try:
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "unexpected round"):
+                acceptance._barrier(
+                    [session],
+                    [("discussion", "2"), ("market_snapshot", None)],
+                    timeout=1,
+                )
+        finally:
+            session.close()
+
+    def test_status_barrier_rejects_duplicate_public_notification(self):
+        session = self._session_with_output(
+            "[MARKET SNAPSHOT] Match #7 (Version 2)\n"
+            "[MARKET SNAPSHOT] Match #7 (Version 2)\n"
+        )
+        try:
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "received"):
+                acceptance._barrier(
+                    [session], [("market_snapshot", None)], timeout=1
+                )
+        finally:
+            session.close()
+
+    def test_private_delivery_requires_one_authorized_and_zero_unauthorized(self):
+        authorized = self._session_with_output(
+            "[CONFIDENTIAL INSIDER HINT]\n"
+        )
+        unauthorized = self._session_with_output(
+            "[CONFIDENTIAL INSIDER HINT]\n"
+        )
+        unauthorized.index = 4
+        try:
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "unauthorized"):
+                acceptance._verify_private(
+                    [authorized, unauthorized], 0, "insider_hint_private", timeout=1
+                )
+        finally:
+            authorized.close()
+            unauthorized.close()
+
+    def test_private_delivery_rejects_missing_authorized_notification(self):
+        authorized = self._session_with_output("")
+        unauthorized = self._session_with_output("")
+        unauthorized.index = 4
+        try:
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "received 0"):
+                acceptance._verify_private(
+                    [authorized, unauthorized], 0, "insider_hint_private", timeout=1
+                )
+        finally:
+            authorized.close()
+            unauthorized.close()
+
+    def test_cleanup_terminates_started_process_and_reader(self):
+        session = acceptance.PlayerSession(
+            5,
+            [sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+            os.environ.copy(),
+        )
+        session.close()
+        self.assertIsNotNone(session.proc.poll())
+        self.assertFalse(session.reader.is_alive())
+
+    def test_partial_start_cleanup_stops_every_started_session(self):
+        first = acceptance.PlayerSession(
+            6,
+            [sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+            os.environ.copy(),
+        )
+        second = acceptance.PlayerSession(
+            7,
+            [sys.executable, "-u", "-c", "import time; time.sleep(60)"],
+            os.environ.copy(),
+        )
+        try:
+            acceptance._cleanup_sessions([first, second])
+            self.assertIsNotNone(first.proc.poll())
+            self.assertIsNotNone(second.proc.poll())
+        finally:
+            first.close()
+            second.close()
+
+    def test_token_synchronization_failure_is_explicit(self):
+        with mock.patch(
+            "tls_lan_64_acceptance.subprocess.run",
+            return_value=mock.Mock(returncode=1),
+        ):
+            with self.assertRaisesRegex(acceptance.AcceptanceFailure, "token synchronization"):
+                acceptance._sync_tokens(Path("."), 7, os.environ.copy())
 
 
 if __name__ == "__main__":

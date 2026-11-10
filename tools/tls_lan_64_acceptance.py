@@ -12,6 +12,7 @@ import argparse
 import os
 import queue
 import re
+import signal
 import shutil
 import socket
 import subprocess
@@ -38,11 +39,14 @@ class PlayerSession:
         "match_started": re.compile(r"\[MATCH STARTED\] Match has begun"),
         "player_id": re.compile(r"Player ID\s*:\s*(\d+)"),
         "role": re.compile(r"Private Role\s*:\s*(Insider|Investigator|Employee)"),
-        "discussion": re.compile(r"\[PHASE START\] Discussion"),
-        "trading": re.compile(r"\[PHASE START\] Trading"),
-        "clue": re.compile(r"\[PHASE START\] Clue"),
-        "voting": re.compile(r"\[VOTING STARTED\]"),
-        "market": re.compile(r"\[MARKET RESOLUTION\]"),
+        "discussion": re.compile(r"\[PHASE START\] Discussion(?: — Round (\d+))?"),
+        "trading": re.compile(r"\[PHASE START\] Trading(?: — Round (\d+))?"),
+        "clue": re.compile(r"\[PHASE START\] Clue(?: — Round (\d+))?"),
+        "voting": re.compile(r"\[VOTING STARTED\].*Round (\d+)"),
+        "transition": re.compile(r"\[TRANSITION INTERVAL\] Upcoming phase: Voting"),
+        "phase_warning": re.compile(r"\[COUNTDOWN WARNING\]"),
+        "market_snapshot": re.compile(r"\[MARKET SNAPSHOT\] Match #\d+ \(Version (\d+)\)"),
+        "status": re.compile(r"MATCH #\d+ STATUS"),
         "vote_resolution": re.compile(r"\[VOTE RESOL(?:UTION|VED)\]"),
         "round_start": re.compile(r"\[ROUND START\] Round (\d+) has begun"),
         "match_finished": re.compile(r"\[MATCH FINISHED\] Final outcome: InsiderWin"),
@@ -63,11 +67,12 @@ class PlayerSession:
             text=True,
             bufsize=1,
             env=env,
+            start_new_session=True,
         )
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
         self.seen: set[str] = set()
-        self.pending: dict[str, list[str]] = {}
-        self.reader = threading.Thread(target=self._read_output, daemon=True)
+        self.pending: list[tuple[str, str]] = []
+        self.reader = threading.Thread(target=self._read_output)
         self.reader.start()
 
     def _read_output(self) -> None:
@@ -77,7 +82,7 @@ class PlayerSession:
                 for name, pattern in self._PATTERNS.items():
                     match = pattern.search(line)
                     if match:
-                        value = match.group(1) if name in {"role", "player_id", "round_start"} else ""
+                        value = match.group(1) if match.lastindex else ""
                         self.events.put((name, value))
         except (OSError, ValueError):
             return
@@ -92,10 +97,13 @@ class PlayerSession:
             raise AcceptanceFailure(f"session {self.index}: could not send command {command!r}") from exc
 
     def wait(self, name: str, timeout: float = DEFAULT_TIMEOUT) -> str:
-        if self.pending.get(name):
-            return self.pending[name].pop(0)
         deadline = time.monotonic() + timeout
         while True:
+            for index, (event, value) in enumerate(self.pending):
+                if event == name:
+                    del self.pending[index]
+                    self.seen.add(event)
+                    return value
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise AcceptanceFailure(f"session {self.index}: timed out waiting for {name}")
@@ -107,31 +115,53 @@ class PlayerSession:
                     self.seen.add(event)
                     return value
                 self.seen.add(event)
-                self.pending.setdefault(event, []).append(value)
+                self.pending.append((event, value))
             except queue.Empty:
                 if self.proc.poll() is not None:
                     raise AcceptanceFailure(f"session {self.index}: client exited while waiting for {name}")
 
+    def collect_pending(self) -> list[tuple[str, str]]:
+        while True:
+            try:
+                self.pending.append(self.events.get_nowait())
+            except queue.Empty:
+                return self.pending
+
     def close(self) -> None:
-        if self.proc.poll() is not None:
-            if self.proc.stdout is not None:
-                self.proc.stdout.close()
-            return
+        forced = False
         try:
-            if self.proc.stdin is not None:
+            if self.proc.poll() is None and self.proc.stdin is not None:
                 self.proc.stdin.write("quit\n")
                 self.proc.stdin.flush()
                 self.proc.stdin.close()
-            self.proc.wait(timeout=3.0)
+            if self.proc.poll() is None:
+                self.proc.wait(timeout=3.0)
         except (OSError, subprocess.TimeoutExpired):
-            self.proc.terminate()
+            forced = True
+            try:
+                os.killpg(self.proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 self.proc.wait(timeout=2.0)
             except subprocess.TimeoutExpired:
-                self.proc.kill()
+                os.killpg(self.proc.pid, signal.SIGKILL)
                 self.proc.wait()
-        if self.proc.stdout is not None:
-            self.proc.stdout.close()
+        finally:
+            if self.proc.stdin is not None:
+                try:
+                    self.proc.stdin.close()
+                except OSError:
+                    pass
+            self.reader.join(timeout=2.0)
+            if self.reader.is_alive():
+                raise AcceptanceFailure(f"session {self.index}: output reader did not terminate")
+            if self.proc.poll() is None:
+                raise AcceptanceFailure(f"session {self.index}: process did not terminate")
+            if self.proc.stdout is not None:
+                self.proc.stdout.close()
+        if forced and self.proc.returncode is None:
+            raise AcceptanceFailure(f"session {self.index}: forced cleanup did not report process exit")
 
 
 def _wait_all(sessions: list[PlayerSession], event: str, timeout: float = DEFAULT_TIMEOUT) -> list[str]:
@@ -148,6 +178,23 @@ def _send_all(sessions: list[PlayerSession], command: str, result: str) -> None:
     _wait_all(sessions, result)
 
 
+def _cleanup_sessions(sessions: list[PlayerSession]) -> None:
+    errors: list[str] = []
+    for session in sessions:
+        try:
+            session.close()
+        except AcceptanceFailure as exc:
+            errors.append(str(exc))
+    if errors or any(
+        session.proc.poll() is None or session.reader.is_alive() for session in sessions
+    ):
+        detail = f": {errors[0]}" if errors else ""
+        raise AcceptanceFailure(
+            "stage player cleanup: not all started player processes and output readers terminated"
+            + detail
+        )
+
+
 def _operator_step(label: str, command: str) -> None:
     print(f"\nModerator: run `{command}`. After it is accepted, press Enter here to verify {label}.", flush=True)
     try:
@@ -156,40 +203,56 @@ def _operator_step(label: str, command: str) -> None:
         raise AcceptanceFailure(f"operator confirmation missing for {label}") from exc
 
 
-def _verify_barrier(sessions: list[PlayerSession], public_event: str | None = None) -> None:
-    # The per-connection status response follows any prior queued notification,
-    # giving the harness a deterministic point at which to inspect delivery.
+def _barrier(
+    sessions: list[PlayerSession],
+    expected: list[tuple[str, str | None]] = (),
+    timeout: float = DEFAULT_TIMEOUT,
+) -> list[list[tuple[str, str]]]:
+    # The server enqueues a command response before draining notifications
+    # generated by that command. A later status response therefore follows all
+    # earlier notifications on the same connection.
     for session in sessions:
         session.send("status")
-    _wait_all(sessions, "market_snapshot")
-    if public_event:
-        missing = [s.index for s in sessions if public_event not in s.seen]
-        # Events are queued asynchronously; consume all queued notifications before
-        # judging presence. The status response has already served as a wire barrier.
-        for session in sessions:
-            while True:
-                try:
-                    event, value = session.events.get_nowait()
-                    session.seen.add(event)
-                    session.pending.setdefault(event, []).append(value)
-                except queue.Empty:
-                    break
-        missing = [s.index for s in sessions if public_event not in s.seen]
-        if missing:
-            raise AcceptanceFailure(f"public {public_event} notification missing from session(s) {missing[:8]}")
-        for session in sessions:
-            session.seen.discard(public_event)
-
-
-def _verify_private(sessions: list[PlayerSession], authorized: int, private_event: str) -> None:
-    _verify_barrier(sessions)
-    unauthorized = [s.index for i, s in enumerate(sessions) if i != authorized and private_event in s.seen]
-    if unauthorized:
-        raise AcceptanceFailure(f"private {private_event} notification reached unauthorized session(s) {unauthorized[:8]}")
-    if private_event not in sessions[authorized].seen:
-        raise AcceptanceFailure(f"authorized session {sessions[authorized].index} did not receive {private_event}")
+    _wait_all(sessions, "status", timeout)
+    observed = [session.collect_pending()[:] for session in sessions]
     for session in sessions:
-        session.seen.discard(private_event)
+        session.pending.clear()
+    if expected:
+        expected_names = [name for name, _ in expected]
+        for session, events in zip(sessions, observed):
+            actual_names = [name for name, _ in events]
+            if actual_names != expected_names:
+                raise AcceptanceFailure(
+                    f"notification sequence mismatch for session {session.index}: "
+                    f"expected {expected_names}, received {actual_names}"
+                )
+            for (name, expected_value), (_, actual_value) in zip(expected, events):
+                if expected_value is not None and actual_value != expected_value:
+                    raise AcceptanceFailure(
+                        f"session {session.index}: {name} was for an unexpected round"
+                    )
+    return observed
+
+
+def _verify_private(
+    sessions: list[PlayerSession], authorized: int, private_event: str, timeout: float
+) -> None:
+    observed = _barrier(sessions, timeout=timeout)
+    unauthorized = [
+        sessions[index].index
+        for index, session_events in enumerate(observed)
+        if index != authorized and any(name == private_event for name, _ in session_events)
+    ]
+    if unauthorized:
+        raise AcceptanceFailure(
+            f"private {private_event} notification reached unauthorized session(s) {unauthorized[:8]}"
+        )
+    authorized_count = sum(name == private_event for name, _ in observed[authorized])
+    if authorized_count != 1:
+        raise AcceptanceFailure(
+            f"authorized session {sessions[authorized].index} received "
+            f"{authorized_count} {private_event} notifications, expected exactly one"
+        )
 
 
 def _verify_server_stopped(server_ip: str, timeout: float) -> None:
@@ -300,56 +363,61 @@ def run(args: argparse.Namespace) -> None:
         counts = {role: roles.count(role) for role in EXPECTED_ROLES}
         if counts != EXPECTED_ROLES:
             raise AcceptanceFailure(f"stage admission: role totals were {counts}, expected {EXPECTED_ROLES}")
+        _barrier(sessions, [("market_snapshot", None)], args.timeout)
         print(f"PASS: 64 unique seats joined; role totals {counts}. The moderator remains operator-managed outside the player process pool.", flush=True)
 
         _operator_step("match start", "start")
-        _wait_all(sessions, "match_started", args.timeout)
+        _barrier(sessions, [("match_started", "1"), ("market_snapshot", None)], args.timeout)
         for round_number in range(1, 4):
             _operator_step(f"round {round_number} discussion", "event 0")
-            _wait_all(sessions, "discussion", args.timeout)
+            _barrier(sessions, [("discussion", str(round_number)), ("market_snapshot", None)], args.timeout)
 
             if round_number == 1:
                 insider_index = roles.index("Insider")
                 sessions[insider_index].send("hint")
-                _verify_private(sessions, insider_index, "insider_hint_private")
+                _verify_private(sessions, insider_index, "insider_hint_private", args.timeout)
                 print("PASS: Insider hint reached only the authorized session.", flush=True)
 
             _operator_step(f"round {round_number} trading", "trading")
-            _wait_all(sessions, "trading", args.timeout)
+            _barrier(sessions, [("trading", str(round_number)), ("market_snapshot", None)], args.timeout)
             _send_all(sessions, "hold", "trade_success")
+            _barrier(sessions, timeout=args.timeout)
 
             _operator_step(f"round {round_number} market resolution", "market")
-            _wait_all(sessions, "market", args.timeout)
-            _wait_all(sessions, "clue", args.timeout)
-            _verify_barrier(sessions, "market")
+            _barrier(
+                sessions,
+                [("market_snapshot", None), ("clue", str(round_number)), ("phase_warning", None)],
+                args.timeout,
+            )
 
             if round_number == 1:
                 investigator_index = roles.index("Investigator")
                 target_id = player_ids[roles.index("Employee")]
                 sessions[investigator_index].send(f"clue {target_id}")
-                _verify_private(sessions, investigator_index, "clue_private")
+                _verify_private(sessions, investigator_index, "clue_private", args.timeout)
                 print("PASS: Investigator clue reached only the authorized session.", flush=True)
 
-            _operator_step(f"round {round_number} voting", "voting")
-            _wait_all(sessions, "voting", args.timeout)
+            _wait_all(sessions, "transition", args.timeout + 35.0)
+            _barrier(sessions, [("phase_warning", None)], args.timeout)
+            _barrier(sessions, [("voting", str(round_number)), ("market_snapshot", None)], args.timeout + 15.0)
             _send_all(sessions, "vote abstain", "vote_recorded")
-            _operator_step(f"round {round_number} vote resolution", "resolve")
-            _wait_all(sessions, "vote_resolution", args.timeout)
+            _wait_all(sessions, "vote_resolution", args.timeout + 65.0)
             if round_number < 3:
-                values = _wait_all(sessions, "round_start", args.timeout)
-                if any(value != str(round_number + 1) for value in values):
-                    raise AcceptanceFailure(f"stage round progression: expected round {round_number + 1}")
+                _barrier(sessions, [("round_start", str(round_number + 1)), ("market_snapshot", None)], args.timeout)
+            else:
+                _barrier(sessions, [("match_finished", None), ("market_snapshot", None)], args.timeout)
 
-        _wait_all(sessions, "match_finished", args.timeout)
         print("PASS: all sessions observed the final InsiderWin outcome.", flush=True)
         match_succeeded = True
     finally:
         print("Closing player sessions...", flush=True)
-        for session in sessions:
-            session.close()
+        _cleanup_sessions(sessions)
         print(f"Cleanup complete: {len(sessions)} player process(es) stopped.", flush=True)
     if match_succeeded:
-        _operator_step("orderly server shutdown", "Ctrl+C in the server terminal, or sudo systemctl stop darkpool")
+        _operator_step(
+            "TCP listener closure and server process termination",
+            "stop the server, verify the listener is closed, then verify `systemctl is-active darkpool.service` is inactive or the server PID has exited",
+        )
         _verify_server_stopped(server_ip, args.timeout)
 
 
