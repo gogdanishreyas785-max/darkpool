@@ -72,9 +72,9 @@ The CMake target **`darkpool_communications`** is defined in `CMakeLists.txt`. I
 
 A socket is an operating-system endpoint through which processes exchange bytes.
 
-- **UNIX-domain stream socket** — connects processes on the same host through a local socket path. DARKPOOL's default local path is `/tmp/darkpool.sock`. It avoids IP routing and is the recommended option when server, moderator, and players all run on one Linux machine.
-- **TCP socket** — connects endpoints using IP addresses and ports. TCP provides reliable, ordered delivery of bytes, but does not preserve application-message boundaries and does not encrypt the data.
-- **TLS over TCP** — uses TCP for delivery and adds a cryptographic session above it. DARKPOOL uses TLS 1.3 through OpenSSL on port `4783` by default. Plaintext TCP uses loopback port `4782` by default and must not be treated as safe for an untrusted network.
+- **UNIX-domain stream socket** â€” connects processes on the same host through a local socket path. DARKPOOL's default local path is `/tmp/darkpool.sock`. It avoids IP routing and is the recommended option when server, moderator, and players all run on one Linux machine.
+- **TCP socket** â€” connects endpoints using IP addresses and ports. TCP provides reliable, ordered delivery of bytes, but does not preserve application-message boundaries and does not encrypt the data.
+- **TLS over TCP** â€” uses TCP for delivery and adds a cryptographic session above it. DARKPOOL uses TLS 1.3 through OpenSSL on port `4783` by default. Plaintext TCP uses loopback port `4782` by default and must not be treated as safe for an untrusted network.
 
 Implemented in `include/darkpool/socket_primitives.hpp` and `src/socket_primitives.cpp`.
 
@@ -91,7 +91,7 @@ DARKPOOL therefore uses a length-prefixed frame:
             header                         body
 ~~~
 
-The four-byte prefix stores the payload length and is not included in that length. The accepted payload range is 1–4096 bytes. For example, if the JSON body is 37 bytes long, its prefix is hexadecimal `00 00 00 25` (decimal 37), followed by the 37 JSON bytes.
+The four-byte prefix stores the payload length and is not included in that length. The accepted payload range is 1â€“4096 bytes. For example, if the JSON body is 37 bytes long, its prefix is hexadecimal `00 00 00 25` (decimal 37), followed by the 37 JSON bytes.
 
 This length prefix tells the receiver exactly how many bytes belong to one message. It is not a game-specific field; it is the boundary between messages in the transport stream.
 
@@ -244,7 +244,7 @@ The separation lets the game engine be tested independently from real network I/
 
 ## 7. Authoritative game state and timers
 
-- Matches contain 3–64 player seats, default five; the moderator is a separate connection.
+- Matches contain 3â€“64 player seats, default five; the moderator is a separate connection.
 - Role counts are derived from match capacity and shuffled on the server. Clients cannot supply roles or seat IDs.
 - Up to four matches can coexist; configured limits allow up to 256 player connections and four moderator connections total.
 - The moderator chooses the numeric business-event impact for each round. The current implementation does not include an automatic narrative event deck.
@@ -317,6 +317,8 @@ A UNIX-domain socket is a good fit here because it supports bidirectional reques
 Each client creates a private `/darkpool_ctl_reply_<uid>_<pid>_<random-id>` queue. The v1 JSON request contains exactly `version`, `request_id`, `operation`, and `reply_to`; supported operations are `ping` and `status`. Responses repeat the request ID and operation. The client validates correlation, waits with a bounded timeout, and removes its reply queue on exit. The server validates names, owner/mode, queue attributes, message shape, and operation; malformed messages are dropped. Its bounded request cache replays an identical request and rejects reuse of an ID for a different destination or operation.
 
 The MQ descriptor is registered as an additional source in `ServerRuntime`'s existing Linux `epoll` loop. The loop drains available messages through `EAGAIN`, and the status provider reads aggregate counts on that same thread, so no lock or second state owner is needed. POSIX MQ descriptors are pollable through Linux `epoll` on the supported target; this is a Linux implementation detail, not a portable POSIX guarantee. Queue errors remove only that event source and do not terminate player networking. Normal shutdown and partial startup cleanup release only the queue owned by this server instance.
+
+Interrupted MQ syscalls use at most eight retries per operation, with a readiness-independent 100 microsecond pause before each retry. The server supplies no request deadline, so this retry cap bounds event-loop work; clients also stop at their absolute request deadline. Cancellation is reported as `EINTR`, deadline expiration as `ETIMEDOUT`. MQ descriptors remain nonblocking; readiness polling is reserved for waiting on actual queue-full/queue-empty conditions, never used as EINTR backoff.
 
 The interface trusts local same-user access. Queue names and random reply names are routing identifiers, not authentication. Status intentionally omits roles, clues, messages, votes, balances, holdings, credentials, and other match-private state. Do not expose this control channel over TCP or TLS.
 

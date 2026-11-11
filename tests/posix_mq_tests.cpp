@@ -431,16 +431,22 @@ void test_interrupted_request_is_cancelled() {
 
 namespace {
 
-bool inject_getattr_once = false;
-bool inject_setattr_once = false;
-bool inject_send_once = false;
-bool inject_receive_once = false;
-bool inject_always_receive = false;
+int inject_getattr_eintr = 0;
+int inject_setattr_eintr = 0;
+int inject_send_eintr = 0;
+int inject_receive_eintr = 0;
+int getattr_calls = 0;
+int setattr_calls = 0;
+int send_calls = 0;
+int receive_calls = 0;
+int retry_wait_calls = 0;
+std::chrono::nanoseconds last_retry_wait{};
 volatile sig_atomic_t* hook_interrupted = nullptr;
 
 int hooked_getattr(mqd_t descriptor, mq_attr* attributes) {
-  if (inject_getattr_once) {
-    inject_getattr_once = false;
+  ++getattr_calls;
+  if (inject_getattr_eintr > 0) {
+    --inject_getattr_eintr;
     errno = EINTR;
     return -1;
   }
@@ -448,8 +454,9 @@ int hooked_getattr(mqd_t descriptor, mq_attr* attributes) {
 }
 
 int hooked_setattr(mqd_t descriptor, const mq_attr* desired, mq_attr* previous) {
-  if (inject_setattr_once) {
-    inject_setattr_once = false;
+  ++setattr_calls;
+  if (inject_setattr_eintr > 0) {
+    --inject_setattr_eintr;
     errno = EINTR;
     return -1;
   }
@@ -457,9 +464,9 @@ int hooked_setattr(mqd_t descriptor, const mq_attr* desired, mq_attr* previous) 
 }
 
 int hooked_send(mqd_t descriptor, const char* message, std::size_t size, unsigned priority) {
-  if (inject_send_once) {
-    inject_send_once = false;
-    if (hook_interrupted != nullptr) *hook_interrupted = 1;
+  ++send_calls;
+  if (inject_send_eintr > 0) {
+    --inject_send_eintr;
     errno = EINTR;
     return -1;
   }
@@ -467,15 +474,37 @@ int hooked_send(mqd_t descriptor, const char* message, std::size_t size, unsigne
 }
 
 ssize_t hooked_receive(mqd_t descriptor, char* buffer, std::size_t size, unsigned* priority) {
-  if (inject_always_receive || inject_receive_once) {
-    inject_receive_once = false;
+  ++receive_calls;
+  if (inject_receive_eintr > 0) {
+    --inject_receive_eintr;
     errno = EINTR;
     return -1;
   }
   return ::mq_receive(descriptor, buffer, size, priority);
 }
 
-void test_deterministic_eintr_retries_and_deadlines() {
+void hooked_retry_wait(std::chrono::nanoseconds delay) {
+  ++retry_wait_calls;
+  last_retry_wait = delay;
+  if (hook_interrupted != nullptr) *hook_interrupted = 1;
+}
+
+void reset_eintr_counters() {
+  inject_getattr_eintr = 0;
+  inject_setattr_eintr = 0;
+  inject_send_eintr = 0;
+  inject_receive_eintr = 0;
+  getattr_calls = 0;
+  setattr_calls = 0;
+  send_calls = 0;
+  receive_calls = 0;
+  retry_wait_calls = 0;
+  last_retry_wait = std::chrono::nanoseconds::zero();
+}
+
+void test_deterministic_eintr_retry_budget() {
+  constexpr int kRetryBudget = 8;
+  constexpr int kCallsIncludingInitial = kRetryBudget + 1;
   std::string error;
   const auto name = "/darkpool_eintr_" + unique_token();
   auto queue = MessageQueue::create_exclusive(name, O_RDWR, QueueLimits{2, 32}, error);
@@ -483,41 +512,93 @@ void test_deterministic_eintr_retries_and_deadlines() {
   if (!queue) return;
 
   darkpool::control::testing::set_mq_syscall_hooks(
-      hooked_getattr, hooked_setattr, hooked_send, hooked_receive);
-  inject_getattr_once = true;
-  inject_setattr_once = true;
-  const auto hooked_queue_name = "/darkpool_eintr_attrs_" + unique_token();
-  auto hooked_queue = MessageQueue::create_exclusive(
-      hooked_queue_name, O_RDWR, QueueLimits{2, 32}, error,
-      0600, nullptr, std::chrono::steady_clock::now() + 1s);
-  CHECK(hooked_queue.has_value());
-  inject_getattr_once = true;
+      hooked_getattr, hooked_setattr, hooked_send, hooked_receive, hooked_retry_wait);
   mq_attr attributes{};
   int error_number = 0;
-  CHECK(queue->get_attributes(attributes, error_number, nullptr,
-                               std::chrono::steady_clock::now() + 1s));
-
-  inject_send_once = true;
-  CHECK(queue->send("one", 0U, error_number, nullptr,
-                    std::chrono::steady_clock::now() + 1s));
-  inject_receive_once = true;
   unsigned priority = 0U;
-  CHECK(queue->receive(priority, error_number, nullptr,
-                       std::chrono::steady_clock::now() + 1s) == "one");
 
-  inject_always_receive = true;
-  const auto receive_deadline = std::chrono::steady_clock::now() + 5ms;
-  CHECK(!queue->receive(priority, error_number, nullptr, receive_deadline));
+  // The output queue is writable throughout the persistent send interruptions.
+  reset_eintr_counters();
+  inject_send_eintr = 64;
+  CHECK(!queue->send("writable", 0U, error_number));
+  CHECK(error_number == EINTR);
+  CHECK(send_calls == kCallsIncludingInitial);
+  CHECK(retry_wait_calls == kRetryBudget);
+  CHECK(last_retry_wait > std::chrono::nanoseconds::zero());
+  CHECK(last_retry_wait <= 100us);
+
+  // Keep a real message queued while receive keeps returning EINTR.
+  CHECK(::mq_send(static_cast<mqd_t>(queue->descriptor()), "queued", 6U, 0U) == 0);
+  reset_eintr_counters();
+  inject_receive_eintr = 64;
+  CHECK(!queue->receive(priority, error_number));
+  CHECK(error_number == EINTR);
+  CHECK(receive_calls == kCallsIncludingInitial);
+  CHECK(retry_wait_calls == kRetryBudget);
+  CHECK(last_retry_wait > std::chrono::nanoseconds::zero());
+  CHECK(last_retry_wait <= 100us);
+  inject_receive_eintr = 0;
+  CHECK(queue->receive(priority, error_number) == "queued");
+
+  reset_eintr_counters();
+  inject_getattr_eintr = 64;
+  CHECK(!queue->get_attributes(attributes, error_number));
+  CHECK(error_number == EINTR);
+  CHECK(getattr_calls == kCallsIncludingInitial);
+  CHECK(retry_wait_calls == kRetryBudget);
+
+  // open_existing exercises the mq_setattr path without changing queue policy.
+  reset_eintr_counters();
+  inject_setattr_eintr = 64;
+  auto interrupted_open = MessageQueue::open_existing(name, O_RDWR, error);
+  CHECK(!interrupted_open.has_value());
+  CHECK(setattr_calls == kCallsIncludingInitial);
+  CHECK(retry_wait_calls == kRetryBudget);
+
+  // A finite deadline that expires during the wait must win over retry-budget exhaustion.
+  reset_eintr_counters();
+  inject_receive_eintr = 64;
+  darkpool::control::testing::set_mq_syscall_hooks(
+      hooked_getattr, hooked_setattr, hooked_send, hooked_receive);
+  const auto deadline = std::chrono::steady_clock::now() + 100us;
+  CHECK(!queue->receive(priority, error_number, nullptr, deadline));
   CHECK(error_number == ETIMEDOUT);
-  inject_always_receive = false;
+  CHECK(receive_calls >= 1 && receive_calls <= kCallsIncludingInitial);
+  darkpool::control::testing::set_mq_syscall_hooks(
+      hooked_getattr, hooked_setattr, hooked_send, hooked_receive, hooked_retry_wait);
 
+  // Cancellation raised during the injected wait is reported as EINTR.
+  reset_eintr_counters();
   volatile sig_atomic_t interrupted = 0;
   hook_interrupted = &interrupted;
-  inject_send_once = true;
-  CHECK(!queue->send("cancelled", 0U, error_number, &interrupted,
-                     std::chrono::steady_clock::now() + 1s));
+  inject_send_eintr = 64;
+  CHECK(!queue->send("cancelled", 0U, error_number, &interrupted));
   CHECK(error_number == EINTR);
+  CHECK(send_calls == 1);
+  CHECK(retry_wait_calls == 1);
   hook_interrupted = nullptr;
+
+  // An unlimited deadline is bounded by the same retry budget; this also
+  // models server-side dispatch, which supplies no request deadline.
+  reset_eintr_counters();
+  inject_receive_eintr = 64;
+  CHECK(!queue->receive(priority, error_number));
+  CHECK(error_number == EINTR);
+  CHECK(receive_calls == kCallsIncludingInitial);
+  CHECK(retry_wait_calls == kRetryBudget);
+
+  // The real server dispatcher has a ten-message budget and no client deadline.
+  reset_eintr_counters();
+  std::string server_error;
+  ControlServer server(ControlServer::default_queue_name() + "_eintr_" + unique_token());
+  CHECK(server.start(server_error));
+  if (server.descriptor() >= 0) {
+    inject_receive_eintr = 1024;
+    server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    CHECK(receive_calls == 10 * kCallsIncludingInitial);
+    CHECK(retry_wait_calls == 10 * kRetryBudget);
+  }
+
   darkpool::control::testing::reset_mq_syscall_hooks();
 }
 
@@ -810,7 +891,7 @@ int main(int argc, char** argv) {
   test_control_server_validation_and_duplicate_requests();
   test_dispatch_budget_and_replenished_requests();
   test_interrupted_request_is_cancelled();
-  test_deterministic_eintr_retries_and_deadlines();
+  test_deterministic_eintr_retry_budget();
   std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);

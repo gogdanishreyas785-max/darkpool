@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <limits>
 #include <poll.h>
+#include <time.h>
 #include <span>
 #include <cstdint>
 #include <sys/random.h>
@@ -27,12 +28,15 @@ using Clock = std::chrono::steady_clock;
 
 constexpr mode_t kQueuePermissions = 0600;
 constexpr std::size_t kMaximumQueueName = 255;
+constexpr unsigned kMaximumEintrRetries = 8U;
+constexpr auto kEintrRetryDelay = std::chrono::microseconds(100);
 
 struct MqSyscallHooks {
   testing::MqGetattrHook getattr{nullptr};
   testing::MqSetattrHook setattr{nullptr};
   testing::MqSendHook send{nullptr};
   testing::MqReceiveHook receive{nullptr};
+  testing::MqRetryWaitHook retry_wait{nullptr};
 };
 
 MqSyscallHooks mq_hooks;
@@ -59,7 +63,7 @@ ssize_t mq_receive_call(mqd_t descriptor, char* buffer, std::size_t size,
 }
 
 bool retry_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point deadline,
-                int& error_number) {
+                 unsigned& retries, int& error_number) {
   if (interrupted != nullptr && *interrupted != 0) {
     error_number = EINTR;
     return false;
@@ -68,35 +72,50 @@ bool retry_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point dea
     error_number = ETIMEDOUT;
     return false;
   }
+  if (retries >= kMaximumEintrRetries) {
+    error_number = EINTR;
+    return false;
+  }
+  ++retries;
+  return true;
+}
+
+bool wait_after_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point deadline,
+                      unsigned& retries, int& error_number) {
+  // EINTR retries deliberately ignore MQ readiness: a ready descriptor would make
+  // poll return immediately and turn a persistent interruption into a busy loop.
+  if (!retry_eintr(interrupted, deadline, retries, error_number)) return false;
+  auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(kEintrRetryDelay);
+  if (deadline != Clock::time_point::max()) {
+    const auto remaining = deadline - Clock::now();
+    if (remaining <= Clock::duration::zero()) {
+      error_number = ETIMEDOUT;
+      return false;
+    }
+    delay = std::min(delay, std::chrono::duration_cast<std::chrono::nanoseconds>(remaining));
+  }
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_number = EINTR;
+    return false;
+  }
+  const auto delay_count = delay.count();
+  struct timespec requested {
+    static_cast<time_t>(delay_count / 1'000'000'000LL),
+    static_cast<long>(delay_count % 1'000'000'000LL)
+  };
+  (void)::nanosleep(&requested, nullptr);
+  if (mq_hooks.retry_wait != nullptr) mq_hooks.retry_wait(delay);
+  // A cancellation or deadline reached during the wait wins over retrying.
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_number = EINTR;
+    return false;
+  }
   if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
     error_number = ETIMEDOUT;
     return false;
   }
+  error_number = 0;
   return true;
-}
-
-bool wait_after_eintr(int descriptor, short events, const volatile sig_atomic_t* interrupted,
-                      Clock::time_point deadline, int& error_number) {
-  if (deadline == Clock::time_point::max()) {
-    error_number = EINTR;
-    return false;
-  }
-  if (!retry_eintr(interrupted, deadline, error_number)) return false;
-  const auto remaining = deadline == Clock::time_point::max()
-      ? std::chrono::milliseconds(1)
-      : std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now());
-  if (remaining <= std::chrono::milliseconds::zero()) {
-    error_number = ETIMEDOUT;
-    return false;
-  }
-  pollfd state{.fd = descriptor, .events = events, .revents = 0};
-  const auto timeout = std::min(remaining, std::chrono::milliseconds(1));
-  const int result = ::poll(&state, 1U, static_cast<int>(timeout.count()));
-  if (result < 0 && errno != EINTR) {
-    error_number = errno;
-    return false;
-  }
-  return retry_eintr(interrupted, deadline, error_number);
 }
 
 std::string error_text(std::string_view operation, int error_number) {
@@ -301,9 +320,9 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
     return false;
   }
   mq_attr attributes{};
+  unsigned retries = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
-                                           error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -311,9 +330,9 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
     error_number = EMSGSIZE;
     return false;
   }
+  retries = 0U;
   while (mq_send_call(descriptor_, message.data(), message.size(), priority) != 0) {
-    if (errno == EINTR && wait_after_eintr(descriptor_, POLLOUT, interrupted, deadline,
-                                           error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -338,9 +357,9 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
     return std::nullopt;
   }
   mq_attr attributes{};
+  unsigned retries = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
-                                           error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return std::nullopt;
   }
@@ -351,10 +370,11 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
   std::vector<char> buffer(static_cast<std::size_t>(attributes.mq_msgsize));
   unsigned received_priority = 0U;
   ssize_t count = -1;
+  retries = 0U;
   do {
     count = mq_receive_call(descriptor_, buffer.data(), buffer.size(), &received_priority);
     if (count < 0 && errno == EINTR &&
-        wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+        wait_after_eintr(interrupted, deadline, retries, error_number)) {
       continue;
     }
     break;
@@ -383,9 +403,9 @@ bool MessageQueue::get_attributes(mq_attr& attributes,
     error_number = EBADF;
     return false;
   }
+  unsigned retries = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
-                                           error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -418,10 +438,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
                                    const volatile sig_atomic_t* interrupted,
                                    Clock::time_point deadline) noexcept {
   mq_attr current{};
+  unsigned retries = 0U;
   int result = mq_getattr_call(descriptor_, &current);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
       error_message = error_text("mq_getattr", error_number);
       return false;
     }
@@ -433,10 +454,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
   }
   mq_attr desired{};
   desired.mq_flags = current.mq_flags | O_NONBLOCK;
+  retries = 0U;
   result = mq_setattr_call(descriptor_, &desired, nullptr);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(descriptor_, POLLOUT, interrupted, deadline, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
       error_message = error_text("mq_setattr", error_number);
       return false;
     }
@@ -446,10 +468,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
     error_message = error_text("mq_setattr", errno);
     return false;
   }
+  retries = 0U;
   result = mq_getattr_call(descriptor_, &current);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
       error_message = error_text("mq_getattr", error_number);
       return false;
     }
@@ -759,8 +782,9 @@ std::optional<ClientResponse> request(
 namespace testing {
 
 void set_mq_syscall_hooks(MqGetattrHook getattr, MqSetattrHook setattr,
-                          MqSendHook send, MqReceiveHook receive) noexcept {
-  mq_hooks = MqSyscallHooks{getattr, setattr, send, receive};
+                          MqSendHook send, MqReceiveHook receive,
+                          MqRetryWaitHook retry_wait) noexcept {
+  mq_hooks = MqSyscallHooks{getattr, setattr, send, receive, retry_wait};
 }
 
 void reset_mq_syscall_hooks() noexcept {

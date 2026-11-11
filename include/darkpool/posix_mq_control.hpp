@@ -151,9 +151,11 @@ using MqGetattrHook = int (*)(mqd_t, struct mq_attr*);
 using MqSetattrHook = int (*)(mqd_t, const struct mq_attr*, struct mq_attr*);
 using MqSendHook = int (*)(mqd_t, const char*, std::size_t, unsigned);
 using MqReceiveHook = ssize_t (*)(mqd_t, char*, std::size_t, unsigned*);
+using MqRetryWaitHook = void (*)(std::chrono::nanoseconds);
 
 void set_mq_syscall_hooks(MqGetattrHook getattr, MqSetattrHook setattr,
-                          MqSendHook send, MqReceiveHook receive) noexcept;
+                          MqSendHook send, MqReceiveHook receive,
+                          MqRetryWaitHook retry_wait = nullptr) noexcept;
 void reset_mq_syscall_hooks() noexcept;
 
 }  // namespace darkpool::control::testing
