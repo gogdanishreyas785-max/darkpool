@@ -84,6 +84,7 @@ class ServerRuntime {
   int run();
   bool step(int timeout_ms = -1);
   void stop() noexcept;
+  void request_shutdown() noexcept { should_terminate_ = true; }
   [[nodiscard]] bool is_running() const noexcept { return is_running_; }
 
   bool send_message(std::uint64_t session_id, const Frame& frame);

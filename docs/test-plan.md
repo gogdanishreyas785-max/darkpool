@@ -30,7 +30,7 @@ The CMake configuration defines tests for these areas:
 - **Server integration:** UNIX-domain sockets, TCP sessions, authentication, gameplay flows, variable-size matches, notifications, timers/deadlines, late actions, and malformed input.
 - **TLS integration:** OpenSSL TLS 1.3 handshakes, certificate trust and identity validation, transport I/O, and negative security cases.
 - **Reactor dispatch:** readiness decisions for nonblocking socket and TLS operations.
-- **Local POSIX MQ control:** actual server and CLI processes, `ping`/aggregate `status`, request correlation and duplicate handling, concurrent clients, queue limits/priority/FIFO, malformed requests and reply destinations, permissions, queue-full/empty behavior, cleanup, and continued gameplay socket responsiveness.
+- **Local POSIX MQ control:** actual server and CLI processes, `ping`/aggregate `status`/graceful `shutdown`, request correlation and duplicate handling, concurrent clients, queue limits/priority/FIFO, malformed requests and reply destinations, permissions, queue-full/empty behavior, cleanup, and continued gameplay socket responsiveness.
 - **Load-harness regressions:** harness self-tests and short functional workloads included in CTest.
 
 The canonical list of executable test targets is in CMakeLists.txt. To see the names available in a configured build:

@@ -305,8 +305,32 @@ void test_control_server_validation_and_duplicate_requests() {
   CHECK(valid_reply.has_value());
   if (!valid_reply) return;
   send_request(*inbox, *valid_reply, valid_id, "ping");
-  server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+  const bool ping_shutdown = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+  CHECK(!ping_shutdown);
   CHECK(receive_json(*valid_reply).has_value());
+
+  const std::string shutdown_id(32U, '8');
+  auto shutdown_reply = MessageQueue::create_exclusive(reply_queue_name(shutdown_id), O_RDONLY,
+                                                        QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(shutdown_reply.has_value());
+  if (shutdown_reply) {
+    send_request(*inbox, *shutdown_reply, shutdown_id, "shutdown");
+    const bool shutdown_accepted = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    CHECK(shutdown_accepted);
+    const auto shutdown_res = receive_json(*shutdown_reply);
+    CHECK(shutdown_res.has_value());
+    CHECK(shutdown_res && (*shutdown_res)["ok"] == true);
+    CHECK(shutdown_res && (*shutdown_res)["operation"] == "shutdown");
+    CHECK(shutdown_res && (*shutdown_res)["request_id"] == shutdown_id);
+    CHECK(shutdown_res && (*shutdown_res)["result"]["shutdown_requested"] == true);
+
+    // Duplicate shutdown request returns cached response, but returns false for shutdown_requested
+    send_request(*inbox, *shutdown_reply, shutdown_id, "shutdown");
+    const bool duplicate_shutdown = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    CHECK(!duplicate_shutdown);
+    const auto duplicate_res = receive_json(*shutdown_reply);
+    CHECK(duplicate_res == shutdown_res);
+  }
 
   if (::geteuid() != 0) {
     const std::string private_id(32U, '4');
@@ -901,10 +925,21 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
     CHECK(result.exit_code == 0);
   }
 
-  std::cerr << "[mq test] terminating server process\n";
-  server.terminate(SIGTERM);
-  std::cerr << "[mq test] server process reaped\n";
-  CHECK(server.wait_for(0ms).has_value() || server.pid() < 0);
+  std::cerr << "[mq test] terminating server via darkpool_ctl shutdown\n";
+  auto shutdown_child = launch_cli(cli_executable, queue_name, "shutdown");
+  const auto shutdown_result = collect_cli(shutdown_child);
+  std::cerr << "[mq test] shutdown CLI completed with " << shutdown_result.exit_code << '\n';
+  CHECK(shutdown_result.exit_code == 0);
+  const auto shutdown_json = json::parse(shutdown_result.output, nullptr, false);
+  CHECK(!shutdown_json.is_discarded());
+  CHECK(shutdown_json.value("ok", false) == true);
+  CHECK(shutdown_json.value("operation", std::string{}) == "shutdown");
+  CHECK(shutdown_json.contains("result") && shutdown_json["result"].value("shutdown_requested", false) == true);
+
+  const auto server_exit = server.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
+  std::cerr << "[mq test] server process exited cleanly with code " << (server_exit.has_value() ? *server_exit : -1) << '\n';
   std::cerr << "[mq test] checking queue cleanup\n";
   assert_queue_absent(queue_name);
   std::cerr << "[mq test] queue cleanup checked\n";

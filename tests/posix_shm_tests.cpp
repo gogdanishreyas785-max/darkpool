@@ -572,9 +572,15 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   (void)::close(player_fd);
   (void)::close(mod_fd);
 
-  // 8. Orderly shutdown publishes stopping state and cleans up owned IPC resources
-  std::cerr << "[shm test] sending SIGTERM to server\n";
-  server_child.terminate(SIGTERM);
+  // 8. Orderly shutdown via darkpool_ctl shutdown publishes stopping state and cleans up owned IPC resources
+  std::cerr << "[shm test] sending shutdown command via darkpool_ctl\n";
+  auto ctl_shutdown = launch_cmd({ctl_bin, "--queue", queue_name, "shutdown"});
+  auto shutdown_res = collect_cmd(ctl_shutdown);
+  CHECK(shutdown_res.exit_code == 0);
+  const auto shutdown_json = json::parse(shutdown_res.output, nullptr, false);
+  CHECK(shutdown_json.value("ok", false) == true);
+  CHECK(shutdown_json.value("operation", std::string{}) == "shutdown");
+  CHECK(shutdown_json["result"].value("shutdown_requested", false) == true);
 
   // Wait for `darkpool_watch --follow` to detect stopping state and exit cleanly (code 0)
   auto follow_res = collect_cmd(watch_follow, 5s);

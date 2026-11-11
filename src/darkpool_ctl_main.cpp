@@ -15,7 +15,7 @@ volatile std::sig_atomic_t interrupted = 0;
 void handle_signal(int) { interrupted = 1; }
 
 void print_usage(std::ostream& stream) {
-  stream << "Usage: darkpool_ctl [--queue NAME] [--timeout-ms N] <ping|status>\n";
+  stream << "Usage: darkpool_ctl [--queue NAME] [--timeout-ms N] <ping|status|shutdown>\n";
 }
 
 bool parse_timeout(std::string_view text, std::chrono::milliseconds& timeout) {
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     operation = argument;
   }
 
-  if (operation.empty() || (operation != "ping" && operation != "status") ||
+  if (operation.empty() || (operation != "ping" && operation != "status" && operation != "shutdown") ||
       !darkpool::control::ControlServer::valid_server_queue_name(queue_name)) {
     print_usage(std::cerr);
     return 2;
