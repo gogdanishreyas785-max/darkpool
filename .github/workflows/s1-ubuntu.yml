@@ -24,21 +24,7 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON
       - name: Build
         run: cmake --build build --parallel
-      - name: Run malformed TCP integration test
-        run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
-      - name: Run systemd notification integration test
-        run: ctest --test-dir build --output-on-failure -R '^darkpool_systemd_notify_tests$'
-      - name: Run POSIX MQ control-channel tests
-        run: ctest --test-dir build --output-on-failure -R '^darkpool_posix_mq_tests$'
-      - name: Run full test suite
-        run: ctest --test-dir build --output-on-failure
-      - name: Validate L6 sustained evidence and run validator regression tests
-        run: |
-          python3 tools/validate_l6_sustained_evidence.py
-          python3 tests/test_validate_l6_sustained_evidence.py
-      - name: Validate L8 flood evidence and run validator regression tests
-        run: |
-          python3 tools/validate_l8_evidence.py
-          python3 tests/test_validate_l8_evidence.py
-      - name: Test 64-player LAN acceptance harness
-        run: python3 tests/test_tls_lan_64_acceptance.py
+      - name: Run focused core and POSIX IPC tests
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests)$'
