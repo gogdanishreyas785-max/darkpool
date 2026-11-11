@@ -27,4 +27,8 @@ jobs:
       - name: Run focused core and POSIX IPC tests
         run: >
           ctest --test-dir build --output-on-failure
-          -R '^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests)$'
+          -R '^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests)
+      - name: Recheck original failed cases after IPC isolation fix
+        run: >
+          ctest --test-dir build --output-on-failure
+          -R '^(darkpool_load_l6_regression|darkpool_load_l6_sustained_short|darkpool_load_l7_functional|darkpool_load_l7_regression|darkpool_load_l8_functional|darkpool_load_l8_regression|darkpool_playable_match_e2e)
