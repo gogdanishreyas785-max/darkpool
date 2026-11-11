@@ -513,6 +513,7 @@ void assert_queue_absent(const std::string& queue_name) {
 
 void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
                                                    const char* cli_executable) {
+  std::cerr << "[mq test] starting server integration\n";
   const auto token = unique_token();
   const auto queue_name = server_queue_name("integration");
   const auto socket_path = "/tmp/darkpool_mq_" + token + ".sock";
@@ -520,9 +521,11 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
   CHECK(server.pid() >= 0);
   if (server.pid() < 0) return;
   wait_for_server_queue(queue_name, server);
+  std::cerr << "[mq test] server queue ready\n";
 
   auto ping_child = launch_cli(cli_executable, queue_name, "ping");
   auto ping = collect_cli(ping_child);
+  std::cerr << "[mq test] ping CLI completed with " << ping.exit_code << '\n';
   CHECK(ping.exit_code == 0);
   const auto ping_json = json::parse(ping.output, nullptr, false);
   CHECK(!ping_json.is_discarded());
@@ -532,6 +535,7 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
 
   auto status_child = launch_cli(cli_executable, queue_name, "status");
   auto status = collect_cli(status_child);
+  std::cerr << "[mq test] status CLI completed with " << status.exit_code << '\n';
   CHECK(status.exit_code == 0);
   const auto status_json = json::parse(status.output, nullptr, false);
   CHECK(!status_json.is_discarded());
@@ -542,6 +546,7 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
 
   std::vector<CliChild> concurrent;
   for (int i = 0; i < 12; ++i) concurrent.push_back(launch_cli(cli_executable, queue_name, "ping"));
+  std::cerr << "[mq test] launched concurrent clients\n";
 
   const int network_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   CHECK(network_fd >= 0);
@@ -570,6 +575,7 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
 
   for (auto& child : concurrent) {
     const auto result = collect_cli(child);
+    std::cerr << "[mq test] concurrent CLI completed with " << result.exit_code << '\n';
     CHECK(result.exit_code == 0);
   }
 
@@ -580,6 +586,7 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
 }
 
 void test_partial_startup_cleanup(const char* server_executable) {
+  std::cerr << "[mq test] starting partial-startup cleanup test\n";
   const auto queue_name = server_queue_name("startup_failure");
   const auto socket_path = "/tmp/darkpool_mq_fail_" + unique_token() + ".sock";
   auto server = launch_server(server_executable, queue_name, socket_path, true);
@@ -593,8 +600,10 @@ void test_partial_startup_cleanup(const char* server_executable) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  std::cerr << "[mq test] starting queue unit tests\n";
   test_queue_ownership_nonblocking_and_priority();
   test_control_server_validation_and_duplicate_requests();
+  std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);
     test_partial_startup_cleanup(argv[1]);
