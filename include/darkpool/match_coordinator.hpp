@@ -52,6 +52,7 @@ class MatchCoordinator {
       std::uint64_t session, const network::json& command);
 
   [[nodiscard]] std::vector<OutgoingNotification> drain_notifications();
+  [[nodiscard]] std::size_t active_match_count() const noexcept;
 
   void tick(std::optional<std::chrono::steady_clock::time_point> now = std::nullopt);
   void set_simulated_time(std::optional<std::chrono::steady_clock::time_point> now);

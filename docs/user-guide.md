@@ -430,4 +430,28 @@ For deeper implementation and design details, see Architecture, Protocol, Threat
 | Address already in use | A server may already be listening on the port/socket. Stop the prior process or use an unused configured port. Do not delete a socket path until you confirm no server is using it. |
 | Setup/build exhausts VM memory | Run setup with DARKPOOL_BUILD_JOBS=1 to build with one job. |
 
+## 12. Local POSIX MQ control
+
+On Linux, the server exposes a separate local-only control queue for operational checks. It does not carry gameplay traffic and does not change UNIX socket, TCP, or TLS behavior. Use the CLI from the same local user as the server:
+
+~~~bash
+build/darkpool_ctl ping
+build/darkpool_ctl status
+~~~
+
+The commands print structured JSON. `ping` reports whether the server control endpoint answered. `status` reports aggregate availability, active match count, connected player count, configured capacities, and control transport; it omits player roles, clues, private messages, votes, balances, holdings, and credentials. The client waits two seconds by default (configurable up to 60 seconds with `--timeout-ms`) and removes its private reply queue after success, timeout, error, or interruption.
+
+The default server queue is `/darkpool_ctl_<effective-uid>`. To choose a distinct per-user queue name, start the server with `--control-queue /darkpool_ctl_<effective-uid>_<suffix>` and pass the same name to the client with `--queue`, for example:
+
+~~~bash
+build/darkpool_server --control-queue /darkpool_ctl_1000_test
+build/darkpool_ctl --queue /darkpool_ctl_1000_test status
+~~~
+
+Replace `1000` with the server process's effective user ID. Queue names are restricted to this namespace. Queue objects use mode `0600`, bounded depth and message size, and are intended only for same-user local operations. A queue name is not authentication; this channel is not for remote access and does not upgrade or replace moderator authentication.
+
+The server creates its queue exclusively and removes only the queue it created on orderly shutdown or partial startup failure. If startup reports that the queue already exists, first confirm that no server instance is using it. Never automatically unlink a possibly live queue. After confirming the owning server is stopped, an operator may remove a stale queue using the host's POSIX MQ administration mechanism. The control channel does not persist or recover matches: restarting the server loses in-memory matches just as before.
+
+Linux `epoll` polling of POSIX MQ descriptors is used by this implementation. It is not a cross-platform promise about POSIX MQ readiness. See [Architecture: local POSIX MQ control plane](architecture.md#92-local-posix-mq-control-plane) for request format, event-loop ownership, and the D-Bus trade-off.
+
 For an uncovered issue, capture the exact command, full error text, transport mode, and relevant server-side output. Never post live moderator or match tokens publicly.

@@ -11,6 +11,7 @@ int main() {
 
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
+#include "darkpool/posix_mq_control.hpp"
 #include "darkpool/server_runtime.hpp"
 #include "darkpool/socket_primitives.hpp"
 #include "darkpool/systemd_notify.hpp"
@@ -20,6 +21,7 @@ int main() {
 #include <map>
 #include <string>
 #include <string_view>
+#include <sys/epoll.h>
 
 namespace {
 
@@ -50,6 +52,7 @@ struct ServerConfig {
   bool explicit_tls_bind_address{false};
   std::string tls_cert_path;
   std::string tls_key_path;
+  std::string control_mq_queue;
   bool open_lobby{false};
 };
 
@@ -194,6 +197,12 @@ bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string&
       config.enable_tls = true;
     } else if (arg == "--open-lobby") {
       config.open_lobby = true;
+    } else if (arg == "--control-queue") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --control-queue";
+        return false;
+      }
+      config.control_mq_queue = argv[++i];
     } else {
       std::uint16_t p = 0;
       if (darkpool::network::parse_port(argv[i], p)) {
@@ -234,7 +243,7 @@ int main(int argc, char** argv) {
     }
     std::cerr << "usage: darkpool_server [--bind-address <IPv4>] [--port <port>] [--socket <path>] "
                  "[--tls-bind-address <IPv4>] [--tls-port <port>] [--tls-cert <cert.pem>] [--tls-key <key.pem>] "
-                 "[--open-lobby] [--no-tcp] [--no-unix] [port] [socket_path]\n";
+                 "[--control-queue <name>] [--open-lobby] [--no-tcp] [--no-unix] [port] [socket_path]\n";
     return 2;
   }
 
@@ -252,6 +261,15 @@ int main(int argc, char** argv) {
                 << " is not assigned to any local network interface\n";
       return 1;
     }
+  }
+
+  darkpool::control::ControlServer control_server(
+      config.control_mq_queue.empty() ? darkpool::control::ControlServer::default_queue_name()
+                                      : config.control_mq_queue);
+  std::string control_error;
+  if (!control_server.start(control_error)) {
+    std::cerr << "error: control channel startup failed: " << control_error << '\n';
+    return 1;
   }
 
   darkpool::systemd::Notifier systemd_notifier;
@@ -381,6 +399,27 @@ int main(int argc, char** argv) {
   std::string start_err;
   if (!runtime.start(start_err)) {
     std::cerr << "error: server startup failed: " << start_err << '\n';
+    return 1;
+  }
+  std::string epoll_source_error;
+  if (!runtime.add_epoll_event_source(
+          control_server.descriptor(),
+          [&](std::uint32_t events) {
+            if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
+              control_server.process_readable([&]() {
+                return darkpool::control::StatusSnapshot{
+                    .active_matches = coordinator.active_match_count(),
+                    .connected_players = players,
+                    .match_capacity = kMaxMatches,
+                    .players_per_match_capacity = kMaxPlayersPerMatch,
+                    .player_connection_capacity = kMaxPlayerConnections,
+                };
+              });
+            }
+          },
+          epoll_source_error)) {
+    std::cerr << "error: control channel epoll registration failed: " << epoll_source_error << '\n';
+    runtime.stop();
     return 1;
   }
   systemd_notifier.ready();

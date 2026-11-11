@@ -327,6 +327,15 @@ void MatchCoordinator::unregister_session(std::uint64_t session) noexcept {
   sessions_.erase(found);
 }
 
+std::size_t MatchCoordinator::active_match_count() const noexcept {
+  std::size_t count = 0U;
+  for (const auto& [match_id, record] : matches_) {
+    (void)match_id;
+    if (!record.is_aborted && record.match->state().phase != Phase::Finished) ++count;
+  }
+  return count;
+}
+
 bool MatchCoordinator::is_member(std::uint64_t session, std::uint64_t match_id) const {
   const auto connection = sessions_.find(session);
   const auto match = matches_.find(match_id);

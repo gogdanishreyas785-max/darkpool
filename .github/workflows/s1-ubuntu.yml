@@ -28,6 +28,8 @@ jobs:
         run: ctest --test-dir build --output-on-failure -R '^darkpool_malformed_tcp_tests$'
       - name: Run systemd notification integration test
         run: ctest --test-dir build --output-on-failure -R '^darkpool_systemd_notify_tests$'
+      - name: Run POSIX MQ control-channel tests
+        run: ctest --test-dir build --output-on-failure -R '^darkpool_posix_mq_tests$'
       - name: Run full test suite
         run: ctest --test-dir build --output-on-failure
       - name: Validate L6 sustained evidence and run validator regression tests
