@@ -588,10 +588,15 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
     CHECK(result.exit_code == 0);
   }
 
+  std::cerr << "[mq test] terminating server process\n";
   server.terminate(SIGTERM);
+  std::cerr << "[mq test] server process reaped\n";
   CHECK(server.wait_for(0ms).has_value() || server.pid() < 0);
+  std::cerr << "[mq test] checking queue cleanup\n";
   assert_queue_absent(queue_name);
+  std::cerr << "[mq test] queue cleanup checked\n";
   CHECK(::access(socket_path.c_str(), F_OK) != 0);
+  std::cerr << "[mq test] socket cleanup checked\n";
 }
 
 void test_partial_startup_cleanup(const char* server_executable) {
