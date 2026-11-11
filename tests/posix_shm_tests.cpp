@@ -268,15 +268,24 @@ void test_unit_and_edge_cases() {
   const auto shm_name = "/darkpool_test_shm_" + token;
   const auto sem_name = "/darkpool_test_sem_" + token;
 
+  darkpool::telemetry::TelemetryInput init_input{
+      .active_matches = 0U,
+      .connected_players = 0U,
+      .connected_moderators = 0U,
+      .match_capacity = 4U,
+      .players_per_match_capacity = 64U,
+      .player_connection_capacity = 256U,
+  };
+
   TelemetryPublisher pub1(shm_name, sem_name);
   std::string err1;
-  CHECK(pub1.start(err1));
+  CHECK(pub1.start(init_input, err1));
   CHECK(pub1.running());
 
   // Second publisher with same names must fail (EEXIST)
   TelemetryPublisher pub2(shm_name, sem_name);
   std::string err2;
-  CHECK(!pub2.start(err2));
+  CHECK(!pub2.start(init_input, err2));
   CHECK(err2.find("already exists") != std::string::npos);
 
   // Observer can open valid publisher
@@ -284,7 +293,24 @@ void test_unit_and_edge_cases() {
   std::string obs_err;
   CHECK(obs.open(shm_name, sem_name, obs_err));
 
-  // Test publisher nonblocking trylock publication
+  // Initial snapshot has nonzero sequence and running state
+  std::string read_err;
+  auto init_snapshot = obs.read_snapshot(1000ms, read_err);
+  CHECK(init_snapshot.has_value());
+  if (init_snapshot) {
+    CHECK(init_snapshot->sequence == 1U);
+    CHECK(init_snapshot->server_state == ServerState::Running);
+  }
+
+  // C. Unchanged snapshot: publishing same input does NOT increment sequence
+  CHECK(pub1.publish(init_input));
+  auto snap_same = obs.read_snapshot(1000ms, read_err);
+  CHECK(snap_same.has_value());
+  if (snap_same) {
+    CHECK(snap_same->sequence == 1U);
+  }
+
+  // Publication with changed input advances sequence and updates integrity
   darkpool::telemetry::TelemetryInput input{
       .active_matches = 2U,
       .connected_players = 8U,
@@ -295,25 +321,75 @@ void test_unit_and_edge_cases() {
   };
   CHECK(pub1.publish(input));
 
-  // Observer reads snapshot
-  std::string read_err;
+  // Observer reads updated snapshot
   auto snapshot = obs.read_snapshot(1000ms, read_err);
   CHECK(snapshot.has_value());
   if (snapshot) {
-    CHECK(snapshot->sequence == 1U);
+    CHECK(snapshot->sequence == 2U);
     CHECK(snapshot->active_matches == 2U);
     CHECK(snapshot->connected_players == 8U);
     CHECK(snapshot->connected_moderators == 1U);
     CHECK(snapshot->server_state == ServerState::Running);
   }
 
-  // Observer wait_for_notification
-  CHECK(pub1.publish(input));
-  CHECK(obs.wait_for_notification(500ms));
-  auto snap2 = obs.read_snapshot(1000ms, read_err);
-  CHECK(snap2.has_value());
-  if (snap2) {
-    CHECK(snap2->sequence == 2U);
+  // B. Robust mutex owner death recovery: test in separate child process
+  std::cerr << "[shm test] testing robust mutex owner death recovery...\n";
+  const pid_t locker_pid = ::fork();
+  CHECK(locker_pid >= 0);
+  if (locker_pid == 0) {
+    // Child opens existing shm, locks mutex, and dies without unlocking
+    TelemetryObserver child_obs;
+    std::string c_err;
+    if (child_obs.open(shm_name, sem_name, c_err)) {
+      int test_shm_fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+      if (test_shm_fd >= 0) {
+        auto* raw = static_cast<TelemetrySharedMemory*>(
+            ::mmap(nullptr, sizeof(TelemetrySharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, test_shm_fd, 0));
+        if (raw != MAP_FAILED) {
+          ::pthread_mutex_lock(&raw->mutex);
+          // Die while holding lock!
+          ::_exit(42);
+        }
+      }
+    }
+    ::_exit(1);
+  }
+
+  int locker_status = 0;
+  ::waitpid(locker_pid, &locker_status, 0);
+
+  // Observer reading after owner death recovers with EOWNERDEAD and accepts valid committed snapshot
+  auto snap_after_death = obs.read_snapshot(1000ms, read_err);
+  CHECK(snap_after_death.has_value());
+  if (snap_after_death) {
+    CHECK(snap_after_death->sequence == 2U);
+  }
+
+  // Test that invalid integrity is rejected
+  int direct_shm = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+  CHECK(direct_shm >= 0);
+  if (direct_shm >= 0) {
+    auto* raw_shm = static_cast<TelemetrySharedMemory*>(
+        ::mmap(nullptr, sizeof(TelemetrySharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, direct_shm, 0));
+    CHECK(raw_shm != MAP_FAILED);
+    if (raw_shm != MAP_FAILED) {
+      ::pthread_mutex_lock(&raw_shm->mutex);
+      const auto saved_integrity = raw_shm->payload.integrity;
+      raw_shm->payload.integrity = 0xDEADBEEFU;  // Corrupt integrity!
+      ::pthread_mutex_unlock(&raw_shm->mutex);
+
+      std::string corrupt_err;
+      auto corrupt_snap = obs.read_snapshot(1000ms, corrupt_err);
+      CHECK(!corrupt_snap.has_value());
+      CHECK(corrupt_err.find("integrity") != std::string::npos);
+
+      // Restore integrity
+      ::pthread_mutex_lock(&raw_shm->mutex);
+      raw_shm->payload.integrity = saved_integrity;
+      ::pthread_mutex_unlock(&raw_shm->mutex);
+      (void)::munmap(raw_shm, sizeof(TelemetrySharedMemory));
+    }
+    (void)::close(direct_shm);
   }
 
   // Clean shutdown cleans up IPC objects
@@ -504,6 +580,13 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   std::cerr << "[shm test] follow exit_code=" << follow_res.exit_code << '\n';
   CHECK(follow_res.exit_code == 0);
   CHECK(follow_res.output.find("stopping") != std::string::npos);
+
+  // D. Verify follow mode observed intermediate updates (e.g. sequence changes, player/match counts)
+  CHECK(follow_res.output.find("\"connected_players\": 1") != std::string::npos ||
+        follow_res.output.find("\"active_matches\": 1") != std::string::npos);
+
+  // Ensure server exits gracefully after SIGTERM
+  (void)server_child.wait_for(5s);
 
   // Verify IPC cleanup
   errno = 0;

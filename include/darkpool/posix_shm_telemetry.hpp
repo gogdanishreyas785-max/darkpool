@@ -52,13 +52,12 @@ enum class ServerState : std::uint32_t {
   }
 }
 
-#pragma pack(push, 8)
 struct TelemetryPayload {
   std::uint64_t sequence;
   std::uint64_t timestamp_ns;
   std::int64_t server_pid;
   std::uint32_t server_state;
-  std::uint32_t reserved;
+  std::uint32_t integrity;  // CRC32 checksum computed over all other fields
   std::uint64_t active_matches;
   std::uint64_t connected_players;
   std::uint64_t connected_moderators;
@@ -78,7 +77,6 @@ struct TelemetrySharedMemory {
   pthread_mutex_t mutex;
   TelemetryPayload payload;
 };
-#pragma pack(pop)
 
 static_assert(std::is_trivial_v<TelemetryPayload>,
               "TelemetryPayload must be trivial");
@@ -86,12 +84,15 @@ static_assert(std::is_trivial_v<TelemetrySharedMemory>,
               "TelemetrySharedMemory must be trivial");
 static_assert(std::is_standard_layout_v<TelemetrySharedMemory>,
               "TelemetrySharedMemory must have standard layout");
+static_assert(alignof(pthread_mutex_t) <= alignof(TelemetrySharedMemory),
+              "TelemetrySharedMemory must maintain pthread_mutex_t alignment");
 
 struct TelemetrySnapshot {
   std::uint64_t sequence{0U};
   std::uint64_t timestamp_ns{0U};
   pid_t server_pid{0};
   ServerState server_state{ServerState::Uninitialized};
+  std::uint32_t integrity{0U};
   std::uint64_t active_matches{0U};
   std::uint64_t connected_players{0U};
   std::uint64_t connected_moderators{0U};
@@ -107,7 +108,19 @@ struct TelemetryInput {
   std::uint64_t match_capacity{4U};
   std::uint64_t players_per_match_capacity{64U};
   std::uint64_t player_connection_capacity{256U};
+
+  bool operator==(const TelemetryInput& other) const noexcept {
+    return active_matches == other.active_matches &&
+           connected_players == other.connected_players &&
+           connected_moderators == other.connected_moderators &&
+           match_capacity == other.match_capacity &&
+           players_per_match_capacity == other.players_per_match_capacity &&
+           player_connection_capacity == other.player_connection_capacity;
+  }
 };
+
+[[nodiscard]] std::uint32_t compute_telemetry_integrity(const TelemetryPayload& payload) noexcept;
+[[nodiscard]] bool verify_telemetry_integrity(const TelemetryPayload& payload) noexcept;
 
 [[nodiscard]] std::string default_shm_name(uid_t uid = ::geteuid());
 [[nodiscard]] std::string default_sem_name(uid_t uid = ::geteuid());
@@ -124,7 +137,7 @@ class TelemetryPublisher {
   TelemetryPublisher(TelemetryPublisher&&) = delete;
   TelemetryPublisher& operator=(TelemetryPublisher&&) = delete;
 
-  [[nodiscard]] bool start(std::string& error_message);
+  [[nodiscard]] bool start(const TelemetryInput& initial_input, std::string& error_message);
   void stop() noexcept;
 
   // Nonblocking publication from the event loop thread using trylock.
@@ -146,6 +159,10 @@ class TelemetryPublisher {
   bool mutex_initialized_{false};
   bool running_{false};
   std::uint64_t sequence_{0U};
+  std::optional<TelemetryInput> last_published_input_;
+  std::optional<ServerState> last_published_state_;
+  std::optional<TelemetryInput> pending_input_;
+  std::optional<bool> pending_stopping_;
 };
 
 class TelemetryObserver {
@@ -174,6 +191,9 @@ class TelemetryObserver {
       const volatile sig_atomic_t* interrupted = nullptr) const noexcept;
 
   [[nodiscard]] bool is_open() const noexcept { return shm_ != nullptr; }
+  [[nodiscard]] pid_t server_pid() const noexcept {
+    return shm_ != nullptr ? static_cast<pid_t>(shm_->server_pid) : 0;
+  }
 
  private:
   std::string shm_name_;

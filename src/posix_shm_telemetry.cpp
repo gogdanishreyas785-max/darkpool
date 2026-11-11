@@ -55,7 +55,57 @@ void make_abs_timespec(std::chrono::milliseconds timeout, struct timespec& ts) n
   }
 }
 
+// Table-less CRC-32 (IEEE 802.3) for compact, dependable integrity checking
+std::uint32_t crc32_buffer(const std::uint8_t* data, std::size_t length) noexcept {
+  std::uint32_t crc = 0xFFFFFFFFU;
+  for (std::size_t i = 0; i < length; ++i) {
+    crc ^= data[i];
+    for (int j = 0; j < 8; ++j) {
+      if ((crc & 1U) != 0U) {
+        crc = (crc >> 1U) ^ 0xEDB88320U;
+      } else {
+        crc >>= 1U;
+      }
+    }
+  }
+  return ~crc;
+}
+
 }  // namespace
+
+std::uint32_t compute_telemetry_integrity(const TelemetryPayload& payload) noexcept {
+  // Hash sequence, timestamp_ns, server_pid, server_state
+  // Skip integrity field itself
+  // Hash active_matches, connected_players, connected_moderators, match_capacity,
+  // players_per_match_capacity, player_connection_capacity
+  std::uint8_t buffer[sizeof(std::uint64_t) * 8 + sizeof(std::int64_t) + sizeof(std::uint32_t)];
+  std::size_t offset = 0;
+
+  auto append = [&](const void* ptr, std::size_t sz) {
+    std::memcpy(buffer + offset, ptr, sz);
+    offset += sz;
+  };
+
+  append(&payload.sequence, sizeof(payload.sequence));
+  append(&payload.timestamp_ns, sizeof(payload.timestamp_ns));
+  append(&payload.server_pid, sizeof(payload.server_pid));
+  append(&payload.server_state, sizeof(payload.server_state));
+  append(&payload.active_matches, sizeof(payload.active_matches));
+  append(&payload.connected_players, sizeof(payload.connected_players));
+  append(&payload.connected_moderators, sizeof(payload.connected_moderators));
+  append(&payload.match_capacity, sizeof(payload.match_capacity));
+  append(&payload.players_per_match_capacity, sizeof(payload.players_per_match_capacity));
+  append(&payload.player_connection_capacity, sizeof(payload.player_connection_capacity));
+
+  return crc32_buffer(buffer, offset);
+}
+
+bool verify_telemetry_integrity(const TelemetryPayload& payload) noexcept {
+  if (payload.integrity == 0U) {
+    return false;
+  }
+  return payload.integrity == compute_telemetry_integrity(payload);
+}
 
 TelemetryPublisher::TelemetryPublisher(std::string shm_name, std::string sem_name)
     : shm_name_(std::move(shm_name)), sem_name_(std::move(sem_name)) {}
@@ -64,7 +114,7 @@ TelemetryPublisher::~TelemetryPublisher() {
   stop();
 }
 
-bool TelemetryPublisher::start(std::string& error_message) {
+bool TelemetryPublisher::start(const TelemetryInput& initial_input, std::string& error_message) {
   if (running_) {
     return true;
   }
@@ -77,7 +127,7 @@ bool TelemetryPublisher::start(std::string& error_message) {
     return false;
   }
 
-  // Exclusively create the shared memory object with 0600 permissions
+  // 1. Exclusively create the shared memory object with 0600 permissions
   shm_fd_ = ::shm_open(shm_name_.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
   if (shm_fd_ < 0) {
     const int err = errno;
@@ -92,6 +142,7 @@ bool TelemetryPublisher::start(std::string& error_message) {
   }
   owns_shm_ = true;
 
+  // 2. Set its exact size and map it
   if (::ftruncate(shm_fd_, static_cast<off_t>(sizeof(TelemetrySharedMemory))) != 0) {
     const int err = errno;
     error_message = "ftruncate failed: " + std::string(std::strerror(err));
@@ -110,14 +161,7 @@ bool TelemetryPublisher::start(std::string& error_message) {
   shm_ = static_cast<TelemetrySharedMemory*>(addr);
   std::memset(shm_, 0, sizeof(TelemetrySharedMemory));
 
-  shm_->magic = kTelemetryMagic;
-  shm_->abi_version = kTelemetryAbiVersion;
-  shm_->struct_size = static_cast<std::uint32_t>(sizeof(TelemetrySharedMemory));
-  shm_->owner_uid = static_cast<std::uint32_t>(::geteuid());
-  shm_->server_pid = static_cast<std::int64_t>(::getpid());
-  shm_->state = static_cast<std::uint32_t>(ServerState::Uninitialized);
-
-  // Initialize process-shared robust mutex
+  // 3. Initialize process-shared robust mutex
   pthread_mutexattr_t attr;
   int rc = ::pthread_mutexattr_init(&attr);
   if (rc != 0) {
@@ -148,7 +192,37 @@ bool TelemetryPublisher::start(std::string& error_message) {
   }
   mutex_initialized_ = true;
 
-  // Exclusively create named semaphore with initial value 0 and 0600 permissions
+  // 4. Initialize the complete fixed-layout header and a valid initial telemetry snapshot
+  // 5. Set initial snapshot sequence to a nonzero value and its state to running
+  shm_->magic = kTelemetryMagic;
+  shm_->abi_version = kTelemetryAbiVersion;
+  shm_->struct_size = static_cast<std::uint32_t>(sizeof(TelemetrySharedMemory));
+  shm_->owner_uid = static_cast<std::uint32_t>(::geteuid());
+  shm_->server_pid = static_cast<std::int64_t>(::getpid());
+  shm_->state = static_cast<std::uint32_t>(ServerState::Running);
+
+  const auto now = std::chrono::system_clock::now().time_since_epoch();
+  const auto now_ns = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+
+  sequence_ = 1U;
+  shm_->payload.sequence = sequence_;
+  shm_->payload.timestamp_ns = now_ns;
+  shm_->payload.server_pid = static_cast<std::int64_t>(::getpid());
+  shm_->payload.server_state = static_cast<std::uint32_t>(ServerState::Running);
+  shm_->payload.active_matches = initial_input.active_matches;
+  shm_->payload.connected_players = initial_input.connected_players;
+  shm_->payload.connected_moderators = initial_input.connected_moderators;
+  shm_->payload.match_capacity = initial_input.match_capacity;
+  shm_->payload.players_per_match_capacity = initial_input.players_per_match_capacity;
+  shm_->payload.player_connection_capacity = initial_input.player_connection_capacity;
+  // Compute and commit integrity last
+  shm_->payload.integrity = compute_telemetry_integrity(shm_->payload);
+
+  last_published_input_ = initial_input;
+  last_published_state_ = ServerState::Running;
+
+  // 6. Create the named semaphore ONLY AFTER shared memory & initial snapshot are fully initialized
   sem_ = ::sem_open(sem_name_.c_str(), O_CREAT | O_EXCL, 0600, 0U);
   if (sem_ == SEM_FAILED) {
     const int err = errno;
@@ -163,33 +237,61 @@ bool TelemetryPublisher::start(std::string& error_message) {
   }
   owns_sem_ = true;
 
-  shm_->state = static_cast<std::uint32_t>(ServerState::Running);
   running_ = true;
   return true;
 }
 
 void TelemetryPublisher::stop() noexcept {
   if (shm_ != nullptr && mutex_initialized_) {
-    const int rc = ::pthread_mutex_trylock(&shm_->mutex);
-    if (rc == 0 || rc == EOWNERDEAD) {
-      if (rc == EOWNERDEAD) {
-        (void)::pthread_mutex_consistent(&shm_->mutex);
+    // 1. Attempt to acquire robust mutex with bounded shutdown timeout (up to 500ms)
+    struct timespec ts{};
+    make_abs_timespec(std::chrono::milliseconds(500), ts);
+    int rc = 0;
+    while ((rc = ::pthread_mutex_timedlock(&shm_->mutex, &ts)) != 0) {
+      if (rc == EINTR) {
+        continue;
       }
+      break;
+    }
+
+    if (rc == EOWNERDEAD) {
+      (void)::pthread_mutex_consistent(&shm_->mutex);
+    }
+
+    if (rc == 0 || rc == EOWNERDEAD) {
+      const auto now = std::chrono::system_clock::now().time_since_epoch();
+      const auto now_ns = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
+
+      // 3. Publish a final valid stopping snapshot with sequence, timestamp, PID, and integrity
       ++sequence_;
       shm_->payload.sequence = sequence_;
-      shm_->state = static_cast<std::uint32_t>(ServerState::Stopping);
+      shm_->payload.timestamp_ns = now_ns;
+      shm_->payload.server_pid = static_cast<std::int64_t>(::getpid());
       shm_->payload.server_state = static_cast<std::uint32_t>(ServerState::Stopping);
+      shm_->payload.integrity = compute_telemetry_integrity(shm_->payload);
+      shm_->state = static_cast<std::uint32_t>(ServerState::Stopping);
+
+      // 4. Release mutex
       (void)::pthread_mutex_unlock(&shm_->mutex);
+
+      // 5. Notify observers
       if (sem_ != SEM_FAILED) {
         int sval = 0;
         if (::sem_getvalue(sem_, &sval) == 0 && sval <= 0) {
           (void)::sem_post(sem_);
         }
       }
+
+      // Small bounded pause allowing existing observer to read stopping state before destruction
+      (void)::usleep(50'000);  // 50ms
     }
+
+    (void)::pthread_mutex_destroy(&shm_->mutex);
     mutex_initialized_ = false;
   }
 
+  // 6. Close and unlink only objects owned by the current publisher
   if (shm_ != nullptr) {
     (void)::munmap(shm_, sizeof(TelemetrySharedMemory));
     shm_ = nullptr;
@@ -223,12 +325,29 @@ bool TelemetryPublisher::publish(const TelemetryInput& input, bool is_stopping) 
     return false;
   }
 
+  const auto target_state = is_stopping ? ServerState::Stopping : ServerState::Running;
+
+  // Check if anything actually changed from last committed snapshot or pending retry
+  const bool changed = !last_published_input_.has_value() ||
+                       !(*last_published_input_ == input) ||
+                       last_published_state_ != target_state ||
+                       pending_input_.has_value();
+
+  if (!changed) {
+    return true;  // Unchanged: do not increment sequence, do not post notification
+  }
+
   // Server must never block waiting for reader: use trylock
   int rc = ::pthread_mutex_trylock(&shm_->mutex);
   if (rc == EBUSY) {
-    return false;  // Reader is currently holding lock; skip nonblocking
+    // Reader is currently holding lock; store pending input and retry on next tick
+    pending_input_ = input;
+    pending_stopping_ = is_stopping;
+    return false;
   }
+
   if (rc == EOWNERDEAD) {
+    // Dead owner: rewrite complete payload, recompute integrity, make consistent
     (void)::pthread_mutex_consistent(&shm_->mutex);
   } else if (rc != 0) {
     return false;
@@ -239,8 +358,7 @@ bool TelemetryPublisher::publish(const TelemetryInput& input, bool is_stopping) 
       std::chrono::duration_cast<std::chrono::nanoseconds>(now).count());
 
   ++sequence_;
-  const auto state_enum = is_stopping ? ServerState::Stopping : ServerState::Running;
-  const auto state_val = static_cast<std::uint32_t>(state_enum);
+  const auto state_val = static_cast<std::uint32_t>(target_state);
 
   shm_->payload.sequence = sequence_;
   shm_->payload.timestamp_ns = now_ns;
@@ -252,11 +370,18 @@ bool TelemetryPublisher::publish(const TelemetryInput& input, bool is_stopping) 
   shm_->payload.match_capacity = input.match_capacity;
   shm_->payload.players_per_match_capacity = input.players_per_match_capacity;
   shm_->payload.player_connection_capacity = input.player_connection_capacity;
+  // Compute and commit integrity last
+  shm_->payload.integrity = compute_telemetry_integrity(shm_->payload);
   shm_->state = state_val;
+
+  last_published_input_ = input;
+  last_published_state_ = target_state;
+  pending_input_.reset();
+  pending_stopping_.reset();
 
   (void)::pthread_mutex_unlock(&shm_->mutex);
 
-  // Semaphore notification: wake-up hint with coalescing
+  // Semaphore notification: wake-up hint with coalescing ONLY when a new snapshot committed
   if (sem_ != SEM_FAILED) {
     int sval = 0;
     if (::sem_getvalue(sem_, &sval) == 0 && sval <= 0) {
@@ -327,21 +452,38 @@ bool TelemetryObserver::open(std::string_view shm_name, std::string_view sem_nam
     return false;
   }
 
-  // Open existing shared memory with O_RDWR (required for robust mutex operations)
-  shm_fd_ = ::shm_open(shm_name.data(), O_RDWR, 0);
+  // Convert std::string_view names to owned, null-terminated std::string
+  const std::string shm_str(shm_name);
+  const std::string sem_str(sem_name);
+
+  // 7. Readiness indication: open named semaphore FIRST before trusting shared memory
+  // The server creates the semaphore only after the shared-memory region and initial snapshot are fully initialized
+  sem_ = ::sem_open(sem_str.c_str(), 0);
+  if (sem_ == SEM_FAILED) {
+    const int err = errno;
+    if (err == ENOENT) {
+      error_message = "named semaphore '" + sem_str +
+                      "' does not exist (is darkpool_server running?)";
+    } else {
+      error_message = "sem_open failed for '" + sem_str + "': " + std::strerror(err);
+    }
+    return false;
+  }
+
+  // Open existing shared memory with O_RDWR (required by POSIX for process-shared robust mutex operations)
+  shm_fd_ = ::shm_open(shm_str.c_str(), O_RDWR, 0);
   if (shm_fd_ < 0) {
     const int err = errno;
     if (err == ENOENT) {
-      error_message = "shared memory object '" + std::string(shm_name) +
+      error_message = "shared memory object '" + shm_str +
                       "' does not exist (is darkpool_server running?)";
     } else if (err == EACCES) {
       error_message = "permission denied accessing shared memory object '" +
-                      std::string(shm_name) +
-                      "' (observer must run as same user as server)";
+                      shm_str + "' (observer must run as same user as server)";
     } else {
-      error_message = "shm_open failed for '" + std::string(shm_name) + "': " +
-                      std::strerror(err);
+      error_message = "shm_open failed for '" + shm_str + "': " + std::strerror(err);
     }
+    close();
     return false;
   }
 
@@ -353,6 +495,7 @@ bool TelemetryObserver::open(std::string_view shm_name, std::string_view sem_nam
     return false;
   }
 
+  // Validate owner UID
   if (st.st_uid != ::geteuid()) {
     error_message = "ownership mismatch: shared memory is owned by UID " +
                     std::to_string(st.st_uid) + ", but observer is UID " +
@@ -361,9 +504,22 @@ bool TelemetryObserver::open(std::string_view shm_name, std::string_view sem_nam
     return false;
   }
 
-  if (static_cast<std::size_t>(st.st_size) < sizeof(TelemetrySharedMemory)) {
+  // Validate permissions: must be owner-only 0600 (group and other bits must be 0)
+  if ((st.st_mode & 0077) != 0) {
+    error_message = "insecure permissions on shared memory (must be owner-only 0600)";
+    close();
+    return false;
+  }
+  if ((st.st_mode & 0600) != 0600) {
+    error_message = "insufficient owner permissions on shared memory (must be 0600)";
+    close();
+    return false;
+  }
+
+  // Exact structure size required
+  if (static_cast<std::size_t>(st.st_size) != sizeof(TelemetrySharedMemory)) {
     error_message = "invalid shared memory size: " + std::to_string(st.st_size) +
-                    " bytes (expected at least " +
+                    " bytes (expected exactly " +
                     std::to_string(sizeof(TelemetrySharedMemory)) + " bytes)";
     close();
     return false;
@@ -413,23 +569,15 @@ bool TelemetryObserver::open(std::string_view shm_name, std::string_view sem_nam
     return false;
   }
 
-  // Open existing named semaphore (does NOT create)
-  sem_ = ::sem_open(sem_name.data(), 0);
-  if (sem_ == SEM_FAILED) {
-    const int err = errno;
-    if (err == ENOENT) {
-      error_message = "named semaphore '" + std::string(sem_name) +
-                      "' does not exist (is darkpool_server running?)";
-    } else {
-      error_message = "sem_open failed for '" + std::string(sem_name) + "': " +
-                      std::strerror(err);
-    }
+  if (shm_->state == static_cast<std::uint32_t>(ServerState::Uninitialized) ||
+      shm_->state > static_cast<std::uint32_t>(ServerState::Stopping)) {
+    error_message = "telemetry shared memory is in uninitialized/invalid state";
     close();
     return false;
   }
 
-  shm_name_ = std::string(shm_name);
-  sem_name_ = std::string(sem_name);
+  shm_name_ = shm_str;
+  sem_name_ = sem_str;
   return true;
 }
 
@@ -451,38 +599,41 @@ std::optional<TelemetrySnapshot> TelemetryObserver::read_snapshot(
     break;
   }
 
+  bool is_ownerdead = false;
   if (rc == EOWNERDEAD) {
-    (void)::pthread_mutex_consistent(&shm_->mutex);
+    is_ownerdead = true;
   } else if (rc == ETIMEDOUT) {
     error_message = "timed out waiting for telemetry mutex lock";
-    return std::nullopt;
-  } else if (rc == EINVAL) {
-    // If the server tore down the mutex during stopping, return stopping snapshot if marked
-    if (shm_->payload.server_state == static_cast<std::uint32_t>(ServerState::Stopping)) {
-      TelemetrySnapshot snapshot{
-          .sequence = shm_->payload.sequence,
-          .timestamp_ns = shm_->payload.timestamp_ns,
-          .server_pid = static_cast<pid_t>(shm_->payload.server_pid),
-          .server_state = ServerState::Stopping,
-          .active_matches = shm_->payload.active_matches,
-          .connected_players = shm_->payload.connected_players,
-          .connected_moderators = shm_->payload.connected_moderators,
-          .match_capacity = shm_->payload.match_capacity,
-          .players_per_match_capacity = shm_->payload.players_per_match_capacity,
-          .player_connection_capacity = shm_->payload.player_connection_capacity,
-      };
-      return snapshot;
-    }
-    error_message = "pthread_mutex_timedlock failed: " + std::string(std::strerror(rc));
     return std::nullopt;
   } else if (rc != 0) {
     error_message = "pthread_mutex_timedlock failed: " + std::string(std::strerror(rc));
     return std::nullopt;
   }
 
-  if (shm_->state == static_cast<std::uint32_t>(ServerState::Uninitialized)) {
+  // Mutex is held. Verify snapshot integrity
+  const bool integrity_valid = verify_telemetry_integrity(shm_->payload);
+
+  if (is_ownerdead) {
+    if (!integrity_valid) {
+      // Incomplete write when owner died: unlock without marking consistent
+      (void)::pthread_mutex_unlock(&shm_->mutex);
+      error_message = "owner died with partially committed snapshot (integrity invalid)";
+      return std::nullopt;
+    }
+    // Snapshot was fully committed before owner died: safely mark consistent
+    (void)::pthread_mutex_consistent(&shm_->mutex);
+  }
+
+  if (!integrity_valid) {
     (void)::pthread_mutex_unlock(&shm_->mutex);
-    error_message = "telemetry snapshot is in uninitialized state";
+    error_message = "telemetry snapshot integrity verification failed";
+    return std::nullopt;
+  }
+
+  if (shm_->payload.server_state == static_cast<std::uint32_t>(ServerState::Uninitialized) ||
+      shm_->payload.server_state > static_cast<std::uint32_t>(ServerState::Stopping)) {
+    (void)::pthread_mutex_unlock(&shm_->mutex);
+    error_message = "invalid server state in telemetry snapshot";
     return std::nullopt;
   }
 
@@ -491,6 +642,7 @@ std::optional<TelemetrySnapshot> TelemetryObserver::read_snapshot(
       .timestamp_ns = shm_->payload.timestamp_ns,
       .server_pid = static_cast<pid_t>(shm_->payload.server_pid),
       .server_state = server_state_from_uint32(shm_->payload.server_state),
+      .integrity = shm_->payload.integrity,
       .active_matches = shm_->payload.active_matches,
       .connected_players = shm_->payload.connected_players,
       .connected_moderators = shm_->payload.connected_moderators,

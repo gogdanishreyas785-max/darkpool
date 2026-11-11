@@ -481,15 +481,21 @@ build/darkpool_watch --shm /darkpool_telemetry_1000_custom --sem /darkpool_telem
 
 - **No private game state:** The snapshot contains sequence number, timestamp, server PID, lifecycle state (`running` or `stopping`), active match count, connected player count, connected moderator count, and configured match/player capacities. It never exposes roles, player IDs, match IDs, clues, votes, balances, holdings, or credentials.
 - **Not authoritative game state or durable storage:** Shared memory only holds the latest aggregate snapshot. Authoritative game and match state remains in the server process.
-- **Nonblocking server event loop:** The server updates shared memory using nonblocking `pthread_mutex_trylock`. If an observer holds the mutex, publication is skipped without blocking gameplay networking.
-- **Stale resource recovery:** Newly created shared memory and semaphore objects use mode `0600` and are created exclusively (`O_CREAT | O_EXCL`). If the server terminates abnormally and leaves behind stale objects, an operator can remove them after verifying that the owning server is no longer running:
+- **Nonblocking server event loop & publication deduplication:** The server updates shared memory using nonblocking `pthread_mutex_trylock`. If an observer holds the mutex, publication is skipped without blocking gameplay networking and retried on subsequent ticks. Unchanged telemetry state does not increment the sequence number and does not generate redundant notifications.
+- **Integrity verification & robust recovery:** Every snapshot includes a CRC32 integrity checksum committed after all other payload fields. If a process terminates while holding the mutex (`EOWNERDEAD`), the observer or publisher verifies the payload integrity before restoring consistency.
+- **Logically read-only observer:** `darkpool_watch` never modifies telemetry or server state. However, POSIX robust mutex state requires writable synchronization memory, so the shared segment is mapped `PROT_READ | PROT_WRITE` under a same-user (`0600`) trust boundary.
+- **Stale resource recovery:** Newly created shared memory and semaphore objects use mode `0600` and are created exclusively (`O_CREAT | O_EXCL`). If the server terminates abnormally and leaves behind stale objects, an operator can remove them after verifying that the owning server is no longer running. Do not use broad wildcards; remove only the specific objects for the effective UID:
   ~~~bash
-  # Check if server is running
+  # 1. Verify no darkpool_server instance is currently running
   pgrep -u $UID darkpool_server
-  # If no server is running, clean up stale objects
-  rm -f /dev/shm/darkpool_telemetry_*
-  # Stale named semaphores reside in /dev/shm/sem.darkpool_telemetry_notify_*
-  rm -f /dev/shm/sem.darkpool_telemetry_notify_*
+  # (Proceed ONLY if no live server process was found)
+
+  # 2. Remove the specific stale shared-memory segment
+  rm -f /dev/shm/darkpool_telemetry_$UID
+
+  # 3. Remove the specific stale named semaphore (POSIX named semaphores are prefixed with 'sem.')
+  rm -f /dev/shm/sem.darkpool_telemetry_notify_$UID
   ~~~
+  If custom names were configured with `--telemetry-shm` or `--telemetry-sem`, remove those exact paths (e.g. `/dev/shm/<custom_shm>` and `/dev/shm/sem.<custom_sem>`).
 
 For an uncovered issue, capture the exact command, full error text, transport mode, and relevant server-side output. Never post live moderator or match tokens publicly.

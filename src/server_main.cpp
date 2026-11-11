@@ -294,7 +294,16 @@ int main(int argc, char** argv) {
       config.telemetry_sem.empty() ? darkpool::telemetry::default_sem_name()
                                    : config.telemetry_sem);
   std::string telemetry_error;
-  if (!telemetry_publisher.start(telemetry_error)) {
+  if (!telemetry_publisher.start(
+          darkpool::telemetry::TelemetryInput{
+              .active_matches = 0U,
+              .connected_players = 0U,
+              .connected_moderators = 0U,
+              .match_capacity = kMaxMatches,
+              .players_per_match_capacity = kMaxPlayersPerMatch,
+              .player_connection_capacity = kMaxPlayerConnections,
+          },
+          telemetry_error)) {
     std::cerr << "error: telemetry startup failed: " << telemetry_error << '\n';
     return 1;
   }
@@ -488,7 +497,6 @@ int main(int argc, char** argv) {
   }
 
   const int run_result = runtime.run();
-  publish_telemetry(true);
   runtime.stop();
   systemd_notifier.stopping();
   telemetry_publisher.stop();

@@ -149,6 +149,7 @@ int main(int argc, char** argv) {
   }
 
   std::uint64_t last_sequence = snapshot->sequence;
+  const pid_t target_pid = snapshot->server_pid;
 
   while (g_interrupted == 0) {
     // Wait on semaphore for update notification or 500ms timeout to poll sequence
@@ -164,7 +165,11 @@ int main(int argc, char** argv) {
       if (g_interrupted != 0) {
         break;
       }
-      // If server shut down and unlinked or mutex destroyed, exit cleanly
+      // If server shut down, check if server process terminated
+      if (target_pid > 0 && ::kill(target_pid, 0) != 0 && errno == ESRCH) {
+        break;
+      }
+      // Check if timeout or uninitialized
       break;
     }
 
@@ -175,6 +180,13 @@ int main(int argc, char** argv) {
 
     if (updated_snapshot->server_state == ServerState::Stopping) {
       return 0;
+    }
+
+    // Safety check: if server PID terminated unexpectedly, exit follow mode
+    if (updated_snapshot->server_pid > 0 &&
+        ::kill(static_cast<pid_t>(updated_snapshot->server_pid), 0) != 0 &&
+        errno == ESRCH) {
+      break;
     }
   }
 
