@@ -607,7 +607,7 @@ inline void stop_server_unix(pid_t server_pid, const std::string& socket_path) {
     if (waited == 0) {
       if (::kill(server_pid, SIGTERM) != 0 && errno != ESRCH) {
         std::cerr << "[load-test] unable to signal test server " << server_pid
-                  << ": " << std::strerror(errno) << '\\n';
+                  << ": " << std::strerror(errno) << '\n';
       }
       do {
         waited = ::waitpid(server_pid, &status, 0);
