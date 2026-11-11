@@ -218,6 +218,8 @@ The coordinator is also responsible for privacy. A public market snapshot may go
 | `include/darkpool/server_runtime.hpp`, `src/server_runtime.cpp` | epoll server loop, connection lifecycle, TLS progression, rate limiting, bounded output, broadcast/multicast. |
 | `include/darkpool/posix_mq_control.hpp`, `src/posix_mq_control.cpp` | Linux POSIX MQ RAII wrapper, bounded local request/reply protocol, client request helper, and aggregate control service. |
 | `src/darkpool_ctl_main.cpp` | Local `ping` and `status` CLI with a private reply queue and bounded wait. |
+| `include/darkpool/posix_shm_telemetry.hpp`, `src/posix_shm_telemetry.cpp` | Linux POSIX shared memory telemetry publisher and observer with robust process-shared mutex and semaphore notifications. |
+| `src/darkpool_watch_main.cpp` | Linux-only telemetry observer CLI for nonblocking shared memory inspection (`--once`, `--follow`). |
 | `include/darkpool/client_runtime.hpp`, `src/client_runtime.cpp` | Client transports, framed send/receive, asynchronous notifications. |
 | `include/darkpool/reactor_dispatch.hpp` | Readiness decisions for normal and resumed socket/TLS operations. |
 | `src/cli.cpp`, `include/darkpool/cli.hpp` | Terminal command parsing and output formatting. |
@@ -239,6 +241,8 @@ The coordinator is also responsible for privacy. A public market snapshot may go
 | `darkpool_server` | Linux server startup, listeners, authentication, and event-loop wiring. |
 | `darkpool_client` | Interactive terminal client. |
 | `darkpool_ctl` | Local operational `ping` and aggregate `status`; no gameplay mutations. |
+| `darkpool_telemetry` | Linux-only POSIX shared memory telemetry library and process-shared synchronization primitives. |
+| `darkpool_watch` | Telemetry snapshot inspection CLI (`--once` and `--follow`); read-only, no state mutations. |
 
 The separation lets the game engine be tested independently from real network I/O, while communication primitives can be tested for framing, partial reads/writes, TLS behavior, and socket lifecycle without needing a full game to be played.
 
@@ -324,7 +328,23 @@ The interface trusts local same-user access. Queue names and random reply names 
 
 For this narrow local control requirement, POSIX MQ provides bounded message boundaries, kernel-managed delivery, and a descriptor that integrates with the existing Linux readiness loop without a daemon or another thread. D-Bus would provide a richer service/bus model and policy integration, but adds a bus dependency and a different service-discovery/authentication path. Neither primitive is universally better; MQ is chosen here to keep the control scope local and small. The trade-off is Linux-specific polling behavior and a same-user trust boundary.
 
-### 9.3 Network path: remote clients
+### 9.3 Local POSIX shared memory telemetry (IPC-2)
+
+Complementing the POSIX MQ request/reply control plane, IPC-2 introduces local POSIX shared memory (`/darkpool_telemetry_<uid>`) with process-shared robust mutex synchronization and a named POSIX semaphore (`/darkpool_telemetry_notify_<uid>`).
+
+The roles of the two IPC mechanisms are strictly separated:
+- **POSIX Message Queue (`darkpool_ctl`)**: Bidirectional request/reply control protocol for query operations (`ping`, `status`).
+- **POSIX Shared Memory (`darkpool_watch`)**: Unidirectional, zero-copy observation of the latest server aggregate telemetry snapshot without sending requests or placing query load on the server event loop.
+
+#### Synchronization and Event-Loop Guarantees
+1. **Event loop nonblocking publication:** The server publishes snapshots from its existing `epoll` thread using `pthread_mutex_trylock`. If an observer holds the mutex, the server skips that nonblocking publication without spinning or blocking gameplay networking. A subsequent state-change or periodic tick provides the next publication opportunity.
+2. **Process-shared robust mutex (`PTHREAD_PROCESS_SHARED`, `PTHREAD_MUTEX_ROBUST`):** Protects snapshot integrity across process boundaries. If a reader or server crashes while holding the mutex, the kernel marks the mutex owner dead and returns `EOWNERDEAD` on the next lock attempt. Both publisher and reader handle `EOWNERDEAD` by calling `pthread_mutex_consistent`.
+3. **Named semaphore wake-up hints:** The server signals observers via `sem_post` after releasing the mutex. The semaphore count is coalesced (`sem_getvalue <= 0` before posting, and draining in observers) so pending notifications act as bounded wake-up hints rather than an unbounded event history.
+4. **Sequence source of truth:** Observers treat the snapshot's sequence number as authoritative, polling periodically (e.g. 500 ms) in addition to semaphore waits to ensure multiple concurrent observers reliably observe state updates.
+5. **No authoritative match state or private game data:** Shared memory contains only aggregate counts (active matches, connected players/moderators, capacities, lifecycle state). No private game data (roles, player IDs, match IDs, clues, votes, balances) is ever placed into shared memory. The server's in-process engine remains the sole authority. Shared memory is not durable storage.
+6. **Linux-specific:** Like POSIX MQ, this feature is Linux-specific and requires the same local effective UID.
+
+### 9.4 Network path: remote clients
 
 For a remote client, the application uses a TCP socket to reach the server's address and port. On the TLS listener, OpenSSL negotiates TLS 1.3 before application frames are exchanged. The same length-prefixed JSON protocol is then carried inside the encrypted TLS byte stream.
 
@@ -344,7 +364,7 @@ FrameDecoder -> session authentication -> coordinator -> engine
 
 TCP makes bytes arrive reliably and in order while a connection remains viable, but it does not guarantee that one write equals one read, does not identify a game action, and does not encrypt traffic. Framing solves message boundaries; TLS solves in-transit confidentiality/integrity and server identity verification; the application protocol and coordinator solve message meaning and authorization. These are separate responsibilities.
 
-### 9.4 Security model: do not confuse transport with authorization
+### 9.5 Security model: do not confuse transport with authorization
 
 DARKPOOL applies several distinct controls:
 
