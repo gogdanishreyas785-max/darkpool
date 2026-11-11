@@ -19,6 +19,7 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <mqueue.h>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -50,6 +51,10 @@ constexpr std::size_t kExpectedInsiders = 8;
 constexpr std::size_t kExpectedInvestigators = 4;
 constexpr std::size_t kExpectedEmployees = 52;
 constexpr const char* kDefaultModeratorToken = "test-mod-token-64p";
+
+inline std::string control_queue_for_test_server(pid_t pid) {
+  return "/darkpool_ctl_" + std::to_string(geteuid()) + "_test_" + std::to_string(pid);
+}
 
 constexpr std::size_t kExpectedL6Matches = 4;
 constexpr std::size_t kExpectedL6TotalPlayers = 256;
@@ -562,9 +567,11 @@ inline pid_t spawn_server_unix(const std::string& server_path, const std::string
       dup2(dev_null, STDERR_FILENO);
       close(dev_null);
     }
+    const std::string control_queue = control_queue_for_test_server(getpid());
     execl(server_path.c_str(), server_path.c_str(),
           "--socket", socket_path.c_str(),
-          "--no-tcp", static_cast<char*>(nullptr));
+          "--no-tcp", "--control-queue", control_queue.c_str(),
+          static_cast<char*>(nullptr));
     _exit(127);
   }
   return child;
@@ -581,6 +588,10 @@ inline void stop_server_unix(pid_t server_pid, const std::string& socket_path) {
     if (::lstat(socket_path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode)) {
       (void)::unlink(socket_path.c_str());
     }
+  }
+  if (server_pid > 0) {
+    const auto queue_name = control_queue_for_test_server(server_pid);
+    (void)::mq_unlink(queue_name.c_str());
   }
 }
 
