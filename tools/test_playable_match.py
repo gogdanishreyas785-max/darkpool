@@ -14,6 +14,7 @@ Executes 4 comprehensive scenarios:
   Scenario 4: Fast-timer automated phase progression and late-action rejection over network.
 """
 
+import ctypes
 import os
 import queue
 import re
@@ -30,6 +31,46 @@ import uuid
 
 def control_queue_name():
     return f"/darkpool_ctl_{os.geteuid()}_playable_{uuid.uuid4().hex}"
+
+def telemetry_ipc_names():
+    suffix = f"{os.getpid()}_{uuid.uuid4().hex}"
+    return (
+        f"/darkpool_test_telemetry_playable_{suffix}",
+        f"/darkpool_test_telemetry_notify_playable_{suffix}",
+    )
+
+
+_libc = ctypes.CDLL(None, use_errno=True)
+_libc.shm_unlink.argtypes = [ctypes.c_char_p]
+_libc.shm_unlink.restype = ctypes.c_int
+_libc.sem_unlink.argtypes = [ctypes.c_char_p]
+_libc.sem_unlink.restype = ctypes.c_int
+
+
+def start_test_server(command, **popen_kwargs):
+    shm_name, sem_name = telemetry_ipc_names()
+    full_command = list(command) + [
+        "--telemetry-shm", shm_name,
+        "--telemetry-sem", sem_name,
+    ]
+    process = subprocess.Popen(full_command, **popen_kwargs)
+    return process, shm_name, sem_name
+
+
+def stop_test_server(process, shm_name, sem_name, timeout=3.0):
+    try:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=timeout)
+    finally:
+        # Ordinarily the server unlinks both names during graceful shutdown.
+        # These idempotent unlinks also cover a forced-exit/startup-failure path.
+        _libc.shm_unlink(shm_name.encode())
+        _libc.sem_unlink(sem_name.encode())
 
 def log(msg):
     print(f"[ACCEPTANCE] {msg}", flush=True)
@@ -145,10 +186,14 @@ def run_scenario_insider_win(server_bin, client_bin, temp_dir):
         "--tls-cert", cert_file, "--tls-key", key_file,
         "--control-queue", control_queue_name()
     ]
-    server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    server_proc, telemetry_shm, telemetry_sem = start_test_server(
+        server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     time.sleep(0.8)
     if server_proc.poll() is not None:
-        raise RuntimeError(f"Server failed to start: {server_proc.stderr.read()}")
+        startup_error = server_proc.stderr.read()
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
+        raise RuntimeError(f"Server failed to start: {startup_error}")
 
     try:
         mod_env = os.environ.copy()
@@ -234,8 +279,7 @@ def run_scenario_insider_win(server_bin, client_bin, temp_dir):
         mod.close()
         log("Scenario 1 Passed: InsiderWin verified.\n")
     finally:
-        server_proc.terminate()
-        server_proc.wait(timeout=3.0)
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
 
 
 # ==============================================================================
@@ -258,10 +302,14 @@ def run_scenario_elimination_and_employees_win(server_bin, client_bin, temp_dir)
         "--tls-cert", cert_file, "--tls-key", key_file,
         "--control-queue", control_queue_name()
     ]
-    server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    server_proc, telemetry_shm, telemetry_sem = start_test_server(
+        server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     time.sleep(0.8)
     if server_proc.poll() is not None:
-        raise RuntimeError(f"Server failed to start: {server_proc.stderr.read()}")
+        startup_error = server_proc.stderr.read()
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
+        raise RuntimeError(f"Server failed to start: {startup_error}")
 
     try:
         mod_env = os.environ.copy()
@@ -497,8 +545,7 @@ def run_scenario_elimination_and_employees_win(server_bin, client_bin, temp_dir)
         mod.close()
         log("Scenario 2 Passed: Strict-majority elimination and EmployeesWin verified.\n")
     finally:
-        server_proc.terminate()
-        server_proc.wait(timeout=3.0)
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
 
 
 def roles_inv_lookup(roles, seat):
@@ -526,10 +573,14 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         "--tls-cert", cert_file, "--tls-key", key_file,
         "--control-queue", control_queue_name()
     ]
-    server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    server_proc, telemetry_shm, telemetry_sem = start_test_server(
+        server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+    )
     time.sleep(0.8)
     if server_proc.poll() is not None:
-        raise RuntimeError(f"Server failed to start: {server_proc.stderr.read()}")
+        startup_error = server_proc.stderr.read()
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
+        raise RuntimeError(f"Server failed to start: {startup_error}")
 
     try:
         # Case 1: Valid Trust Connection
@@ -553,7 +604,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         log("Case 3: Connecting with IP SAN mismatch (cert for 192.168.1.99, connecting to 127.0.0.1)...")
         san_port = find_free_port()
         san_key, san_cert, san_fp = generate_cert(temp_dir, "192.168.1.99")
-        san_server = subprocess.Popen(
+        san_server, san_telemetry_shm, san_telemetry_sem = start_test_server(
             [server_bin, "--no-tcp", "--no-unix", "--tls-bind-address", "127.0.0.1", "--tls-port", str(san_port),
              "--tls-cert", san_cert, "--tls-key", san_key,
              "--control-queue", control_queue_name()],
@@ -568,8 +619,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
             assert res3.returncode != 0, f"Expected rejection on SAN mismatch, got {res3.returncode}"
             log(f"  -> [PASS] Identity mismatch rejected (exit code {res3.returncode}).")
         finally:
-            san_server.terminate()
-            san_server.wait(timeout=2.0)
+            stop_test_server(san_server, san_telemetry_shm, san_telemetry_sem, timeout=2.0)
 
         # Case 4: Plaintext Attempt Against TLS Port
         log("Case 4: Sending plaintext payload to TLS port (fails closed without crashing server)...")
@@ -627,7 +677,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         log("Case 8: Sending oversized / malformed frame to verify connection isolation...")
         # Start server with TCP port enabled for raw frame testing
         tcp_port = find_free_port()
-        tcp_server = subprocess.Popen(
+        tcp_server, tcp_telemetry_shm, tcp_telemetry_sem = start_test_server(
             [server_bin, "--no-unix", "--no-tls", "--bind-address", "127.0.0.1", "--port", str(tcp_port),
              "--control-queue", control_queue_name()],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
@@ -655,8 +705,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
             client_a.close()
             log("  -> [PASS] Offender closed; benign client survived without disruption.")
         finally:
-            tcp_server.terminate()
-            tcp_server.wait(timeout=2.0)
+            stop_test_server(tcp_server, tcp_telemetry_shm, tcp_telemetry_sem, timeout=2.0)
 
         # Case 9: Player Admission Controls on Protected Match
         log("Case 9: Testing player admission controls on protected match...")
@@ -717,8 +766,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
 
         log("Scenario 3 Passed: All security negative tests succeeded.\n")
     finally:
-        server_proc.terminate()
-        server_proc.wait(timeout=3.0)
+        stop_test_server(server_proc, telemetry_shm, telemetry_sem)
 
 
 # ==============================================================================
