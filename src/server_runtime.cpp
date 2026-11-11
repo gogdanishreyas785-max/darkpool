@@ -481,18 +481,21 @@ bool ServerRuntime::step(int timeout_ms) {
         continue;
       }
       should_terminate_ = true;
-      break;
+      return false;
     }
     if (tcp_listener_ >= 0 && fd == tcp_listener_) {
       accept_pending_clients(fd, false);
+      if (should_terminate_) return false;
       continue;
     }
     if (tls_listener_ >= 0 && fd == tls_listener_) {
       accept_pending_clients(fd, true);
+      if (should_terminate_) return false;
       continue;
     }
     if (unix_listener_ >= 0 && fd == unix_listener_) {
       accept_pending_clients(fd, false);
+      if (should_terminate_) return false;
       continue;
     }
 
@@ -511,6 +514,7 @@ bool ServerRuntime::step(int timeout_ms) {
         event_sources_.erase(event_source);
         std::cerr << "[server] epoll event source removed after descriptor error\n";
       }
+      if (should_terminate_) return false;
       continue;
     }
 
@@ -521,6 +525,7 @@ bool ServerRuntime::step(int timeout_ms) {
     const auto flags = events[i].events;
     if ((flags & EPOLLERR) != 0U) {
       drop_connection(fd);
+      if (should_terminate_) return false;
       continue;
     }
 
@@ -540,10 +545,12 @@ bool ServerRuntime::step(int timeout_ms) {
         found->second.tls_handshake_want_read = want_read;
         found->second.tls_handshake_want_write = want_write;
         (void)update_connection_events(fd, found->second);
+        if (should_terminate_) return false;
         continue;
       } else {
         std::cerr << "[server] connection " << fd << " closed: handshake failure\n";
         drop_connection(fd);
+        if (should_terminate_) return false;
         continue;
       }
     }
@@ -587,6 +594,11 @@ bool ServerRuntime::step(int timeout_ms) {
     if (!keep) {
       drop_connection(fd);
     }
+    if (should_terminate_) return false;
+  }
+
+  if (should_terminate_) {
+    return false;
   }
 
   // Handshake timeout enforcement
@@ -602,6 +614,10 @@ bool ServerRuntime::step(int timeout_ms) {
   }
   for (const auto client_fd : expired) {
     drop_connection(client_fd);
+  }
+
+  if (should_terminate_) {
+    return false;
   }
 
   if (tick_handler_) {

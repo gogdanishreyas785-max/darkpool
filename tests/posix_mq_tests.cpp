@@ -305,8 +305,106 @@ void test_control_server_validation_and_duplicate_requests() {
   CHECK(valid_reply.has_value());
   if (!valid_reply) return;
   send_request(*inbox, *valid_reply, valid_id, "ping");
-  server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+  const bool ping_shutdown = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+  CHECK(!ping_shutdown);
   CHECK(receive_json(*valid_reply).has_value());
+
+  const std::string shutdown_id(32U, '8');
+  auto shutdown_reply = MessageQueue::create_exclusive(reply_queue_name(shutdown_id), O_RDONLY,
+                                                        QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(shutdown_reply.has_value());
+  if (shutdown_reply) {
+    send_request(*inbox, *shutdown_reply, shutdown_id, "shutdown");
+    const bool shutdown_accepted = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    CHECK(shutdown_accepted);
+    const auto shutdown_res = receive_json(*shutdown_reply);
+    CHECK(shutdown_res.has_value());
+    CHECK(shutdown_res && (*shutdown_res)["ok"] == true);
+    CHECK(shutdown_res && (*shutdown_res)["operation"] == "shutdown");
+    CHECK(shutdown_res && (*shutdown_res)["request_id"] == shutdown_id);
+    CHECK(shutdown_res && (*shutdown_res)["result"]["shutdown_requested"] == true);
+
+    // Duplicate shutdown request returns cached response, but returns false for shutdown_requested
+    send_request(*inbox, *shutdown_reply, shutdown_id, "shutdown");
+    const bool duplicate_shutdown = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    CHECK(!duplicate_shutdown);
+    const auto duplicate_res = receive_json(*shutdown_reply);
+    CHECK(duplicate_res == shutdown_res);
+  }
+
+  // Verify failed acknowledgement delivery does not cache positive response or request shutdown
+  const std::string fail_ack_id(32U, '9');
+  auto full_reply = MessageQueue::create_exclusive(reply_queue_name(fail_ack_id), O_RDWR,
+                                                    QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(full_reply.has_value());
+  if (full_reply) {
+    // Fill the reply queue to its capacity (1 message)
+    int send_err = 0;
+    CHECK(full_reply->send("dummy_message", 0U, send_err));
+
+    // Submit shutdown request pointing to the full reply queue
+    send_request(*inbox, *full_reply, fail_ack_id, "shutdown");
+    const bool accepted_when_full = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    // Acceptance MUST be false because acknowledgement delivery failed
+    CHECK(!accepted_when_full);
+
+    // Drain the dummy message from the reply queue
+    unsigned prio = 0U;
+    int recv_err = 0;
+    const auto drained = full_reply->receive(prio, recv_err);
+    CHECK(drained.has_value() && *drained == "dummy_message");
+
+    // Retry the exact same request ID now that the reply queue has space
+    send_request(*inbox, *full_reply, fail_ack_id, "shutdown");
+    const bool accepted_on_retry = server.process_readable([] { return darkpool::control::StatusSnapshot{}; });
+    // Now that the acknowledgement can be delivered, shutdown must be accepted!
+    CHECK(accepted_on_retry);
+    const auto retry_res = receive_json(*full_reply);
+    CHECK(retry_res.has_value());
+    CHECK(retry_res && (*retry_res)["ok"] == true);
+    CHECK(retry_res && (*retry_res)["operation"] == "shutdown");
+    CHECK(retry_res && (*retry_res)["request_id"] == fail_ack_id);
+    CHECK(retry_res && (*retry_res)["result"]["shutdown_requested"] == true);
+  }
+
+  // Verify invalid shutdown requests do not trigger shutdown
+  const std::string bad_ver_shutdown_id(32U, '1');
+  auto bad_ver_reply = MessageQueue::create_exclusive(reply_queue_name(bad_ver_shutdown_id), O_RDONLY,
+                                                       QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(bad_ver_reply.has_value());
+  if (bad_ver_reply) {
+    send_request(*inbox, *bad_ver_reply, bad_ver_shutdown_id, "shutdown", 42);
+    CHECK(!server.process_readable([] { return darkpool::control::StatusSnapshot{}; }));
+    const auto res = receive_json(*bad_ver_reply);
+    CHECK(res && (*res)["error"] == "unsupported_version");
+  }
+
+  const std::string malformed_shutdown_id(32U, '2');
+  auto malformed_shutdown_reply = MessageQueue::create_exclusive(reply_queue_name(malformed_shutdown_id), O_RDONLY,
+                                                                 QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(malformed_shutdown_reply.has_value());
+  if (malformed_shutdown_reply) {
+    send_request(*inbox, *malformed_shutdown_reply, malformed_shutdown_id, "shutdown", 1, true);
+    CHECK(!server.process_readable([] { return darkpool::control::StatusSnapshot{}; }));
+    const auto res = receive_json(*malformed_shutdown_reply);
+    CHECK(res && (*res)["error"] == "invalid_request");
+  }
+
+  const std::string conflict_shutdown_id(32U, '7');
+  auto conflict_reply = MessageQueue::create_exclusive(reply_queue_name(conflict_shutdown_id), O_RDONLY,
+                                                       QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+  CHECK(conflict_reply.has_value());
+  if (conflict_reply) {
+    send_request(*inbox, *conflict_reply, conflict_shutdown_id, "ping");
+    CHECK(!server.process_readable([] { return darkpool::control::StatusSnapshot{}; }));
+    CHECK(receive_json(*conflict_reply).has_value());
+
+    // Submit shutdown with same request ID but different operation -> conflict!
+    send_request(*inbox, *conflict_reply, conflict_shutdown_id, "shutdown");
+    CHECK(!server.process_readable([] { return darkpool::control::StatusSnapshot{}; }));
+    const auto res = receive_json(*conflict_reply);
+    CHECK(res && (*res)["error"] == "request_id_conflict");
+  }
 
   if (::geteuid() != 0) {
     const std::string private_id(32U, '4');
@@ -901,15 +999,85 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
     CHECK(result.exit_code == 0);
   }
 
-  std::cerr << "[mq test] terminating server process\n";
-  server.terminate(SIGTERM);
-  std::cerr << "[mq test] server process reaped\n";
-  CHECK(server.wait_for(0ms).has_value() || server.pid() < 0);
+  std::cerr << "[mq test] terminating server via darkpool_ctl shutdown\n";
+  auto shutdown_child = launch_cli(cli_executable, queue_name, "shutdown");
+  const auto shutdown_result = collect_cli(shutdown_child);
+  std::cerr << "[mq test] shutdown CLI completed with " << shutdown_result.exit_code << '\n';
+  CHECK(shutdown_result.exit_code == 0);
+  const auto shutdown_json = json::parse(shutdown_result.output, nullptr, false);
+  CHECK(!shutdown_json.is_discarded());
+  CHECK(shutdown_json.value("ok", false) == true);
+  CHECK(shutdown_json.value("operation", std::string{}) == "shutdown");
+  CHECK(shutdown_json.contains("result") && shutdown_json["result"].is_object());
+  CHECK(shutdown_json.contains("result") && shutdown_json["result"].value("shutdown_requested", false) == true);
+
+  // Negative test: verify CLI exits nonzero when receiving ok:true response without shutdown_requested == true
+  std::string fake_err;
+  const auto fake_queue_name = server_queue_name("fake_cli_test");
+  auto fake_server = MessageQueue::create_exclusive(fake_queue_name, O_RDWR,
+                                                    QueueLimits{darkpool::control::kRequestQueueDepth, darkpool::control::kMaxMessageBytes},
+                                                    fake_err);
+  CHECK(fake_server.has_value());
+  if (fake_server) {
+    auto invalid_ack_child = launch_cli(cli_executable, fake_queue_name, "shutdown");
+    // Wait for the CLI to post its request to fake_server
+    unsigned p = 0;
+    int err_no = 0;
+    std::optional<std::string> req_msg;
+    const auto dl = std::chrono::steady_clock::now() + 2s;
+    while (std::chrono::steady_clock::now() < dl) {
+      req_msg = fake_server->receive(p, err_no);
+      if (req_msg) break;
+      ::poll(nullptr, 0, 10);
+    }
+    CHECK(req_msg.has_value());
+    if (req_msg) {
+      const auto req_json = json::parse(*req_msg);
+      const auto rep_name = req_json.value("reply_to", "");
+      const auto req_id = req_json.value("request_id", "");
+      auto rep_q = MessageQueue::open_existing(rep_name, O_WRONLY, fake_err);
+      CHECK(rep_q.has_value());
+      if (rep_q) {
+        // Send a response that has ok:true but lacks result.shutdown_requested == true
+        const json bad_ack{{"version", 1}, {"request_id", req_id}, {"operation", "shutdown"},
+                           {"ok", true}, {"result", {{"unrelated_field", true}}}};
+        int send_e = 0;
+        CHECK(rep_q->send(bad_ack.dump(), 0, send_e));
+      }
+    }
+    const auto invalid_ack_result = collect_cli(invalid_ack_child);
+    // Must exit with a nonzero status code (specifically 5)
+    CHECK(invalid_ack_result.exit_code != 0);
+  }
+
+  const auto server_exit = server.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
+  std::cerr << "[mq test] server process exited cleanly with code " << (server_exit.has_value() ? *server_exit : -1) << '\n';
   std::cerr << "[mq test] checking queue cleanup\n";
   assert_queue_absent(queue_name);
   std::cerr << "[mq test] queue cleanup checked\n";
   CHECK(::access(socket_path.c_str(), F_OK) != 0);
   std::cerr << "[mq test] socket cleanup checked\n";
+}
+
+void test_real_server_sigterm_cleanup(const char* server_executable) {
+  std::cerr << "[mq test] starting SIGTERM process cleanup test\n";
+  const auto token = unique_token();
+  const auto queue_name = server_queue_name("sigterm_" + token);
+  const auto socket_path = "/tmp/darkpool_sigterm_" + token + ".sock";
+  auto server = launch_server(server_executable, queue_name, socket_path);
+  CHECK(server.pid() >= 0);
+  if (server.pid() < 0) return;
+  wait_for_server_queue(queue_name, server);
+
+  CHECK(::kill(server.pid(), SIGTERM) == 0);
+  const auto server_exit = server.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
+  assert_queue_absent(queue_name);
+  CHECK(::access(socket_path.c_str(), F_OK) != 0);
+  std::cerr << "[mq test] SIGTERM process cleanup test passed\n";
 }
 
 void test_partial_startup_cleanup(const char* server_executable) {
@@ -936,6 +1104,7 @@ int main(int argc, char** argv) {
   std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);
+    test_real_server_sigterm_cleanup(argv[1]);
     test_partial_startup_cleanup(argv[1]);
   } else {
     CHECK(false && "server and darkpool_ctl executable paths are required");

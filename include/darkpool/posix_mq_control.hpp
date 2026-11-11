@@ -105,7 +105,7 @@ class ControlServer {
   [[nodiscard]] bool start(std::string& error_message);
   [[nodiscard]] const std::string& queue_name() const noexcept { return queue_name_; }
   [[nodiscard]] int descriptor() const noexcept { return queue_.descriptor(); }
-  void process_readable(const StatusProvider& status_provider) noexcept;
+  bool process_readable(const StatusProvider& status_provider) noexcept;
 
   [[nodiscard]] static std::string default_queue_name();
   [[nodiscard]] static bool valid_server_queue_name(std::string_view name);
@@ -119,10 +119,10 @@ class ControlServer {
     network::json response;
   };
 
-  void process_message(std::string_view message,
-                       const StatusProvider& status_provider);
-  void send_response(MessageQueue& reply_queue,
-                     const network::json& response) noexcept;
+  [[nodiscard]] bool process_message(std::string_view message,
+                                     const StatusProvider& status_provider);
+  [[nodiscard]] bool send_response(MessageQueue& reply_queue,
+                                   const network::json& response) noexcept;
   [[nodiscard]] static network::json error_response(
       std::string_view request_id, std::string_view operation,
       std::string_view error_code);

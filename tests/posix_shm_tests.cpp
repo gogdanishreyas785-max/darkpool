@@ -14,6 +14,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <iostream>
+#include <mqueue.h>
 #include <poll.h>
 #include <string>
 #include <string_view>
@@ -572,9 +573,15 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   (void)::close(player_fd);
   (void)::close(mod_fd);
 
-  // 8. Orderly shutdown publishes stopping state and cleans up owned IPC resources
-  std::cerr << "[shm test] sending SIGTERM to server\n";
-  server_child.terminate(SIGTERM);
+  // 8. Orderly shutdown via darkpool_ctl shutdown publishes stopping state and cleans up owned IPC resources
+  std::cerr << "[shm test] sending shutdown command via darkpool_ctl\n";
+  auto ctl_shutdown = launch_cmd({ctl_bin, "--queue", queue_name, "shutdown"});
+  auto shutdown_res = collect_cmd(ctl_shutdown);
+  CHECK(shutdown_res.exit_code == 0);
+  const auto shutdown_json = json::parse(shutdown_res.output, nullptr, false);
+  CHECK(shutdown_json.value("ok", false) == true);
+  CHECK(shutdown_json.value("operation", std::string{}) == "shutdown");
+  CHECK(shutdown_json["result"].value("shutdown_requested", false) == true);
 
   // Wait for `darkpool_watch --follow` to detect stopping state and exit cleanly (code 0)
   auto follow_res = collect_cmd(watch_follow, 5s);
@@ -586,8 +593,10 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   CHECK(follow_res.output.find("\"connected_players\": 1") != std::string::npos ||
         follow_res.output.find("\"active_matches\": 1") != std::string::npos);
 
-  // Ensure server exits gracefully after SIGTERM
-  (void)server_child.wait_for(5s);
+  // Ensure server exits gracefully after darkpool_ctl shutdown
+  const auto server_exit = server_child.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
 
   // Verify IPC cleanup
   errno = 0;
@@ -602,6 +611,114 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
 
   (void)::unlink(socket_path.c_str());
   std::cerr << "[shm test] integration test completed successfully\n";
+}
+
+void test_server_sigterm_shutdown(const char* server_bin, const char* watch_bin) {
+  std::cerr << "[shm test] running focused SIGTERM server shutdown test\n";
+
+  const auto token = unique_token();
+  const auto shm_name = "/darkpool_test_sigterm_shm_" + token;
+  const auto sem_name = "/darkpool_test_sigterm_sem_" + token;
+  const auto queue_name = darkpool::control::ControlServer::default_queue_name() + "_sigterm_" + token;
+  const auto socket_path = "/tmp/darkpool_shm_sigterm_" + token + ".sock";
+
+  std::vector<std::string> server_cmd = {
+      server_bin,
+      "--socket", socket_path,
+      "--no-tcp",
+      "--control-queue", queue_name,
+      "--telemetry-shm", shm_name,
+      "--telemetry-sem", sem_name,
+  };
+
+  const pid_t server_pid = ::fork();
+  CHECK(server_pid >= 0);
+  if (server_pid == 0) {
+    const int devnull = ::open("/dev/null", O_WRONLY);
+    if (devnull >= 0) {
+      (void)::dup2(devnull, STDOUT_FILENO);
+      (void)::dup2(devnull, STDERR_FILENO);
+      (void)::close(devnull);
+    }
+    std::vector<char*> argv;
+    for (const auto& a : server_cmd) argv.push_back(const_cast<char*>(a.c_str()));
+    argv.push_back(nullptr);
+    ::execv(argv[0], argv.data());
+    _exit(127);
+  }
+  ChildProcess server_child(server_pid);
+
+  // Wait for server to create shm, sem, and control queue
+  const auto start_deadline = std::chrono::steady_clock::now() + 5s;
+  bool objects_created = false;
+  while (std::chrono::steady_clock::now() < start_deadline) {
+    int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+    if (fd >= 0) {
+      (void)::close(fd);
+      sem_t* sem = ::sem_open(sem_name.c_str(), 0);
+      if (sem != SEM_FAILED) {
+        (void)::sem_close(sem);
+        objects_created = true;
+        break;
+      }
+    }
+    (void)::poll(nullptr, 0U, 10);
+  }
+  CHECK(objects_created);
+
+  const auto q_deadline = std::chrono::steady_clock::now() + 5s;
+  bool q_ready = false;
+  while (std::chrono::steady_clock::now() < q_deadline) {
+    const mqd_t q = ::mq_open(queue_name.c_str(), O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (q != static_cast<mqd_t>(-1)) {
+      (void)::mq_close(q);
+      q_ready = true;
+      break;
+    }
+    (void)::poll(nullptr, 0U, 10);
+  }
+  CHECK(q_ready);
+
+  // Launch darkpool_watch --follow in background to observe stopping telemetry state
+  auto watch_follow = launch_cmd({watch_bin, "--shm", shm_name, "--sem", sem_name, "--follow"});
+  CHECK(watch_follow.process.pid() >= 0);
+
+  // Send SIGTERM to server process using kill()
+  CHECK(::kill(server_child.pid(), SIGTERM) == 0);
+
+  // Observer must detect stopping state and exit cleanly (code 0)
+  auto follow_res = collect_cmd(watch_follow, 5s);
+  CHECK(follow_res.exit_code == 0);
+  CHECK(follow_res.output.find("stopping") != std::string::npos);
+
+  // Wait for server process to exit with code 0
+  const auto server_exit = server_child.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
+
+  // Verify POSIX MQ queue cleanup
+  errno = 0;
+  const mqd_t mq_check = ::mq_open(queue_name.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+  CHECK(mq_check == static_cast<mqd_t>(-1) && errno == ENOENT);
+  if (mq_check != static_cast<mqd_t>(-1)) (void)::mq_close(mq_check);
+
+  // Verify UNIX socket cleanup
+  CHECK(::access(socket_path.c_str(), F_OK) != 0);
+
+  // Verify SHM cleanup
+  errno = 0;
+  int test_shm = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+  CHECK(test_shm < 0 && errno == ENOENT);
+  if (test_shm >= 0) (void)::close(test_shm);
+
+  // Verify semaphore cleanup
+  errno = 0;
+  sem_t* test_sem = ::sem_open(sem_name.c_str(), 0);
+  CHECK(test_sem == SEM_FAILED && errno == ENOENT);
+  if (test_sem != SEM_FAILED) (void)::sem_close(test_sem);
+
+  (void)::unlink(socket_path.c_str());
+  std::cerr << "[shm test] SIGTERM server shutdown test passed\n";
 }
 
 
@@ -674,6 +791,7 @@ int main(int argc, char** argv) {
 
   test_unit_and_edge_cases();
   test_server_and_watch_integration(argv[1], argv[2], argv[3]);
+  test_server_sigterm_shutdown(argv[1], argv[2]);
   test_load_harness_cleanup_after_forced_server_exit(argv[1]);
 
   if (g_failures == 0) {

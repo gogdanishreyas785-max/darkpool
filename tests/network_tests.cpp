@@ -1,5 +1,11 @@
 #include "darkpool/network.hpp"
 
+#if defined(__linux__)
+#include "darkpool/server_runtime.hpp"
+#include <sys/epoll.h>
+#include <unistd.h>
+#endif
+
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -272,6 +278,71 @@ void test_fragmented_and_coalesced_max_frames() {
   CHECK(decoder.buffered_bytes() == 0U);
 }
 
+#if defined(__linux__)
+void test_server_runtime_step_shutdown_batch_truncation() {
+  int pipe1[2]{-1, -1};
+  int pipe2[2]{-1, -1};
+  CHECK(::pipe(pipe1) == 0);
+  CHECK(::pipe(pipe2) == 0);
+
+  // Write 1 byte to each pipe so both are immediately EPOLLIN ready
+  char byte = 'x';
+  CHECK(::write(pipe1[1], &byte, 1) == 1);
+  CHECK(::write(pipe2[1], &byte, 1) == 1);
+
+  darkpool::network::ServerRuntimeConfig config;
+  config.handle_signals = false;
+  darkpool::network::ServerRuntime runtime(config);
+
+  std::string err;
+  CHECK(runtime.start(err));
+
+  int callback1_runs = 0;
+  int callback2_runs = 0;
+  bool tick_ran = false;
+
+  runtime.set_tick_handler([&] {
+    tick_ran = true;
+  });
+
+  // Both callbacks request shutdown. If shutdown stops dispatching subsequent events in the batch,
+  // exactly one callback will run!
+  CHECK(runtime.add_epoll_event_source(pipe1[0], [&](std::uint32_t events) {
+    if ((events & EPOLLIN) != 0U) {
+      ++callback1_runs;
+      runtime.request_shutdown();
+    }
+  }, err));
+
+  CHECK(runtime.add_epoll_event_source(pipe2[0], [&](std::uint32_t events) {
+    if ((events & EPOLLIN) != 0U) {
+      ++callback2_runs;
+      runtime.request_shutdown();
+    }
+  }, err));
+
+  // Run a single step()
+  const bool step_result = runtime.step(100);
+
+  // step() must return false when shutdown is requested
+  CHECK(!step_result);
+
+  // Exactly one callback must have run; the second event in the batch must NOT have been dispatched
+  CHECK((callback1_runs == 1 && callback2_runs == 0) || (callback1_runs == 0 && callback2_runs == 1));
+
+  // tick_handler must not have been invoked
+  CHECK(!tick_ran);
+
+  // Normal stop cleanup must be safe
+  runtime.stop();
+
+  ::close(pipe1[0]);
+  ::close(pipe1[1]);
+  ::close(pipe2[0]);
+  ::close(pipe2[1]);
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -282,6 +353,9 @@ int main() {
   test_malformed_and_oversized_frames();
   test_partial_output_and_queue_bound();
   test_fragmented_and_coalesced_max_frames();
+#if defined(__linux__)
+  test_server_runtime_step_shutdown_batch_truncation();
+#endif
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "All network protocol tests passed.\n";
   return EXIT_SUCCESS;

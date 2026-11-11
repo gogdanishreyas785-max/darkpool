@@ -599,39 +599,44 @@ bool ControlServer::start(std::string& error_message) {
   return true;
 }
 
-void ControlServer::process_readable(const StatusProvider& status_provider) noexcept {
-  if (!queue_.valid()) return;
+bool ControlServer::process_readable(const StatusProvider& status_provider) noexcept {
+  if (!queue_.valid()) return false;
+  bool shutdown_requested = false;
   try {
     for (long processed = 0; processed < kMaxMessagesPerDispatch; ++processed) {
       unsigned priority = 0U;
       int error_number = 0;
       const auto message = queue_.receive(priority, error_number);
       if (!message) {
-        if (error_number == EAGAIN || error_number == EWOULDBLOCK) return;
+        if (error_number == EAGAIN || error_number == EWOULDBLOCK) return shutdown_requested;
         if (error_number == EINTR) continue;
-        return;
+        return shutdown_requested;
       }
       if (priority != 0U) continue;
-      process_message(*message, status_provider);
+      if (process_message(*message, status_provider)) {
+        shutdown_requested = true;
+        break;
+      }
     }
   } catch (...) {
     // Malformed or resource-exhausting requests must not escape the epoll loop.
   }
+  return shutdown_requested;
 }
 
-void ControlServer::process_message(std::string_view message,
+bool ControlServer::process_message(std::string_view message,
                                     const StatusProvider& status_provider) {
   Json request_json = Json::parse(message.begin(), message.end(), nullptr, false);
-  if (request_json.is_discarded() || !request_json.is_object()) return;
+  if (request_json.is_discarded() || !request_json.is_object()) return false;
   const auto request_id_it = request_json.find("request_id");
   const auto reply_to_it = request_json.find("reply_to");
   if (request_id_it == request_json.end() || !request_id_it->is_string() ||
       reply_to_it == request_json.end() || !reply_to_it->is_string()) {
-    return;
+    return false;
   }
   const auto request_id = request_id_it->get<std::string>();
   const auto reply_to = reply_to_it->get<std::string>();
-  if (!valid_request_id(request_id) || !valid_reply_queue_name(reply_to)) return;
+  if (!valid_request_id(request_id) || !valid_reply_queue_name(reply_to)) return false;
 
   const auto operation_it = request_json.find("operation");
   const std::string operation = operation_it != request_json.end() && operation_it->is_string()
@@ -639,43 +644,48 @@ void ControlServer::process_message(std::string_view message,
 
   std::string open_error;
   auto reply = MessageQueue::open_existing(reply_to, O_WRONLY, open_error);
-  if (!reply || !reply->has_permissions(::geteuid(), kQueuePermissions)) return;
+  if (!reply || !reply->has_permissions(::geteuid(), kQueuePermissions)) return false;
   std::string attributes_error;
-  if (!valid_message_queue_attributes(*reply, QueueLimits{kReplyQueueDepth, kMaxMessageBytes}, attributes_error)) return;
+  if (!valid_message_queue_attributes(*reply, QueueLimits{kReplyQueueDepth, kMaxMessageBytes}, attributes_error)) return false;
 
   auto respond_error = [&](std::string_view code) {
-    send_response(*reply, error_response(request_id, operation, code));
+    (void)send_response(*reply, error_response(request_id, operation, code));
   };
 
   const auto version_it = request_json.find("version");
   if (version_it == request_json.end() || !version_it->is_number_integer()) {
     respond_error("invalid_request");
-    return;
+    return false;
   }
   const bool supported_version = version_it->is_number_unsigned()
       ? version_it->get<std::uint64_t>() == 1U
       : version_it->get<std::int64_t>() == 1;
   if (!supported_version) {
     respond_error("unsupported_version");
-    return;
+    return false;
   }
   if (!valid_json_keys(request_json) || operation.empty()) {
     respond_error("invalid_request");
-    return;
+    return false;
   }
 
   const auto cached = response_cache_.find(request_id);
   if (cached != response_cache_.end()) {
     if (cached->second.reply_queue == reply_to && cached->second.operation == operation) {
-      send_response(*reply, cached->second.response);
+      (void)send_response(*reply, cached->second.response);
     } else {
       respond_error("request_id_conflict");
     }
-    return;
+    return false;
   }
 
   Json response;
-  if (operation == "ping") {
+  bool is_shutdown = false;
+  if (operation == "shutdown") {
+    response = Json{{"version", 1}, {"request_id", request_id}, {"operation", operation},
+                    {"ok", true}, {"result", {{"shutdown_requested", true}}}};
+    is_shutdown = true;
+  } else if (operation == "ping") {
     response = Json{{"version", 1}, {"request_id", request_id}, {"operation", operation},
                     {"ok", true}, {"result", {{"server_available", true},
                                                 {"control_channel", "ready"}}}};
@@ -701,24 +711,49 @@ void ControlServer::process_message(std::string_view message,
     response = error_response(request_id, operation, "unsupported_operation");
   }
 
-  response_cache_.insert_or_assign(request_id, CachedResponse{reply_to, operation, response});
-  response_order_.push_back(request_id);
+  auto cache_it = response_cache_.end();
+  bool order_pushed = false;
+  try {
+    auto [it, inserted] = response_cache_.insert_or_assign(
+        request_id, CachedResponse{reply_to, operation, response});
+    cache_it = it;
+    response_order_.push_back(request_id);
+    order_pushed = true;
+  } catch (...) {
+    if (cache_it != response_cache_.end()) {
+      response_cache_.erase(cache_it);
+    }
+    return false;
+  }
+
+  const bool sent = send_response(*reply, response);
+  if (!sent) {
+    if (cache_it != response_cache_.end()) {
+      response_cache_.erase(cache_it);
+    }
+    if (order_pushed && !response_order_.empty() && response_order_.back() == request_id) {
+      response_order_.pop_back();
+    }
+    return false;
+  }
+
   while (response_order_.size() > kRequestCacheCapacity) {
     response_cache_.erase(response_order_.front());
     response_order_.pop_front();
   }
-  send_response(*reply, response);
+  return is_shutdown;
 }
 
-void ControlServer::send_response(MessageQueue& reply_queue,
+bool ControlServer::send_response(MessageQueue& reply_queue,
                                   const Json& response) noexcept {
   try {
     const auto encoded = response.dump();
-    if (encoded.size() > static_cast<std::size_t>(kMaxMessageBytes)) return;
+    if (encoded.size() > static_cast<std::size_t>(kMaxMessageBytes)) return false;
     int error_number = 0;
-    (void)reply_queue.send(encoded, 0U, error_number);
+    return reply_queue.send(encoded, 0U, error_number);
   } catch (...) {
     // A reply queue may be gone/full; control-plane failures must not escape the event loop.
+    return false;
   }
 }
 
@@ -734,7 +769,7 @@ std::optional<ClientResponse> request(
     std::chrono::milliseconds timeout, std::string& error_message,
     const volatile sig_atomic_t* interrupted) {
   if (!ControlServer::valid_server_queue_name(server_queue_name) ||
-      (operation != "ping" && operation != "status") || timeout <= std::chrono::milliseconds::zero() ||
+      (operation != "ping" && operation != "status" && operation != "shutdown") || timeout <= std::chrono::milliseconds::zero() ||
       timeout > std::chrono::seconds(60)) {
     error_message = "invalid control request parameters";
     return std::nullopt;

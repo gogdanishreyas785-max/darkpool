@@ -14,7 +14,7 @@ DARKPOOL is a C++20, terminal-based social-deduction and market game. One author
 - [Threat model](docs/threat-model.md) — security assets, boundaries, and residual risks.
 - [Test and evidence plan](docs/test-plan.md) — developer verification and performance evidence.
 - [systemd service deployment](docs/systemd.md) — optional readiness and watchdog integration.
-- [Local POSIX MQ control](docs/user-guide.md#12-local-posix-mq-control) — same-user `darkpool_ctl ping` and aggregate `status`.
+- [Local POSIX MQ control](docs/user-guide.md#12-local-posix-mq-control) — same-user `darkpool_ctl ping`, aggregate `status`, and graceful `shutdown`.
 - [Local POSIX shared memory telemetry](docs/user-guide.md#13-local-posix-shared-memory-telemetry-observer) — same-user `darkpool_watch` telemetry snapshot observer.
 
 ## Recommended setup paths
@@ -63,7 +63,7 @@ Vote-resolution messages report aggregate ballot counts (submitted, explicitly a
 | `darkpool_coordinator` | Session-to-match routing, authorization, token checks, timers, notifications. |
 | `darkpool_cli` | Terminal command parsing and output formatting. |
 | `darkpool_server`, `darkpool_client` | Linux server and interactive client executables. |
-| `darkpool_ctl` | Linux-only local `ping` and aggregate `status` over POSIX message queues. |
+| `darkpool_ctl` | Linux-only local `ping`, aggregate `status`, and graceful `shutdown` over POSIX message queues. |
 | `darkpool_watch` | Linux-only POSIX shared memory telemetry observer for server aggregate state. |
 
 ### Communications library: source files

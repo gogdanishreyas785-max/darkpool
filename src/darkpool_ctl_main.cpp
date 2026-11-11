@@ -15,7 +15,7 @@ volatile std::sig_atomic_t interrupted = 0;
 void handle_signal(int) { interrupted = 1; }
 
 void print_usage(std::ostream& stream) {
-  stream << "Usage: darkpool_ctl [--queue NAME] [--timeout-ms N] <ping|status>\n";
+  stream << "Usage: darkpool_ctl [--queue NAME] [--timeout-ms N] <ping|status|shutdown>\n";
 }
 
 bool parse_timeout(std::string_view text, std::chrono::milliseconds& timeout) {
@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     operation = argument;
   }
 
-  if (operation.empty() || (operation != "ping" && operation != "status") ||
+  if (operation.empty() || (operation != "ping" && operation != "status" && operation != "shutdown") ||
       !darkpool::control::ControlServer::valid_server_queue_name(queue_name)) {
     print_usage(std::cerr);
     return 2;
@@ -90,7 +90,19 @@ int main(int argc, char** argv) {
   }
 
   std::cout << response->message.dump(2) << '\n';
-  return response->message.value("ok", false) ? 0 : 5;
+  if (!response->message.value("ok", false)) {
+    return 5;
+  }
+  if (operation == "shutdown") {
+    if (!response->message.contains("result") || !response->message["result"].is_object() ||
+        !response->message["result"].contains("shutdown_requested") ||
+        !response->message["result"]["shutdown_requested"].is_boolean() ||
+        !response->message["result"]["shutdown_requested"].get<bool>()) {
+      std::cerr << "error: invalid shutdown acknowledgement payload\n";
+      return 5;
+    }
+  }
+  return 0;
 }
 
 #else

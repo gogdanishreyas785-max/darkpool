@@ -460,7 +460,7 @@ int main(int argc, char** argv) {
           control_server.descriptor(),
           [&](std::uint32_t events) {
             if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
-              control_server.process_readable([&]() {
+              const bool shutdown_requested = control_server.process_readable([&]() {
                 return darkpool::control::StatusSnapshot{
                     .active_matches = coordinator.active_match_count(),
                     .connected_players = players,
@@ -469,6 +469,9 @@ int main(int argc, char** argv) {
                     .player_connection_capacity = kMaxPlayerConnections,
                 };
               });
+              if (shutdown_requested) {
+                runtime.request_shutdown();
+              }
             }
           },
           epoll_source_error)) {

@@ -1,0 +1,10 @@
+CompileFlags:
+  Add:
+    - -Iinclude
+    - -std=c++20
+    - -D__linux__
+
+Diagnostics:
+  UnusedIncludes: None
+
+

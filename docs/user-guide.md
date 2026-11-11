@@ -432,14 +432,20 @@ For deeper implementation and design details, see Architecture, Protocol, Threat
 
 ## 12. Local POSIX MQ control
 
-On Linux, the server exposes a separate local-only control queue for operational checks. It does not carry gameplay traffic and does not change UNIX socket, TCP, or TLS behavior. Use the CLI from the same local user as the server:
+On Linux, the server exposes a separate local-only control queue for operational checks and orderly shutdown. It does not carry gameplay traffic and does not change UNIX socket, TCP, or TLS behavior. Use the CLI from the same local user as the server:
 
 ~~~bash
 build/darkpool_ctl ping
 build/darkpool_ctl status
+build/darkpool_ctl shutdown
 ~~~
 
-The commands print structured JSON. `ping` reports whether the server control endpoint answered. `status` reports aggregate availability, active match count, connected player count, configured capacities, and control transport; it omits player roles, clues, private messages, votes, balances, holdings, and credentials. The client waits two seconds by default (configurable up to 60 seconds with `--timeout-ms`) and removes its private reply queue after success, timeout, error, or interruption.
+The commands print structured JSON:
+- `ping`: Reports whether the server control endpoint answered.
+- `status`: Reports aggregate availability, active match count, connected player count, configured capacities, and control transport; it omits player roles, clues, private messages, votes, balances, holdings, and credentials.
+- `shutdown`: Requests graceful termination of the server. The server acknowledges the request over the private reply queue (`{"shutdown_requested":true}`), finishes processing the current epoll dispatch without starting new ticks, notifies systemd (`STOPPING=1`), updates shared memory telemetry to `stopping`, and cleans up all owned IPC resources.
+
+The client waits two seconds by default (configurable up to 60 seconds with `--timeout-ms`) and removes its private reply queue after success, timeout, error, or interruption.
 
 The default server queue is `/darkpool_ctl_<effective-uid>`. To choose a distinct per-user queue name, start the server with `--control-queue /darkpool_ctl_<effective-uid>_<suffix>` and pass the same name to the client with `--queue`, for example:
 

@@ -316,11 +316,25 @@ A UNIX-domain socket is a good fit here because it supports bidirectional reques
 
 ### 9.2 Local POSIX MQ control plane
 
-`darkpool_ctl` uses a POSIX message queue only for local operational queries. Gameplay continues to use the existing UNIX stream, TCP, and TLS transports. The server creates `/darkpool_ctl_<effective-uid>` (or a validated per-user suffix supplied with `--control-queue`), with owner-only permissions, a maximum depth of 10 and 1024-byte messages. Existing queues are never unlinked to make startup succeed; a collision makes that server startup fail. The operator must verify that no server owns a stale queue before manually removing one.
+`darkpool_ctl` uses a POSIX message queue only for local operational queries and control actions. Gameplay continues to use the existing UNIX stream, TCP, and TLS transports. The server creates `/darkpool_ctl_<effective-uid>` (or a validated per-user suffix supplied with `--control-queue`), with owner-only permissions, a maximum depth of 10 and 1024-byte messages. Existing queues are never unlinked to make startup succeed; a collision makes that server startup fail. The operator must verify that no server owns a stale queue before manually removing one.
 
-Each client creates a private `/darkpool_ctl_reply_<uid>_<pid>_<random-id>` queue. The v1 JSON request contains exactly `version`, `request_id`, `operation`, and `reply_to`; supported operations are `ping` and `status`. Responses repeat the request ID and operation. The client validates correlation, waits with a bounded timeout, and removes its reply queue on exit. The server validates names, owner/mode, queue attributes, message shape, and operation; malformed messages are dropped. Its bounded request cache replays an identical request and rejects reuse of an ID for a different destination or operation.
+Each client creates a private `/darkpool_ctl_reply_<uid>_<pid>_<random-id>` queue. The v1 JSON request contains exactly `version`, `request_id`, `operation`, and `reply_to`; supported operations are `ping`, `status`, and `shutdown`. Responses repeat the request ID and operation. The client validates correlation, waits with a bounded timeout, and removes its reply queue on exit. The server validates names, owner/mode, queue attributes, message shape, and operation; malformed messages are dropped. Its bounded request cache replays an identical request and rejects reuse of an ID for a different destination or operation.
 
-The MQ descriptor is registered as an additional source in `ServerRuntime`'s existing Linux `epoll` loop. The loop drains available messages through `EAGAIN`, and the status provider reads aggregate counts on that same thread, so no lock or second state owner is needed. POSIX MQ descriptors are pollable through Linux `epoll` on the supported target; this is a Linux implementation detail, not a portable POSIX guarantee. Queue errors remove only that event source and do not terminate player networking. Normal shutdown and partial startup cleanup release only the queue owned by this server instance.
+The MQ descriptor is registered as an additional source in `ServerRuntime`'s existing Linux `epoll` loop. The loop drains available messages through `EAGAIN`, and the status provider reads aggregate counts on that same thread, so no lock or second state owner is needed. POSIX MQ descriptors are pollable through Linux `epoll` on the supported target; this is a Linux implementation detail, not a portable POSIX guarantee. Queue errors remove only that event source and do not terminate player networking.
+
+#### Graceful Server Shutdown via POSIX MQ (IPC-3)
+When a valid `shutdown` request is processed:
+1. The acknowledgement is successfully enqueued to the validated private reply queue and cached in the duplicate response cache.
+2. The event-loop callback requests shutdown (`runtime.request_shutdown()`).
+3. The event loop exits without processing further events in the current batch or executing another gameplay tick.
+4. `runtime.run()` returns cleanly with exit status 0.
+5. `runtime.stop()` closes active connections, listeners, and event sources.
+6. The systemd notifier sends `STOPPING=1`.
+7. `telemetry_publisher.stop()` publishes the final stopping state and cleans up shared memory and semaphore resources.
+8. The `ControlServer` object's RAII cleanup removes its owned POSIX MQ queue as `main()` exits.
+9. Malformed requests, unauthorized senders, or request-ID conflicts return error envelopes and never trigger shutdown. Duplicate shutdown requests return the cached acknowledgement without triggering additional shutdown actions. Failed acknowledgement enqueuing does not cache a successful response and does not trigger shutdown.
+
+Normal shutdown and partial startup cleanup release only the queue owned by this server instance.
 
 Interrupted MQ syscalls use at most eight retries per operation, with a readiness-independent 100 microsecond pause before each retry. If `nanosleep` is interrupted, the wait resumes for its reported remainder; up to eight interrupted waits are allowed before that operation returns `EINTR`. The server supplies no request deadline, so these caps bound event-loop work; clients also stop at their absolute request deadline. Cancellation is reported as `EINTR`, deadline expiration as `ETIMEDOUT`. MQ descriptors remain nonblocking; readiness polling is reserved for waiting on actual queue-full/queue-empty conditions, never used as EINTR backoff.
 
