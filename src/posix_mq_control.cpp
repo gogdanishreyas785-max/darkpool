@@ -122,8 +122,8 @@ bool valid_json_keys(const Json& request) {
   static constexpr std::array<std::string_view, 4> allowed{
       "version", "request_id", "operation", "reply_to"};
   if (request.size() != allowed.size()) return false;
-  return std::all_of(request.begin(), request.end(), [&](const auto& item) {
-    return std::find(allowed.begin(), allowed.end(), item.key()) != allowed.end();
+  return std::all_of(allowed.begin(), allowed.end(), [&](std::string_view key) {
+    return request.contains(std::string(key));
   });
 }
 
