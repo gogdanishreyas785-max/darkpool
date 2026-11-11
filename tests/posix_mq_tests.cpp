@@ -432,6 +432,7 @@ void test_interrupted_request_is_cancelled() {
 namespace {
 
 bool inject_getattr_once = false;
+bool inject_setattr_once = false;
 bool inject_send_once = false;
 bool inject_receive_once = false;
 bool inject_always_receive = false;
@@ -447,6 +448,11 @@ int hooked_getattr(mqd_t descriptor, mq_attr* attributes) {
 }
 
 int hooked_setattr(mqd_t descriptor, const mq_attr* desired, mq_attr* previous) {
+  if (inject_setattr_once) {
+    inject_setattr_once = false;
+    errno = EINTR;
+    return -1;
+  }
   return ::mq_setattr(descriptor, desired, previous);
 }
 
@@ -478,6 +484,13 @@ void test_deterministic_eintr_retries_and_deadlines() {
 
   darkpool::control::testing::set_mq_syscall_hooks(
       hooked_getattr, hooked_setattr, hooked_send, hooked_receive);
+  inject_getattr_once = true;
+  inject_setattr_once = true;
+  const auto hooked_queue_name = "/darkpool_eintr_attrs_" + unique_token();
+  auto hooked_queue = MessageQueue::create_exclusive(
+      hooked_queue_name, O_RDWR, QueueLimits{2, 32}, error,
+      0600, nullptr, std::chrono::steady_clock::now() + 1s);
+  CHECK(hooked_queue.has_value());
   inject_getattr_once = true;
   mq_attr attributes{};
   int error_number = 0;
