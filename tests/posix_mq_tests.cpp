@@ -558,6 +558,7 @@ void test_deterministic_eintr_retry_budget() {
   CHECK(retry_wait_calls == 2);
   CHECK(previous_retry_wait == 100us);
   CHECK(last_retry_wait == 50us);
+  CHECK(queue->receive(priority, error_number) == "resume");
 
   // A repeated signal storm during the wait is itself capped; it cannot spin
   // indefinitely or consume further MQ retry attempts.
