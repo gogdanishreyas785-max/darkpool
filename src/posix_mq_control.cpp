@@ -23,9 +23,81 @@ namespace darkpool::control {
 namespace {
 
 using Json = network::json;
+using Clock = std::chrono::steady_clock;
 
 constexpr mode_t kQueuePermissions = 0600;
 constexpr std::size_t kMaximumQueueName = 255;
+
+struct MqSyscallHooks {
+  testing::MqGetattrHook getattr{nullptr};
+  testing::MqSetattrHook setattr{nullptr};
+  testing::MqSendHook send{nullptr};
+  testing::MqReceiveHook receive{nullptr};
+};
+
+MqSyscallHooks mq_hooks;
+
+int mq_getattr_call(mqd_t descriptor, mq_attr* attributes) {
+  return mq_hooks.getattr != nullptr ? mq_hooks.getattr(descriptor, attributes)
+                                     : ::mq_getattr(descriptor, attributes);
+}
+
+int mq_setattr_call(mqd_t descriptor, const mq_attr* desired, mq_attr* old_attributes) {
+  return mq_hooks.setattr != nullptr ? mq_hooks.setattr(descriptor, desired, old_attributes)
+                                     : ::mq_setattr(descriptor, desired, old_attributes);
+}
+
+int mq_send_call(mqd_t descriptor, const char* message, std::size_t size, unsigned priority) {
+  return mq_hooks.send != nullptr ? mq_hooks.send(descriptor, message, size, priority)
+                                  : ::mq_send(descriptor, message, size, priority);
+}
+
+ssize_t mq_receive_call(mqd_t descriptor, char* buffer, std::size_t size,
+                        unsigned* priority) {
+  return mq_hooks.receive != nullptr ? mq_hooks.receive(descriptor, buffer, size, priority)
+                                     : ::mq_receive(descriptor, buffer, size, priority);
+}
+
+bool retry_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point deadline,
+                int& error_number) {
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_number = EINTR;
+    return false;
+  }
+  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
+    error_number = ETIMEDOUT;
+    return false;
+  }
+  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
+    error_number = ETIMEDOUT;
+    return false;
+  }
+  return true;
+}
+
+bool wait_after_eintr(int descriptor, short events, const volatile sig_atomic_t* interrupted,
+                      Clock::time_point deadline, int& error_number) {
+  if (deadline == Clock::time_point::max()) {
+    error_number = EINTR;
+    return false;
+  }
+  if (!retry_eintr(interrupted, deadline, error_number)) return false;
+  const auto remaining = deadline == Clock::time_point::max()
+      ? std::chrono::milliseconds(1)
+      : std::chrono::ceil<std::chrono::milliseconds>(deadline - Clock::now());
+  if (remaining <= std::chrono::milliseconds::zero()) {
+    error_number = ETIMEDOUT;
+    return false;
+  }
+  pollfd state{.fd = descriptor, .events = events, .revents = 0};
+  const auto timeout = std::min(remaining, std::chrono::milliseconds(1));
+  const int result = ::poll(&state, 1U, static_cast<int>(timeout.count()));
+  if (result < 0 && errno != EINTR) {
+    error_number = errno;
+    return false;
+  }
+  return retry_eintr(interrupted, deadline, error_number);
+}
 
 std::string error_text(std::string_view operation, int error_number) {
   return std::string(operation) + ": " + std::strerror(error_number);
@@ -102,10 +174,12 @@ std::optional<int> wait_for_queue(int descriptor, short events,
 }
 
 bool valid_message_queue_attributes(const MessageQueue& queue, QueueLimits expected,
-                                    std::string& error_message) noexcept {
+                                    std::string& error_message,
+                                    const volatile sig_atomic_t* interrupted = nullptr,
+                                    Clock::time_point deadline = Clock::time_point::max()) noexcept {
   mq_attr attributes{};
   int error_number = 0;
-  if (!queue.get_attributes(attributes, error_number)) {
+  if (!queue.get_attributes(attributes, error_number, interrupted, deadline)) {
     error_message = error_text("mq_getattr", error_number);
     return false;
   }
@@ -155,7 +229,8 @@ MessageQueue& MessageQueue::operator=(MessageQueue&& other) noexcept {
 
 std::optional<MessageQueue> MessageQueue::create_exclusive(
     std::string name, int access_flags, QueueLimits limits,
-    std::string& error_message, mode_t permissions) {
+    std::string& error_message, mode_t permissions,
+    const volatile sig_atomic_t* interrupted, Clock::time_point deadline) {
   if (!valid_name(name) || !safe_queue_access_flags(access_flags)) {
     error_message = "invalid POSIX message queue name or access mode";
     return std::nullopt;
@@ -179,7 +254,7 @@ std::optional<MessageQueue> MessageQueue::create_exclusive(
   }
 
   MessageQueue queue(descriptor, std::move(name), true);
-  if (!queue.set_nonblocking(error_message)) return std::nullopt;
+  if (!queue.set_nonblocking(error_message, interrupted, deadline)) return std::nullopt;
   if (::fchmod(queue.descriptor(), permissions) != 0) {
     error_message = error_text("fchmod message queue", errno);
     return std::nullopt;
@@ -188,12 +263,15 @@ std::optional<MessageQueue> MessageQueue::create_exclusive(
     error_message = "created message queue has unexpected owner or permissions";
     return std::nullopt;
   }
-  if (!valid_message_queue_attributes(queue, limits, error_message)) return std::nullopt;
+  if (!valid_message_queue_attributes(queue, limits, error_message, interrupted, deadline)) {
+    return std::nullopt;
+  }
   return std::optional<MessageQueue>(std::move(queue));
 }
 
 std::optional<MessageQueue> MessageQueue::open_existing(
-    std::string name, int access_flags, std::string& error_message) {
+    std::string name, int access_flags, std::string& error_message,
+    const volatile sig_atomic_t* interrupted, Clock::time_point deadline) {
   if (!valid_name(name) || !safe_queue_access_flags(access_flags) ||
       (access_flags & O_CREAT) != 0) {
     error_message = "invalid POSIX message queue name or access mode";
@@ -206,30 +284,37 @@ std::optional<MessageQueue> MessageQueue::open_existing(
     return std::nullopt;
   }
   MessageQueue queue(descriptor, std::move(name), false);
-  if (!queue.set_nonblocking(error_message)) return std::nullopt;
+  if (!queue.set_nonblocking(error_message, interrupted, deadline)) return std::nullopt;
   return queue;
 }
 
 bool MessageQueue::send(std::string_view message, unsigned priority,
                         int& error_number,
-                        const volatile sig_atomic_t* interrupted) const noexcept {
+                        const volatile sig_atomic_t* interrupted,
+                        Clock::time_point deadline) const noexcept {
   if (!valid()) {
     error_number = EBADF;
     return false;
   }
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_number = EINTR;
+    return false;
+  }
   mq_attr attributes{};
-  while (::mq_getattr(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
-    error_number = errno;
+  while (mq_getattr_call(descriptor_, &attributes) != 0) {
+    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
+                                           error_number)) continue;
+    if (errno != EINTR) error_number = errno;
     return false;
   }
   if (message.size() > static_cast<std::size_t>(attributes.mq_msgsize)) {
     error_number = EMSGSIZE;
     return false;
   }
-  while (::mq_send(descriptor_, message.data(), message.size(), priority) != 0) {
-    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
-    error_number = errno;
+  while (mq_send_call(descriptor_, message.data(), message.size(), priority) != 0) {
+    if (errno == EINTR && wait_after_eintr(descriptor_, POLLOUT, interrupted, deadline,
+                                           error_number)) continue;
+    if (errno != EINTR) error_number = errno;
     return false;
   }
   error_number = 0;
@@ -238,15 +323,25 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
 
 std::optional<std::string> MessageQueue::receive(unsigned& priority,
                                                 int& error_number,
-                                                const volatile sig_atomic_t* interrupted) const {
+                                                const volatile sig_atomic_t* interrupted,
+                                                Clock::time_point deadline) const {
   if (!valid()) {
     error_number = EBADF;
     return std::nullopt;
   }
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_number = EINTR;
+    return std::nullopt;
+  }
+  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
+    error_number = ETIMEDOUT;
+    return std::nullopt;
+  }
   mq_attr attributes{};
-  while (::mq_getattr(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
-    error_number = errno;
+  while (mq_getattr_call(descriptor_, &attributes) != 0) {
+    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
+                                           error_number)) continue;
+    if (errno != EINTR) error_number = errno;
     return std::nullopt;
   }
   if (attributes.mq_msgsize < 1 || attributes.mq_msgsize > kMaxMessageBytes) {
@@ -257,10 +352,15 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
   unsigned received_priority = 0U;
   ssize_t count = -1;
   do {
-    count = ::mq_receive(descriptor_, buffer.data(), buffer.size(), &received_priority);
-  } while (count < 0 && errno == EINTR && (interrupted == nullptr || *interrupted == 0));
+    count = mq_receive_call(descriptor_, buffer.data(), buffer.size(), &received_priority);
+    if (count < 0 && errno == EINTR &&
+        wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+      continue;
+    }
+    break;
+  } while (true);
   if (count < 0) {
-    error_number = errno;
+    if (errno != EINTR) error_number = errno;
     return std::nullopt;
   }
   priority = received_priority;
@@ -276,14 +376,17 @@ bool MessageQueue::has_permissions(uid_t owner, mode_t permissions) const noexce
 }
 
 bool MessageQueue::get_attributes(mq_attr& attributes,
-                                  int& error_number) const noexcept {
+                                  int& error_number,
+                                  const volatile sig_atomic_t* interrupted,
+                                  Clock::time_point deadline) const noexcept {
   if (!valid()) {
     error_number = EBADF;
     return false;
   }
-  while (::mq_getattr(descriptor_, &attributes) != 0) {
-    if (errno == EINTR) continue;
-    error_number = errno;
+  while (mq_getattr_call(descriptor_, &attributes) != 0) {
+    if (errno == EINTR && wait_after_eintr(descriptor_, POLLIN, interrupted, deadline,
+                                           error_number)) continue;
+    if (errno != EINTR) error_number = errno;
     return false;
   }
   error_number = 0;
@@ -311,29 +414,49 @@ bool MessageQueue::valid_name(std::string_view name) noexcept {
   });
 }
 
-bool MessageQueue::set_nonblocking(std::string& error_message) noexcept {
+bool MessageQueue::set_nonblocking(std::string& error_message,
+                                   const volatile sig_atomic_t* interrupted,
+                                   Clock::time_point deadline) noexcept {
   mq_attr current{};
-  int result = 0;
-  do {
-    result = ::mq_getattr(descriptor_, &current);
-  } while (result != 0 && errno == EINTR);
+  int result = mq_getattr_call(descriptor_, &current);
+  while (result != 0 && errno == EINTR) {
+    int error_number = EINTR;
+    if (!wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+      error_message = error_text("mq_getattr", error_number);
+      return false;
+    }
+    result = mq_getattr_call(descriptor_, &current);
+  }
   if (result != 0) {
     error_message = error_text("mq_getattr", errno);
     return false;
   }
   mq_attr desired{};
   desired.mq_flags = current.mq_flags | O_NONBLOCK;
-  do {
-    result = ::mq_setattr(descriptor_, &desired, nullptr);
-  } while (result != 0 && errno == EINTR);
+  result = mq_setattr_call(descriptor_, &desired, nullptr);
+  while (result != 0 && errno == EINTR) {
+    int error_number = EINTR;
+    if (!wait_after_eintr(descriptor_, POLLOUT, interrupted, deadline, error_number)) {
+      error_message = error_text("mq_setattr", error_number);
+      return false;
+    }
+    result = mq_setattr_call(descriptor_, &desired, nullptr);
+  }
   if (result != 0) {
     error_message = error_text("mq_setattr", errno);
     return false;
   }
-  do {
-    result = ::mq_getattr(descriptor_, &current);
-  } while (result != 0 && errno == EINTR);
-  if (result != 0 || (current.mq_flags & O_NONBLOCK) == 0) {
+  result = mq_getattr_call(descriptor_, &current);
+  while (result != 0 && errno == EINTR) {
+    int error_number = EINTR;
+    if (!wait_after_eintr(descriptor_, POLLIN, interrupted, deadline, error_number)) {
+      error_message = error_text("mq_getattr", error_number);
+      return false;
+    }
+    result = mq_getattr_call(descriptor_, &current);
+  }
+  if (result != 0 ||
+      (current.mq_flags & O_NONBLOCK) == 0) {
     error_message = "message queue did not enter nonblocking mode";
     return false;
   }
@@ -553,27 +676,35 @@ std::optional<ClientResponse> request(
 
   const auto reply_name = "/darkpool_ctl_reply_" + std::to_string(::geteuid()) + "_" +
       std::to_string(::getpid()) + "_" + *request_id;
+  const auto deadline = Clock::now() + timeout;
+  if (interrupted != nullptr && *interrupted != 0) {
+    error_message = "interrupted";
+    return std::nullopt;
+  }
   auto reply = MessageQueue::create_exclusive(
-      reply_name, O_RDONLY, QueueLimits{kReplyQueueDepth, kMaxMessageBytes}, error_message);
+      reply_name, O_RDONLY, QueueLimits{kReplyQueueDepth, kMaxMessageBytes}, error_message,
+      0600, interrupted, deadline);
   if (!reply) return std::nullopt;
 
-  auto server = MessageQueue::open_existing(std::string(server_queue_name), O_WRONLY, error_message);
+  auto server = MessageQueue::open_existing(std::string(server_queue_name), O_WRONLY,
+                                            error_message, interrupted, deadline);
   if (!server) return std::nullopt;
   if (!server->has_permissions(::geteuid(), kQueuePermissions)) {
     error_message = "server queue owner or permissions do not match the local-user policy";
     return std::nullopt;
   }
-  if (!valid_message_queue_attributes(*server, QueueLimits{kRequestQueueDepth, kMaxMessageBytes}, error_message)) {
+  if (!valid_message_queue_attributes(*server,
+                                      QueueLimits{kRequestQueueDepth, kMaxMessageBytes},
+                                      error_message, interrupted, deadline)) {
     return std::nullopt;
   }
 
   const Json request_message{{"version", 1}, {"request_id", *request_id},
                              {"operation", operation}, {"reply_to", reply_name}};
   const auto encoded = request_message.dump();
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (true) {
     int error_number = 0;
-    if (server->send(encoded, 0U, error_number, interrupted)) break;
+    if (server->send(encoded, 0U, error_number, interrupted, deadline)) break;
     if (error_number == EINTR && interrupted != nullptr && *interrupted != 0) {
       error_message = "interrupted";
       return std::nullopt;
@@ -594,7 +725,7 @@ std::optional<ClientResponse> request(
   int error_number = 0;
   std::optional<std::string> reply_message;
   while (true) {
-    reply_message = reply->receive(priority, error_number, interrupted);
+    reply_message = reply->receive(priority, error_number, interrupted, deadline);
     if (reply_message) break;
     if (error_number == EINTR && interrupted != nullptr && *interrupted != 0) {
       error_message = "interrupted";
@@ -624,6 +755,19 @@ std::optional<ClientResponse> request(
   }
   return ClientResponse{std::move(parsed), *request_id};
 }
+
+namespace testing {
+
+void set_mq_syscall_hooks(MqGetattrHook getattr, MqSetattrHook setattr,
+                          MqSendHook send, MqReceiveHook receive) noexcept {
+  mq_hooks = MqSyscallHooks{getattr, setattr, send, receive};
+}
+
+void reset_mq_syscall_hooks() noexcept {
+  mq_hooks = MqSyscallHooks{};
+}
+
+}  // namespace testing
 
 }  // namespace darkpool::control
 

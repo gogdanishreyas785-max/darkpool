@@ -40,19 +40,32 @@ class MessageQueue {
 
   [[nodiscard]] static std::optional<MessageQueue> create_exclusive(
       std::string name, int access_flags, QueueLimits limits,
-      std::string& error_message, mode_t permissions = 0600);
+      std::string& error_message, mode_t permissions = 0600,
+      const volatile sig_atomic_t* interrupted = nullptr,
+      std::chrono::steady_clock::time_point deadline =
+          std::chrono::steady_clock::time_point::max());
   [[nodiscard]] static std::optional<MessageQueue> open_existing(
-      std::string name, int access_flags, std::string& error_message);
+      std::string name, int access_flags, std::string& error_message,
+      const volatile sig_atomic_t* interrupted = nullptr,
+      std::chrono::steady_clock::time_point deadline =
+          std::chrono::steady_clock::time_point::max());
 
   [[nodiscard]] bool send(std::string_view message, unsigned priority,
                           int& error_number,
-                          const volatile sig_atomic_t* interrupted = nullptr) const noexcept;
+                          const volatile sig_atomic_t* interrupted = nullptr,
+                          std::chrono::steady_clock::time_point deadline =
+                              std::chrono::steady_clock::time_point::max()) const noexcept;
   [[nodiscard]] std::optional<std::string> receive(unsigned& priority,
                                                    int& error_number,
-                                                   const volatile sig_atomic_t* interrupted = nullptr) const;
+                                                   const volatile sig_atomic_t* interrupted = nullptr,
+                                                   std::chrono::steady_clock::time_point deadline =
+                                                       std::chrono::steady_clock::time_point::max()) const;
   [[nodiscard]] bool has_permissions(uid_t owner, mode_t permissions) const noexcept;
   [[nodiscard]] bool get_attributes(mq_attr& attributes,
-                                    int& error_number) const noexcept;
+                                    int& error_number,
+                                    const volatile sig_atomic_t* interrupted = nullptr,
+                                    std::chrono::steady_clock::time_point deadline =
+                                        std::chrono::steady_clock::time_point::max()) const noexcept;
   [[nodiscard]] int descriptor() const noexcept;
   [[nodiscard]] mqd_t native_handle() const noexcept { return descriptor_; }
   [[nodiscard]] const std::string& name() const noexcept { return name_; }
@@ -64,7 +77,9 @@ class MessageQueue {
 
  private:
   MessageQueue(mqd_t descriptor, std::string name, bool owns_name) noexcept;
-  [[nodiscard]] bool set_nonblocking(std::string& error_message) noexcept;
+  [[nodiscard]] bool set_nonblocking(
+      std::string& error_message, const volatile sig_atomic_t* interrupted,
+      std::chrono::steady_clock::time_point deadline) noexcept;
 
   mqd_t descriptor_{static_cast<mqd_t>(-1)};
   std::string name_;
@@ -129,5 +144,18 @@ struct ClientResponse {
     const volatile sig_atomic_t* interrupted = nullptr);
 
 }  // namespace darkpool::control
+
+namespace darkpool::control::testing {
+
+using MqGetattrHook = int (*)(mqd_t, struct mq_attr*);
+using MqSetattrHook = int (*)(mqd_t, const struct mq_attr*, struct mq_attr*);
+using MqSendHook = int (*)(mqd_t, const char*, std::size_t, unsigned);
+using MqReceiveHook = ssize_t (*)(mqd_t, char*, std::size_t, unsigned*);
+
+void set_mq_syscall_hooks(MqGetattrHook getattr, MqSetattrHook setattr,
+                          MqSendHook send, MqReceiveHook receive) noexcept;
+void reset_mq_syscall_hooks() noexcept;
+
+}  // namespace darkpool::control::testing
 
 #endif  // defined(__linux__)

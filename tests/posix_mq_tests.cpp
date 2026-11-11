@@ -10,6 +10,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <iostream>
 #include <poll.h>
@@ -389,13 +390,125 @@ void test_dispatch_budget_and_replenished_requests() {
 }
 
 void test_interrupted_request_is_cancelled() {
-  volatile sig_atomic_t interrupted = 1;
+  const auto name = server_queue_name("cancel");
+  ControlServer server(name);
   std::string error;
+  CHECK(server.start(error));
+  auto inbox = MessageQueue::open_existing(name, O_WRONLY, error);
+  CHECK(inbox.has_value());
+  if (!inbox) return;
+
+  const std::string prefix = "darkpool_ctl_reply_" + std::to_string(::geteuid()) + "_" +
+      std::to_string(::getpid()) + "_";
+  auto reply_count = [&] {
+    std::size_t count = 0U;
+    DIR* directory = ::opendir("/dev/mqueue");
+    if (directory == nullptr) return count;
+    while (const auto* entry = ::readdir(directory)) {
+      const std::string_view name_view(entry->d_name);
+      if (name_view.size() >= prefix.size() &&
+          name_view.compare(0, prefix.size(), prefix) == 0) {
+        ++count;
+      }
+    }
+    (void)::closedir(directory);
+    return count;
+  };
+  mq_attr before{};
+  int error_number = 0;
+  CHECK(inbox->get_attributes(before, error_number));
+  const auto replies_before = reply_count();
+  volatile sig_atomic_t interrupted = 1;
   const auto response = darkpool::control::request(
-      ControlServer::default_queue_name(), "status", 100ms, error, &interrupted);
+      name, "status", 100ms, error, &interrupted);
   CHECK(!response.has_value());
-  CHECK(error == "interrupted" || error.find("mq_open") != std::string::npos);
+  CHECK(error == "interrupted");
+  mq_attr after{};
+  CHECK(inbox->get_attributes(after, error_number));
+  CHECK(after.mq_curmsgs == before.mq_curmsgs);
+  CHECK(reply_count() == replies_before);
 }
+
+namespace {
+
+bool inject_getattr_once = false;
+bool inject_send_once = false;
+bool inject_receive_once = false;
+bool inject_always_receive = false;
+volatile sig_atomic_t* hook_interrupted = nullptr;
+
+int hooked_getattr(mqd_t descriptor, mq_attr* attributes) {
+  if (inject_getattr_once) {
+    inject_getattr_once = false;
+    errno = EINTR;
+    return -1;
+  }
+  return ::mq_getattr(descriptor, attributes);
+}
+
+int hooked_setattr(mqd_t descriptor, const mq_attr* desired, mq_attr* previous) {
+  return ::mq_setattr(descriptor, desired, previous);
+}
+
+int hooked_send(mqd_t descriptor, const char* message, std::size_t size, unsigned priority) {
+  if (inject_send_once) {
+    inject_send_once = false;
+    if (hook_interrupted != nullptr) *hook_interrupted = 1;
+    errno = EINTR;
+    return -1;
+  }
+  return ::mq_send(descriptor, message, size, priority);
+}
+
+ssize_t hooked_receive(mqd_t descriptor, char* buffer, std::size_t size, unsigned* priority) {
+  if (inject_always_receive || inject_receive_once) {
+    inject_receive_once = false;
+    errno = EINTR;
+    return -1;
+  }
+  return ::mq_receive(descriptor, buffer, size, priority);
+}
+
+void test_deterministic_eintr_retries_and_deadlines() {
+  std::string error;
+  const auto name = "/darkpool_eintr_" + unique_token();
+  auto queue = MessageQueue::create_exclusive(name, O_RDWR, QueueLimits{2, 32}, error);
+  CHECK(queue.has_value());
+  if (!queue) return;
+
+  darkpool::control::testing::set_mq_syscall_hooks(
+      hooked_getattr, hooked_setattr, hooked_send, hooked_receive);
+  inject_getattr_once = true;
+  mq_attr attributes{};
+  int error_number = 0;
+  CHECK(queue->get_attributes(attributes, error_number, nullptr,
+                               std::chrono::steady_clock::now() + 1s));
+
+  inject_send_once = true;
+  CHECK(queue->send("one", 0U, error_number, nullptr,
+                    std::chrono::steady_clock::now() + 1s));
+  inject_receive_once = true;
+  unsigned priority = 0U;
+  CHECK(queue->receive(priority, error_number, nullptr,
+                       std::chrono::steady_clock::now() + 1s) == "one");
+
+  inject_always_receive = true;
+  const auto receive_deadline = std::chrono::steady_clock::now() + 5ms;
+  CHECK(!queue->receive(priority, error_number, nullptr, receive_deadline));
+  CHECK(error_number == ETIMEDOUT);
+  inject_always_receive = false;
+
+  volatile sig_atomic_t interrupted = 0;
+  hook_interrupted = &interrupted;
+  inject_send_once = true;
+  CHECK(!queue->send("cancelled", 0U, error_number, &interrupted,
+                     std::chrono::steady_clock::now() + 1s));
+  CHECK(error_number == EINTR);
+  hook_interrupted = nullptr;
+  darkpool::control::testing::reset_mq_syscall_hooks();
+}
+
+}  // namespace
 
 class ChildProcess {
  public:
@@ -684,6 +797,7 @@ int main(int argc, char** argv) {
   test_control_server_validation_and_duplicate_requests();
   test_dispatch_budget_and_replenished_requests();
   test_interrupted_request_is_cancelled();
+  test_deterministic_eintr_retries_and_deadlines();
   std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);
