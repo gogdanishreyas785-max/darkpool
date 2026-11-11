@@ -211,13 +211,15 @@ std::optional<MessageQueue> MessageQueue::open_existing(
 }
 
 bool MessageQueue::send(std::string_view message, unsigned priority,
-                        int& error_number) const noexcept {
+                        int& error_number,
+                        const volatile sig_atomic_t* interrupted) const noexcept {
   if (!valid()) {
     error_number = EBADF;
     return false;
   }
   mq_attr attributes{};
-  if (::mq_getattr(descriptor_, &attributes) != 0) {
+  while (::mq_getattr(descriptor_, &attributes) != 0) {
+    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
     error_number = errno;
     return false;
   }
@@ -225,7 +227,8 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
     error_number = EMSGSIZE;
     return false;
   }
-  if (::mq_send(descriptor_, message.data(), message.size(), priority) != 0) {
+  while (::mq_send(descriptor_, message.data(), message.size(), priority) != 0) {
+    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
     error_number = errno;
     return false;
   }
@@ -234,13 +237,15 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
 }
 
 std::optional<std::string> MessageQueue::receive(unsigned& priority,
-                                                int& error_number) const {
+                                                int& error_number,
+                                                const volatile sig_atomic_t* interrupted) const {
   if (!valid()) {
     error_number = EBADF;
     return std::nullopt;
   }
   mq_attr attributes{};
-  if (::mq_getattr(descriptor_, &attributes) != 0) {
+  while (::mq_getattr(descriptor_, &attributes) != 0) {
+    if (errno == EINTR && (interrupted == nullptr || *interrupted == 0)) continue;
     error_number = errno;
     return std::nullopt;
   }
@@ -250,7 +255,10 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
   }
   std::vector<char> buffer(static_cast<std::size_t>(attributes.mq_msgsize));
   unsigned received_priority = 0U;
-  const auto count = ::mq_receive(descriptor_, buffer.data(), buffer.size(), &received_priority);
+  ssize_t count = -1;
+  do {
+    count = ::mq_receive(descriptor_, buffer.data(), buffer.size(), &received_priority);
+  } while (count < 0 && errno == EINTR && (interrupted == nullptr || *interrupted == 0));
   if (count < 0) {
     error_number = errno;
     return std::nullopt;
@@ -273,7 +281,8 @@ bool MessageQueue::get_attributes(mq_attr& attributes,
     error_number = EBADF;
     return false;
   }
-  if (::mq_getattr(descriptor_, &attributes) != 0) {
+  while (::mq_getattr(descriptor_, &attributes) != 0) {
+    if (errno == EINTR) continue;
     error_number = errno;
     return false;
   }
@@ -304,17 +313,27 @@ bool MessageQueue::valid_name(std::string_view name) noexcept {
 
 bool MessageQueue::set_nonblocking(std::string& error_message) noexcept {
   mq_attr current{};
-  if (::mq_getattr(descriptor_, &current) != 0) {
+  int result = 0;
+  do {
+    result = ::mq_getattr(descriptor_, &current);
+  } while (result != 0 && errno == EINTR);
+  if (result != 0) {
     error_message = error_text("mq_getattr", errno);
     return false;
   }
   mq_attr desired{};
   desired.mq_flags = current.mq_flags | O_NONBLOCK;
-  if (::mq_setattr(descriptor_, &desired, nullptr) != 0) {
+  do {
+    result = ::mq_setattr(descriptor_, &desired, nullptr);
+  } while (result != 0 && errno == EINTR);
+  if (result != 0) {
     error_message = error_text("mq_setattr", errno);
     return false;
   }
-  if (::mq_getattr(descriptor_, &current) != 0 || (current.mq_flags & O_NONBLOCK) == 0) {
+  do {
+    result = ::mq_getattr(descriptor_, &current);
+  } while (result != 0 && errno == EINTR);
+  if (result != 0 || (current.mq_flags & O_NONBLOCK) == 0) {
     error_message = "message queue did not enter nonblocking mode";
     return false;
   }
@@ -389,7 +408,7 @@ bool ControlServer::start(std::string& error_message) {
 void ControlServer::process_readable(const StatusProvider& status_provider) noexcept {
   if (!queue_.valid()) return;
   try {
-    while (true) {
+    for (long processed = 0; processed < kMaxMessagesPerDispatch; ++processed) {
       unsigned priority = 0U;
       int error_number = 0;
       const auto message = queue_.receive(priority, error_number);
@@ -554,7 +573,11 @@ std::optional<ClientResponse> request(
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   while (true) {
     int error_number = 0;
-    if (server->send(encoded, 0U, error_number)) break;
+    if (server->send(encoded, 0U, error_number, interrupted)) break;
+    if (error_number == EINTR && interrupted != nullptr && *interrupted != 0) {
+      error_message = "interrupted";
+      return std::nullopt;
+    }
     if (error_number != EAGAIN && error_number != EWOULDBLOCK) {
       error_message = error_text("mq_send", error_number);
       return std::nullopt;
@@ -569,10 +592,21 @@ std::optional<ClientResponse> request(
   }
   unsigned priority = 0U;
   int error_number = 0;
-  const auto reply_message = reply->receive(priority, error_number);
-  if (!reply_message) {
-    error_message = error_text("mq_receive reply", error_number);
-    return std::nullopt;
+  std::optional<std::string> reply_message;
+  while (true) {
+    reply_message = reply->receive(priority, error_number, interrupted);
+    if (reply_message) break;
+    if (error_number == EINTR && interrupted != nullptr && *interrupted != 0) {
+      error_message = "interrupted";
+      return std::nullopt;
+    }
+    if (error_number != EAGAIN && error_number != EWOULDBLOCK && error_number != EINTR) {
+      error_message = error_text("mq_receive reply", error_number);
+      return std::nullopt;
+    }
+    if (!wait_for_queue(reply->descriptor(), POLLIN, deadline, interrupted, error_message)) {
+      return std::nullopt;
+    }
   }
   Json parsed = Json::parse(reply_message->begin(), reply_message->end(), nullptr, false);
   if (parsed.is_discarded() || !parsed.is_object() || parsed.size() != 5U ||

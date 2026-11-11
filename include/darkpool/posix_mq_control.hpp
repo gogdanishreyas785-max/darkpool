@@ -20,6 +20,7 @@ namespace darkpool::control {
 inline constexpr long kRequestQueueDepth = 10;
 inline constexpr long kReplyQueueDepth = 1;
 inline constexpr long kMaxMessageBytes = 1024;
+inline constexpr long kMaxMessagesPerDispatch = kRequestQueueDepth;
 inline constexpr std::size_t kRequestCacheCapacity = 256;
 
 struct QueueLimits {
@@ -44,9 +45,11 @@ class MessageQueue {
       std::string name, int access_flags, std::string& error_message);
 
   [[nodiscard]] bool send(std::string_view message, unsigned priority,
-                          int& error_number) const noexcept;
+                          int& error_number,
+                          const volatile sig_atomic_t* interrupted = nullptr) const noexcept;
   [[nodiscard]] std::optional<std::string> receive(unsigned& priority,
-                                                   int& error_number) const;
+                                                   int& error_number,
+                                                   const volatile sig_atomic_t* interrupted = nullptr) const;
   [[nodiscard]] bool has_permissions(uid_t owner, mode_t permissions) const noexcept;
   [[nodiscard]] bool get_attributes(mq_attr& attributes,
                                     int& error_number) const noexcept;

@@ -334,6 +334,69 @@ void test_control_server_validation_and_duplicate_requests() {
   }
 }
 
+void test_dispatch_budget_and_replenished_requests() {
+  const auto name = server_queue_name("budget");
+  ControlServer server(name);
+  std::string error;
+  CHECK(server.start(error));
+  auto inbox = MessageQueue::open_existing(name, O_WRONLY, error);
+  CHECK(inbox.has_value());
+  if (!inbox) return;
+
+  std::vector<MessageQueue> replies;
+  replies.reserve(static_cast<std::size_t>(darkpool::control::kMaxMessagesPerDispatch) + 1U);
+  for (long index = 0; index <= darkpool::control::kMaxMessagesPerDispatch; ++index) {
+    const std::string id = std::string(31U, 'a') +
+        "0123456789ab"[static_cast<std::size_t>(index)];
+    auto reply = MessageQueue::create_exclusive(
+        reply_queue_name(id), O_RDONLY,
+        QueueLimits{1, darkpool::control::kMaxMessageBytes}, error);
+    CHECK(reply.has_value());
+    if (!reply) return;
+    replies.push_back(std::move(*reply));
+  }
+
+  auto request_for = [&](long index) {
+    const std::string id = std::string(31U, 'a') +
+        "0123456789ab"[static_cast<std::size_t>(index)];
+    json request{{"version", 1}, {"request_id", id}, {"operation", "status"},
+                 {"reply_to", replies[static_cast<std::size_t>(index)].name()}};
+    int error_number = 0;
+    CHECK(inbox->send(request.dump(), 0U, error_number));
+  };
+  request_for(0);
+
+  long provider_calls = 0;
+  const auto provider = [&] {
+    const long current = provider_calls++;
+    if (current < darkpool::control::kMaxMessagesPerDispatch) request_for(current + 1);
+    return darkpool::control::StatusSnapshot{};
+  };
+  server.process_readable(provider);
+  CHECK(provider_calls == darkpool::control::kMaxMessagesPerDispatch);
+
+  mq_attr attributes{};
+  int error_number = 0;
+  CHECK(inbox->get_attributes(attributes, error_number));
+  CHECK(attributes.mq_curmsgs == 1);
+
+  server.process_readable(provider);
+  CHECK(provider_calls == darkpool::control::kMaxMessagesPerDispatch + 1);
+  CHECK(inbox->get_attributes(attributes, error_number));
+  CHECK(attributes.mq_curmsgs == 0);
+
+  for (auto& reply : replies) CHECK(receive_json(reply).has_value());
+}
+
+void test_interrupted_request_is_cancelled() {
+  volatile sig_atomic_t interrupted = 1;
+  std::string error;
+  const auto response = darkpool::control::request(
+      ControlServer::default_queue_name(), "status", 100ms, error, &interrupted);
+  CHECK(!response.has_value());
+  CHECK(error == "interrupted" || error.find("mq_open") != std::string::npos);
+}
+
 class ChildProcess {
  public:
   explicit ChildProcess(pid_t pid) : pid_(pid) {}
@@ -619,6 +682,8 @@ int main(int argc, char** argv) {
   std::cerr << "[mq test] starting queue unit tests\n";
   test_queue_ownership_nonblocking_and_priority();
   test_control_server_validation_and_duplicate_requests();
+  test_dispatch_budget_and_replenished_requests();
+  test_interrupted_request_is_cancelled();
   std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);
