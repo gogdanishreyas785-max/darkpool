@@ -433,6 +433,7 @@ CliResult collect_cli(CliChild& child, std::chrono::milliseconds timeout = 8s) {
   const auto deadline = std::chrono::steady_clock::now() + timeout;
   std::array<char, 1024> buffer{};
   bool pipe_closed = false;
+  bool process_exited = false;
   while (std::chrono::steady_clock::now() < deadline) {
     if (!pipe_closed && child.output_fd >= 0) {
       pollfd descriptor{.fd = child.output_fd, .events = POLLIN | POLLHUP, .revents = 0};
@@ -454,8 +455,9 @@ CliResult collect_cli(CliChild& child, std::chrono::milliseconds timeout = 8s) {
     const auto status = child.process.wait_for(10ms);
     if (status) {
       result.exit_code = *status;
-      if (pipe_closed || child.output_fd < 0) return result;
+      process_exited = true;
     }
+    if (process_exited && (pipe_closed || child.output_fd < 0)) return result;
   }
   child.process.terminate(SIGKILL);
   if (child.output_fd >= 0) {
