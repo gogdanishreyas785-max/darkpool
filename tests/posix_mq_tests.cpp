@@ -1061,6 +1061,25 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
   std::cerr << "[mq test] socket cleanup checked\n";
 }
 
+void test_real_server_sigterm_cleanup(const char* server_executable) {
+  std::cerr << "[mq test] starting SIGTERM process cleanup test\n";
+  const auto token = unique_token();
+  const auto queue_name = server_queue_name("sigterm_" + token);
+  const auto socket_path = "/tmp/darkpool_sigterm_" + token + ".sock";
+  auto server = launch_server(server_executable, queue_name, socket_path);
+  CHECK(server.pid() >= 0);
+  if (server.pid() < 0) return;
+  wait_for_server_queue(queue_name, server);
+
+  CHECK(::kill(server.pid(), SIGTERM) == 0);
+  const auto server_exit = server.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
+  assert_queue_absent(queue_name);
+  CHECK(::access(socket_path.c_str(), F_OK) != 0);
+  std::cerr << "[mq test] SIGTERM process cleanup test passed\n";
+}
+
 void test_partial_startup_cleanup(const char* server_executable) {
   std::cerr << "[mq test] starting partial-startup cleanup test\n";
   const auto queue_name = server_queue_name("startup_failure");
@@ -1085,6 +1104,7 @@ int main(int argc, char** argv) {
   std::cerr << "[mq test] queue unit tests complete\n";
   if (argc >= 3) {
     test_real_server_cli_concurrency_and_cleanup(argv[1], argv[2]);
+    test_real_server_sigterm_cleanup(argv[1]);
     test_partial_startup_cleanup(argv[1]);
   } else {
     CHECK(false && "server and darkpool_ctl executable paths are required");

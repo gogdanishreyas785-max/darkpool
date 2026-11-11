@@ -711,13 +711,32 @@ bool ControlServer::process_message(std::string_view message,
     response = error_response(request_id, operation, "unsupported_operation");
   }
 
-  const bool sent = send_response(*reply, response);
-  if (!sent) {
+  auto cache_it = response_cache_.end();
+  bool order_pushed = false;
+  try {
+    auto [it, inserted] = response_cache_.insert_or_assign(
+        request_id, CachedResponse{reply_to, operation, response});
+    cache_it = it;
+    response_order_.push_back(request_id);
+    order_pushed = true;
+  } catch (...) {
+    if (cache_it != response_cache_.end()) {
+      response_cache_.erase(cache_it);
+    }
     return false;
   }
 
-  response_cache_.insert_or_assign(request_id, CachedResponse{reply_to, operation, response});
-  response_order_.push_back(request_id);
+  const bool sent = send_response(*reply, response);
+  if (!sent) {
+    if (cache_it != response_cache_.end()) {
+      response_cache_.erase(cache_it);
+    }
+    if (order_pushed && !response_order_.empty() && response_order_.back() == request_id) {
+      response_order_.pop_back();
+    }
+    return false;
+  }
+
   while (response_order_.size() > kRequestCacheCapacity) {
     response_cache_.erase(response_order_.front());
     response_order_.pop_front();
