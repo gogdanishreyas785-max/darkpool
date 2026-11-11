@@ -412,7 +412,8 @@ struct ReapedChild {
   bool reaped{false};
   bool timed_out{false};
   bool escalated_sigkill{false};
-  int exit_status{0};
+  bool exit_status_available{false};
+  int exit_status{-1};
 };
 
 ReapedChild reap_child_bounded(pid_t pid, std::chrono::milliseconds timeout = 3000ms) {
@@ -421,32 +422,49 @@ ReapedChild reap_child_bounded(pid_t pid, std::chrono::milliseconds timeout = 30
     return result;
   }
 
-  auto wait_with_deadline = [](pid_t target_pid, int& status, std::chrono::steady_clock::time_point deadline) -> bool {
+  enum class WaitOutcome {
+    Collected,
+    NoChild,
+    TimedOut,
+    Failed
+  };
+
+  auto wait_with_deadline = [](pid_t target_pid, int& status, std::chrono::steady_clock::time_point deadline) -> WaitOutcome {
     while (std::chrono::steady_clock::now() < deadline) {
       int st = 0;
       pid_t r = ::waitpid(target_pid, &st, WNOHANG);
       if (r == target_pid) {
         status = st;
-        return true;
+        return WaitOutcome::Collected;
       }
       if (r < 0) {
         if (errno == EINTR) {
           continue;
         }
         if (errno == ECHILD) {
-          return true;
+          return WaitOutcome::NoChild;
         }
-        return false;
+        return WaitOutcome::Failed;
       }
       ::poll(nullptr, 0, 5);
     }
-    return false;
+    return WaitOutcome::TimedOut;
   };
 
   // 1. Wait up to normal timeout for child exit
   const auto deadline = std::chrono::steady_clock::now() + timeout;
-  if (wait_with_deadline(pid, result.exit_status, deadline)) {
+  auto outcome = wait_with_deadline(pid, result.exit_status, deadline);
+  if (outcome == WaitOutcome::Collected) {
     result.reaped = true;
+    result.exit_status_available = true;
+    return result;
+  }
+  if (outcome == WaitOutcome::NoChild) {
+    result.reaped = true;
+    result.exit_status_available = false;
+    return result;
+  }
+  if (outcome == WaitOutcome::Failed) {
     return result;
   }
 
@@ -454,8 +472,18 @@ ReapedChild reap_child_bounded(pid_t pid, std::chrono::milliseconds timeout = 30
   result.timed_out = true;
   (void)::kill(pid, SIGTERM);
   const auto term_deadline = std::chrono::steady_clock::now() + 500ms;
-  if (wait_with_deadline(pid, result.exit_status, term_deadline)) {
+  outcome = wait_with_deadline(pid, result.exit_status, term_deadline);
+  if (outcome == WaitOutcome::Collected) {
     result.reaped = true;
+    result.exit_status_available = true;
+    return result;
+  }
+  if (outcome == WaitOutcome::NoChild) {
+    result.reaped = true;
+    result.exit_status_available = false;
+    return result;
+  }
+  if (outcome == WaitOutcome::Failed) {
     return result;
   }
 
@@ -463,8 +491,15 @@ ReapedChild reap_child_bounded(pid_t pid, std::chrono::milliseconds timeout = 30
   result.escalated_sigkill = true;
   (void)::kill(pid, SIGKILL);
   const auto kill_deadline = std::chrono::steady_clock::now() + 1000ms;
-  if (wait_with_deadline(pid, result.exit_status, kill_deadline)) {
+  outcome = wait_with_deadline(pid, result.exit_status, kill_deadline);
+  if (outcome == WaitOutcome::Collected) {
     result.reaped = true;
+    result.exit_status_available = true;
+    return result;
+  }
+  if (outcome == WaitOutcome::NoChild) {
+    result.reaped = true;
+    result.exit_status_available = false;
     return result;
   }
 
@@ -699,7 +734,8 @@ void test_observer_mapping_survives_publisher_shutdown() {
       CHECK(reaped.reaped);
       CHECK(!reaped.timed_out);
       CHECK(!reaped.escalated_sigkill);
-      if (reaped.reaped && WIFEXITED(reaped.exit_status)) {
+      CHECK(reaped.exit_status_available);
+      if (reaped.exit_status_available && WIFEXITED(reaped.exit_status)) {
         std::cerr << "[shm test] child exited prematurely with code "
                   << WEXITSTATUS(reaped.exit_status) << '\n';
       }
@@ -728,7 +764,8 @@ void test_observer_mapping_survives_publisher_shutdown() {
     CHECK(reaped.reaped);
     CHECK(!reaped.timed_out);
     CHECK(!reaped.escalated_sigkill);
-    CHECK(WIFEXITED(reaped.exit_status) && WEXITSTATUS(reaped.exit_status) == 0);
+    CHECK(reaped.exit_status_available);
+    CHECK(reaped.exit_status_available && WIFEXITED(reaped.exit_status) && WEXITSTATUS(reaped.exit_status) == 0);
 
     // Verify existing mapping remains usable and mutex has not been destroyed
     std::string read_err;
