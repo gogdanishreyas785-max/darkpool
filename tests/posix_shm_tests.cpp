@@ -408,6 +408,69 @@ void test_unit_and_edge_cases() {
   std::cerr << "[shm test] unit and edge case tests passed\n";
 }
 
+struct ReapedChild {
+  bool reaped{false};
+  bool timed_out{false};
+  bool escalated_sigkill{false};
+  int exit_status{0};
+};
+
+ReapedChild reap_child_bounded(pid_t pid, std::chrono::milliseconds timeout = 3000ms) {
+  ReapedChild result{};
+  if (pid <= 0) {
+    return result;
+  }
+
+  auto wait_with_deadline = [](pid_t target_pid, int& status, std::chrono::steady_clock::time_point deadline) -> bool {
+    while (std::chrono::steady_clock::now() < deadline) {
+      int st = 0;
+      pid_t r = ::waitpid(target_pid, &st, WNOHANG);
+      if (r == target_pid) {
+        status = st;
+        return true;
+      }
+      if (r < 0) {
+        if (errno == EINTR) {
+          continue;
+        }
+        if (errno == ECHILD) {
+          return true;
+        }
+        return false;
+      }
+      ::poll(nullptr, 0, 5);
+    }
+    return false;
+  };
+
+  // 1. Wait up to normal timeout for child exit
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  if (wait_with_deadline(pid, result.exit_status, deadline)) {
+    result.reaped = true;
+    return result;
+  }
+
+  // 2. Normal deadline exceeded: escalate with SIGTERM
+  result.timed_out = true;
+  (void)::kill(pid, SIGTERM);
+  const auto term_deadline = std::chrono::steady_clock::now() + 500ms;
+  if (wait_with_deadline(pid, result.exit_status, term_deadline)) {
+    result.reaped = true;
+    return result;
+  }
+
+  // 3. Grace period exceeded: escalate with SIGKILL
+  result.escalated_sigkill = true;
+  (void)::kill(pid, SIGKILL);
+  const auto kill_deadline = std::chrono::steady_clock::now() + 1000ms;
+  if (wait_with_deadline(pid, result.exit_status, kill_deadline)) {
+    result.reaped = true;
+    return result;
+  }
+
+  return result;
+}
+
 void test_observer_mapping_survives_publisher_shutdown() {
   std::cerr << "[shm test] running test_observer_mapping_survives_publisher_shutdown\n";
 
@@ -557,7 +620,13 @@ void test_observer_mapping_survives_publisher_shutdown() {
       // Acquire the robust mutex
       int lock_rc = ::pthread_mutex_lock(&raw->mutex);
       if (lock_rc == EOWNERDEAD) {
-        (void)::pthread_mutex_consistent(&raw->mutex);
+        if (::pthread_mutex_consistent(&raw->mutex) != 0) {
+          (void)::pthread_mutex_unlock(&raw->mutex);
+          (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+          (void)::close(shm_fd);
+          (void)::close(child_sock);
+          ::_exit(17);
+        }
       } else if (lock_rc != 0) {
         (void)::munmap(raw, sizeof(TelemetrySharedMemory));
         (void)::close(shm_fd);
@@ -626,11 +695,13 @@ void test_observer_mapping_survives_publisher_shutdown() {
       // Child setup or lock acquisition failed!
       CHECK(false && "Child process failed to acquire lock or complete handshake");
       (void)::close(parent_sock);
-      int child_status = 0;
-      (void)::waitpid(child_pid, &child_status, 0);
-      if (WIFEXITED(child_status)) {
+      auto reaped = reap_child_bounded(child_pid);
+      CHECK(reaped.reaped);
+      CHECK(!reaped.timed_out);
+      CHECK(!reaped.escalated_sigkill);
+      if (reaped.reaped && WIFEXITED(reaped.exit_status)) {
         std::cerr << "[shm test] child exited prematurely with code "
-                  << WEXITSTATUS(child_status) << '\n';
+                  << WEXITSTATUS(reaped.exit_status) << '\n';
       }
       obs.close();
       pub.stop();
@@ -653,9 +724,11 @@ void test_observer_mapping_survives_publisher_shutdown() {
     (void)::close(parent_sock);
 
     // Reap child and verify exit status 0 (asserting successful pthread_mutex_unlock)
-    int child_status = 0;
-    CHECK(::waitpid(child_pid, &child_status, 0) == child_pid);
-    CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+    auto reaped = reap_child_bounded(child_pid);
+    CHECK(reaped.reaped);
+    CHECK(!reaped.timed_out);
+    CHECK(!reaped.escalated_sigkill);
+    CHECK(WIFEXITED(reaped.exit_status) && WEXITSTATUS(reaped.exit_status) == 0);
 
     // Verify existing mapping remains usable and mutex has not been destroyed
     std::string read_err;
