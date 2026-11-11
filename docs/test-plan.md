@@ -31,6 +31,7 @@ The CMake configuration defines tests for these areas:
 - **TLS integration:** OpenSSL TLS 1.3 handshakes, certificate trust and identity validation, transport I/O, and negative security cases.
 - **Reactor dispatch:** readiness decisions for nonblocking socket and TLS operations.
 - **Local POSIX MQ control:** actual server and CLI processes, `ping`/aggregate `status`/graceful `shutdown`, request correlation and duplicate handling, concurrent clients, queue limits/priority/FIFO, malformed requests and reply destinations, permissions, queue-full/empty behavior, cleanup, and continued gameplay socket responsiveness.
+- **Local POSIX shared memory telemetry:** shared-memory initialization ordering, robust mutex synchronization, CRC32 snapshot integrity verification, observer recovery on owner death, `darkpool_watch` `--once` and `--follow` modes, observer mapping survival across publisher shutdown (IPC-4), pipe-coordinated concurrency tests verifying bounded lock acquisition and mutex preservation on lock timeouts, signal-based process termination (SIGTERM), and complete resource cleanup.
 - **Load-harness regressions:** harness self-tests and short functional workloads included in CTest.
 
 The canonical list of executable test targets is in CMakeLists.txt. To see the names available in a configured build:
@@ -49,6 +50,12 @@ The Linux-only local control-channel suite can be run independently with:
 
 ~~~bash
 ctest --test-dir build --output-on-failure -R '^darkpool_posix_mq_tests$'
+~~~
+
+The Linux-only local shared memory telemetry suite can be run independently with:
+
+~~~bash
+ctest --test-dir build --output-on-failure -R '^darkpool_posix_shm_tests$'
 ~~~
 
 It launches the real server and `darkpool_ctl`, as well as direct queue requests for malformed and boundary cases. It verifies orderly queue/socket cleanup and partial-startup cleanup. POSIX MQ descriptor polling through `epoll` is specific to the supported Linux runtime; the non-Linux build does not include this control target.

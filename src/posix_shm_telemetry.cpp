@@ -242,8 +242,11 @@ bool TelemetryPublisher::start(const TelemetryInput& initial_input, std::string&
 }
 
 void TelemetryPublisher::stop() noexcept {
+  // 1. Prevent additional publications from being performed by the publisher during teardown
+  running_ = false;
+
   if (shm_ != nullptr && mutex_initialized_) {
-    // 1. Attempt to acquire robust mutex with bounded shutdown timeout (up to 500ms)
+    // 2. Attempt to acquire robust mutex with bounded shutdown timeout (up to 500ms)
     struct timespec ts{};
     make_abs_timespec(std::chrono::milliseconds(500), ts);
     int rc = 0;
@@ -282,16 +285,31 @@ void TelemetryPublisher::stop() noexcept {
           (void)::sem_post(sem_);
         }
       }
-
-      // Small bounded pause allowing existing observer to read stopping state before destruction
-      (void)::usleep(50'000);  // 50ms
     }
 
-    (void)::pthread_mutex_destroy(&shm_->mutex);
+    // Critical: Do NOT call pthread_mutex_destroy(&shm_->mutex) on process-shared mutex!
+    // Observers with existing mappings must be able to continue accessing the mutex safely.
     mutex_initialized_ = false;
   }
 
-  // 6. Close and unlink only objects owned by the current publisher
+  // 6. Unlink named objects only when owned by this publisher.
+  // Unlinking removes the name so new observers cannot open them, while preserving existing mappings.
+  if (owns_sem_) {
+    (void)::sem_unlink(sem_name_.c_str());
+    owns_sem_ = false;
+  }
+
+  if (owns_shm_) {
+    (void)::shm_unlink(shm_name_.c_str());
+    owns_shm_ = false;
+  }
+
+  // 7. Close publisher's own semaphore handle, mapping, and file descriptor.
+  if (sem_ != SEM_FAILED) {
+    (void)::sem_close(sem_);
+    sem_ = SEM_FAILED;
+  }
+
   if (shm_ != nullptr) {
     (void)::munmap(shm_, sizeof(TelemetrySharedMemory));
     shm_ = nullptr;
@@ -301,23 +319,6 @@ void TelemetryPublisher::stop() noexcept {
     (void)::close(shm_fd_);
     shm_fd_ = -1;
   }
-
-  if (owns_shm_) {
-    (void)::shm_unlink(shm_name_.c_str());
-    owns_shm_ = false;
-  }
-
-  if (sem_ != SEM_FAILED) {
-    (void)::sem_close(sem_);
-    sem_ = SEM_FAILED;
-  }
-
-  if (owns_sem_) {
-    (void)::sem_unlink(sem_name_.c_str());
-    owns_sem_ = false;
-  }
-
-  running_ = false;
 }
 
 bool TelemetryPublisher::publish(const TelemetryInput& input, bool is_stopping) noexcept {

@@ -138,7 +138,7 @@ int main(int argc, char** argv) {
   }
 
   // Print the current snapshot
-  std::cout << snapshot_to_json(*snapshot).dump(2) << '\n';
+  std::cout << snapshot_to_json(*snapshot).dump(2) << std::endl;
 
   if (!follow_mode) {
     return 0;
@@ -174,7 +174,7 @@ int main(int argc, char** argv) {
     }
 
     if (updated_snapshot->sequence != last_sequence) {
-      std::cout << snapshot_to_json(*updated_snapshot).dump(2) << '\n';
+      std::cout << snapshot_to_json(*updated_snapshot).dump(2) << std::endl;
       last_sequence = updated_snapshot->sequence;
     }
 

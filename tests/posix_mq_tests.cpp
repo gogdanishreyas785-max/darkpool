@@ -1071,6 +1071,11 @@ void test_real_server_sigterm_cleanup(const char* server_executable) {
   if (server.pid() < 0) return;
   wait_for_server_queue(queue_name, server);
 
+  // Verify server has entered epoll event loop before signaling
+  std::string ping_err;
+  const auto ping_res = darkpool::control::request(queue_name, "ping", 5s, ping_err);
+  CHECK(ping_res.has_value());
+
   CHECK(::kill(server.pid(), SIGTERM) == 0);
   const auto server_exit = server.wait_for(5s);
   CHECK(server_exit.has_value());
