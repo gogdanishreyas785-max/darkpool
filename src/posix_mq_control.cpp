@@ -1,4 +1,8 @@
+#if __has_include("darkpool/posix_mq_control.hpp")
 #include "darkpool/posix_mq_control.hpp"
+#else
+#include "../include/darkpool/posix_mq_control.hpp"
+#endif
 
 #if defined(__linux__)
 
