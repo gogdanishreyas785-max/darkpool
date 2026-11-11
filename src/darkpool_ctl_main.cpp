@@ -90,7 +90,19 @@ int main(int argc, char** argv) {
   }
 
   std::cout << response->message.dump(2) << '\n';
-  return response->message.value("ok", false) ? 0 : 5;
+  if (!response->message.value("ok", false)) {
+    return 5;
+  }
+  if (operation == "shutdown") {
+    if (!response->message.contains("result") || !response->message["result"].is_object() ||
+        !response->message["result"].contains("shutdown_requested") ||
+        !response->message["result"]["shutdown_requested"].is_boolean() ||
+        !response->message["result"]["shutdown_requested"].get<bool>()) {
+      std::cerr << "error: invalid shutdown acknowledgement payload\n";
+      return 5;
+    }
+  }
+  return 0;
 }
 
 #else

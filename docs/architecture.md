@@ -324,12 +324,15 @@ The MQ descriptor is registered as an additional source in `ServerRuntime`'s exi
 
 #### Graceful Server Shutdown via POSIX MQ (IPC-3)
 When a valid `shutdown` request is processed:
-1. The server generates an acknowledgement response: `{"version":1,"request_id":"...","operation":"shutdown","ok":true,"result":{"shutdown_requested":true}}`.
-2. The server sends this response back through the private reply queue and caches it.
-3. If and only if the acknowledgement was successfully enqueued, the event loop callback requests server termination (`runtime.request_shutdown()`).
-4. Further request processing for that dispatch batch stops immediately. The server ceases dispatching additional gameplay ticks and exits `runtime.run()`.
-5. The normal termination sequence is executed on the main server thread: systemd reports `STOPPING=1`, `telemetry_publisher.stop()` commits a `stopping` snapshot and cleans up shared memory and semaphores, and the server runtime closes listener sockets and cleans up the control queue.
-6. Malformed requests, unauthorized senders, or request-ID conflicts return error envelopes and never trigger shutdown. Duplicate shutdown requests return the cached acknowledgement without triggering additional shutdown actions.
+1. The acknowledgement is successfully enqueued to the validated private reply queue and cached in the duplicate response cache.
+2. The event-loop callback requests shutdown (`runtime.request_shutdown()`).
+3. The event loop exits without processing further events in the current batch or executing another gameplay tick.
+4. `runtime.run()` returns cleanly with exit status 0.
+5. `runtime.stop()` closes active connections, listeners, and event sources.
+6. The systemd notifier sends `STOPPING=1`.
+7. `telemetry_publisher.stop()` publishes the final stopping state and cleans up shared memory and semaphore resources.
+8. The `ControlServer` object's RAII cleanup removes its owned POSIX MQ queue as `main()` exits.
+9. Malformed requests, unauthorized senders, or request-ID conflicts return error envelopes and never trigger shutdown. Duplicate shutdown requests return the cached acknowledgement without triggering additional shutdown actions. Failed acknowledgement enqueuing does not cache a successful response and does not trigger shutdown.
 
 Normal shutdown and partial startup cleanup release only the queue owned by this server instance.
 

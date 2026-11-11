@@ -592,8 +592,10 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   CHECK(follow_res.output.find("\"connected_players\": 1") != std::string::npos ||
         follow_res.output.find("\"active_matches\": 1") != std::string::npos);
 
-  // Ensure server exits gracefully after SIGTERM
-  (void)server_child.wait_for(5s);
+  // Ensure server exits gracefully after darkpool_ctl shutdown
+  const auto server_exit = server_child.wait_for(5s);
+  CHECK(server_exit.has_value());
+  CHECK(server_exit.has_value() && *server_exit == 0);
 
   // Verify IPC cleanup
   errno = 0;

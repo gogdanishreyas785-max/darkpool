@@ -681,7 +681,11 @@ bool ControlServer::process_message(std::string_view message,
 
   Json response;
   bool is_shutdown = false;
-  if (operation == "ping") {
+  if (operation == "shutdown") {
+    response = Json{{"version", 1}, {"request_id", request_id}, {"operation", operation},
+                    {"ok", true}, {"result", {{"shutdown_requested", true}}}};
+    is_shutdown = true;
+  } else if (operation == "ping") {
     response = Json{{"version", 1}, {"request_id", request_id}, {"operation", operation},
                     {"ok", true}, {"result", {{"server_available", true},
                                                 {"control_channel", "ready"}}}};
@@ -703,12 +707,13 @@ bool ControlServer::process_message(std::string_view message,
                                                   {"control_channel", "ready"},
                                                   {"transport", "posix_mq_epoll"}}}};
     }
-  } else if (operation == "shutdown") {
-    response = Json{{"version", 1}, {"request_id", request_id}, {"operation", operation},
-                    {"ok", true}, {"result", {{"shutdown_requested", true}}}};
-    is_shutdown = true;
   } else {
     response = error_response(request_id, operation, "unsupported_operation");
+  }
+
+  const bool sent = send_response(*reply, response);
+  if (!sent) {
+    return false;
   }
 
   response_cache_.insert_or_assign(request_id, CachedResponse{reply_to, operation, response});
@@ -717,8 +722,7 @@ bool ControlServer::process_message(std::string_view message,
     response_cache_.erase(response_order_.front());
     response_order_.pop_front();
   }
-  const bool sent = send_response(*reply, response);
-  return is_shutdown && sent;
+  return is_shutdown;
 }
 
 bool ControlServer::send_response(MessageQueue& reply_queue,
