@@ -20,6 +20,7 @@
 #include <iomanip>
 #include <iostream>
 #include <mqueue.h>
+#include <semaphore.h>
 #include <numeric>
 #include <optional>
 #include <sstream>
@@ -28,6 +29,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/un.h>
@@ -54,6 +56,14 @@ constexpr const char* kDefaultModeratorToken = "test-mod-token-64p";
 
 inline std::string control_queue_for_test_server(pid_t pid) {
   return "/darkpool_ctl_" + std::to_string(geteuid()) + "_test_" + std::to_string(pid);
+}
+
+inline std::string telemetry_shm_for_test_server(pid_t pid) {
+  return "/darkpool_test_telemetry_" + std::to_string(pid);
+}
+
+inline std::string telemetry_sem_for_test_server(pid_t pid) {
+  return "/darkpool_test_telemetry_notify_" + std::to_string(pid);
 }
 
 constexpr std::size_t kExpectedL6Matches = 4;
@@ -567,10 +577,16 @@ inline pid_t spawn_server_unix(const std::string& server_path, const std::string
       dup2(dev_null, STDERR_FILENO);
       close(dev_null);
     }
-    const std::string control_queue = control_queue_for_test_server(getpid());
+    const pid_t server_pid = getpid();
+    const std::string control_queue = control_queue_for_test_server(server_pid);
+    const std::string telemetry_shm = telemetry_shm_for_test_server(server_pid);
+    const std::string telemetry_sem = telemetry_sem_for_test_server(server_pid);
     execl(server_path.c_str(), server_path.c_str(),
           "--socket", socket_path.c_str(),
-          "--no-tcp", "--control-queue", control_queue.c_str(),
+          "--no-tcp",
+          "--control-queue", control_queue.c_str(),
+          "--telemetry-shm", telemetry_shm.c_str(),
+          "--telemetry-sem", telemetry_sem.c_str(),
           static_cast<char*>(nullptr));
     _exit(127);
   }
@@ -579,10 +595,26 @@ inline pid_t spawn_server_unix(const std::string& server_path, const std::string
 
 inline void stop_server_unix(pid_t server_pid, const std::string& socket_path) {
   if (server_pid > 0) {
-    (void)kill(server_pid, SIGTERM);
+    // Check/reap an already-exited child before signaling it. Some negative tests
+    // deliberately SIGKILL the server; signaling its old PID again after it has
+    // been reaped could target an unrelated process if the PID were reused.
     int status = 0;
-    (void)waitpid(server_pid, &status, 0);
+    pid_t waited = -1;
+    do {
+      waited = ::waitpid(server_pid, &status, WNOHANG);
+    } while (waited < 0 && errno == EINTR);
+
+    if (waited == 0) {
+      if (::kill(server_pid, SIGTERM) != 0 && errno != ESRCH) {
+        std::cerr << "[load-test] unable to signal test server " << server_pid
+                  << ": " << std::strerror(errno) << '\n';
+      }
+      do {
+        waited = ::waitpid(server_pid, &status, 0);
+      } while (waited < 0 && errno == EINTR);
+    }
   }
+
   if (!socket_path.empty()) {
     struct stat st {};
     if (::lstat(socket_path.c_str(), &st) == 0 && S_ISSOCK(st.st_mode)) {
@@ -591,7 +623,14 @@ inline void stop_server_unix(pid_t server_pid, const std::string& socket_path) {
   }
   if (server_pid > 0) {
     const auto queue_name = control_queue_for_test_server(server_pid);
+    const auto telemetry_shm = telemetry_shm_for_test_server(server_pid);
+    const auto telemetry_sem = telemetry_sem_for_test_server(server_pid);
     (void)::mq_unlink(queue_name.c_str());
+
+    // The server removes these on orderly shutdown. Explicitly remove the
+    // per-test names as a fallback for the intentional SIGKILL/crash cases.
+    (void)::shm_unlink(telemetry_shm.c_str());
+    (void)::sem_unlink(telemetry_sem.c_str());
   }
 }
 

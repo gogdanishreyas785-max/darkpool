@@ -4,6 +4,7 @@
 
 #include "darkpool/network.hpp"
 #include "darkpool/posix_mq_control.hpp"
+#include "load_test_harness_common.hpp"
 
 #include <array>
 #include <cerrno>
@@ -603,6 +604,66 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   std::cerr << "[shm test] integration test completed successfully\n";
 }
 
+
+void test_load_harness_cleanup_after_forced_server_exit(const std::string& server_bin) {
+  using darkpool::load_test::connect_unix;
+  using darkpool::load_test::generate_unique_socket_path;
+  using darkpool::load_test::spawn_server_unix;
+  using darkpool::load_test::stop_server_unix;
+  using darkpool::load_test::telemetry_sem_for_test_server;
+  using darkpool::load_test::telemetry_shm_for_test_server;
+
+  const auto socket_path = generate_unique_socket_path();
+  const auto server_pid = spawn_server_unix(server_bin, socket_path, "test-telemetry-cleanup-token");
+  CHECK(server_pid > 0);
+  if (server_pid <= 0) {
+    return;
+  }
+
+  const auto shm_name = telemetry_shm_for_test_server(server_pid);
+  const auto sem_name = telemetry_sem_for_test_server(server_pid);
+
+  // Listener readiness also proves telemetry initialization has completed.
+  const int probe_fd = connect_unix(socket_path);
+  CHECK(probe_fd >= 0);
+  if (probe_fd >= 0) {
+    (void)::close(probe_fd);
+  }
+
+  errno = 0;
+  const int shm_fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+  CHECK(shm_fd >= 0);
+  if (shm_fd >= 0) {
+    (void)::close(shm_fd);
+  }
+
+  errno = 0;
+  sem_t* semaphore = ::sem_open(sem_name.c_str(), 0);
+  CHECK(semaphore != SEM_FAILED);
+  if (semaphore != SEM_FAILED) {
+    (void)::sem_close(semaphore);
+  }
+
+  // Simulate the abrupt process death exercised by the L6 cleanup regression.
+  CHECK(::kill(server_pid, SIGKILL) == 0);
+  stop_server_unix(server_pid, socket_path);
+
+  errno = 0;
+  const int stale_shm = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+  CHECK(stale_shm < 0 && errno == ENOENT);
+  if (stale_shm >= 0) {
+    (void)::close(stale_shm);
+  }
+
+  errno = 0;
+  sem_t* stale_sem = ::sem_open(sem_name.c_str(), 0);
+  CHECK(stale_sem == SEM_FAILED && errno == ENOENT);
+  if (stale_sem != SEM_FAILED) {
+    (void)::sem_close(stale_sem);
+  }
+  std::cerr << "[shm test] forced-exit test-server IPC cleanup verified\n";
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -613,6 +674,7 @@ int main(int argc, char** argv) {
 
   test_unit_and_edge_cases();
   test_server_and_watch_integration(argv[1], argv[2], argv[3]);
+  test_load_harness_cleanup_after_forced_server_exit(argv[1]);
 
   if (g_failures == 0) {
     std::cout << "POSIX shared memory telemetry tests passed.\n";
