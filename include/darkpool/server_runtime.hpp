@@ -61,6 +61,7 @@ using MessageHandler = std::function<bool(std::uint64_t session_id, const Frame&
 using DisconnectHandler = std::function<void(std::uint64_t session_id)>;
 using TickHandler = std::function<void()>;
 using ConnectHandler = std::function<void(std::uint64_t session_id)>;
+using EpollEventHandler = std::function<void(std::uint32_t events)>;
 
 class ServerRuntime {
  public:
@@ -78,6 +79,8 @@ class ServerRuntime {
   void set_connect_handler(ConnectHandler handler) { connect_handler_ = std::move(handler); }
 
   bool start(std::string& error_msg);
+  bool add_epoll_event_source(int fd, EpollEventHandler handler,
+                              std::string& error_msg);
   int run();
   bool step(int timeout_ms = -1);
   void stop() noexcept;
@@ -146,6 +149,7 @@ class ServerRuntime {
   DisconnectHandler disconnect_handler_;
   TickHandler tick_handler_;
   ConnectHandler connect_handler_;
+  std::map<int, EpollEventHandler> event_sources_;
 };
 
 }  // namespace darkpool::network

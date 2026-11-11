@@ -86,6 +86,16 @@ add_test(NAME darkpool_market_sensitivity_analysis COMMAND darkpool_market_sensi
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   find_package(OpenSSL 3.0 REQUIRED COMPONENTS SSL Crypto)
 
+  add_library(darkpool_control src/posix_mq_control.cpp)
+  target_include_directories(darkpool_control PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(darkpool_control PUBLIC cxx_std_20)
+  target_link_libraries(darkpool_control PUBLIC darkpool_communications)
+  find_library(DARKPOOL_RT_LIBRARY NAMES rt)
+  if(DARKPOOL_RT_LIBRARY)
+    target_link_libraries(darkpool_control PUBLIC ${DARKPOOL_RT_LIBRARY})
+  endif()
+  darkpool_enable_warnings(darkpool_control)
+
   target_sources(darkpool_communications PRIVATE
     src/tls_transport.cpp
     src/socket_primitives.cpp
@@ -95,8 +105,19 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(darkpool_communications PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 
   add_executable(darkpool_server src/server_main.cpp)
-  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_communications)
+  target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_communications darkpool_control)
   darkpool_enable_warnings(darkpool_server)
+
+  add_executable(darkpool_ctl src/darkpool_ctl_main.cpp)
+  target_link_libraries(darkpool_ctl PRIVATE darkpool_control)
+  darkpool_enable_warnings(darkpool_ctl)
+
+  add_executable(darkpool_posix_mq_tests tests/posix_mq_tests.cpp)
+  target_link_libraries(darkpool_posix_mq_tests PRIVATE darkpool_control)
+  darkpool_enable_warnings(darkpool_posix_mq_tests)
+  add_test(NAME darkpool_posix_mq_tests
+    COMMAND darkpool_posix_mq_tests $<TARGET_FILE:darkpool_server> $<TARGET_FILE:darkpool_ctl>)
+  set_tests_properties(darkpool_posix_mq_tests PROPERTIES TIMEOUT 90)
 
   add_executable(darkpool_client src/client_main.cpp)
   target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_communications)

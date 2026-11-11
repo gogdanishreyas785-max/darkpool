@@ -207,6 +207,30 @@ bool ServerRuntime::start(std::string& error_msg) {
   return true;
 }
 
+bool ServerRuntime::add_epoll_event_source(int fd, EpollEventHandler handler,
+                                           std::string& error_msg) {
+  if (!is_running_ || epoll_fd_ < 0) {
+    error_msg = "epoll event source registration requires a started runtime";
+    return false;
+  }
+  if (fd < 0 || !handler || event_sources_.contains(fd) || clients_.contains(fd) ||
+      fd == tcp_listener_ || fd == tls_listener_ || fd == unix_listener_ || fd == signal_fd_) {
+    error_msg = "invalid or already registered epoll event source";
+    return false;
+  }
+  epoll_event event{};
+  event.events = static_cast<std::uint32_t>(EPOLLIN) |
+                 static_cast<std::uint32_t>(EPOLLERR) |
+                 static_cast<std::uint32_t>(EPOLLHUP);
+  event.data.fd = fd;
+  if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, fd, &event) != 0) {
+    error_msg = std::string("epoll_ctl add event source: ") + std::strerror(errno);
+    return false;
+  }
+  event_sources_.emplace(fd, std::move(handler));
+  return true;
+}
+
 void ServerRuntime::accept_pending_clients(int listener_fd, bool is_tls) {
   while (true) {
     const auto client =
@@ -472,6 +496,24 @@ bool ServerRuntime::step(int timeout_ms) {
       continue;
     }
 
+    const auto event_source = event_sources_.find(fd);
+    if (event_source != event_sources_.end()) {
+      const auto flags = events[i].events;
+      try {
+        if ((flags & EPOLLIN) != 0U) event_source->second(flags);
+      } catch (const std::exception& error) {
+        std::cerr << "[server] epoll event source callback failed: " << error.what() << '\n';
+      } catch (...) {
+        std::cerr << "[server] epoll event source callback failed\n";
+      }
+      if ((flags & (EPOLLERR | EPOLLHUP)) != 0U) {
+        (void)::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+        event_sources_.erase(event_source);
+        std::cerr << "[server] epoll event source removed after descriptor error\n";
+      }
+      continue;
+    }
+
     const auto found = clients_.find(fd);
     if (found == clients_.end()) {
       continue;
@@ -578,6 +620,14 @@ int ServerRuntime::run() {
 void ServerRuntime::stop() noexcept {
   should_terminate_ = true;
   is_running_ = false;
+
+  if (epoll_fd_ >= 0) {
+    for (const auto& [source_fd, handler] : event_sources_) {
+      (void)handler;
+      (void)epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, source_fd, nullptr);
+    }
+  }
+  event_sources_.clear();
 
   for (auto& [client_fd, conn] : clients_) {
     if (conn.ssl != nullptr) {

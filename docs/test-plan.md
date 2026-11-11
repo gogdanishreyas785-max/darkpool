@@ -30,6 +30,7 @@ The CMake configuration defines tests for these areas:
 - **Server integration:** UNIX-domain sockets, TCP sessions, authentication, gameplay flows, variable-size matches, notifications, timers/deadlines, late actions, and malformed input.
 - **TLS integration:** OpenSSL TLS 1.3 handshakes, certificate trust and identity validation, transport I/O, and negative security cases.
 - **Reactor dispatch:** readiness decisions for nonblocking socket and TLS operations.
+- **Local POSIX MQ control:** actual server and CLI processes, `ping`/aggregate `status`, request correlation and duplicate handling, concurrent clients, queue limits/priority/FIFO, malformed requests and reply destinations, permissions, queue-full/empty behavior, cleanup, and continued gameplay socket responsiveness.
 - **Load-harness regressions:** harness self-tests and short functional workloads included in CTest.
 
 The canonical list of executable test targets is in CMakeLists.txt. To see the names available in a configured build:
@@ -43,6 +44,14 @@ To rerun a specific suite, use the exact registered name shown by CTest, for exa
 ~~~bash
 ctest --test-dir build --output-on-failure -R '^darkpool_tls_integration_tests$'
 ~~~
+
+The Linux-only local control-channel suite can be run independently with:
+
+~~~bash
+ctest --test-dir build --output-on-failure -R '^darkpool_posix_mq_tests$'
+~~~
+
+It launches the real server and `darkpool_ctl`, as well as direct queue requests for malformed and boundary cases. It verifies orderly queue/socket cleanup and partial-startup cleanup. POSIX MQ descriptor polling through `epoll` is specific to the supported Linux runtime; the non-Linux build does not include this control target.
 
 ## Benchmark evidence
 

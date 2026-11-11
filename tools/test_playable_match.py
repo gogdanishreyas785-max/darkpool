@@ -25,6 +25,11 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
+
+
+def control_queue_name():
+    return f"/darkpool_ctl_{os.geteuid()}_playable_{uuid.uuid4().hex}"
 
 def log(msg):
     print(f"[ACCEPTANCE] {msg}", flush=True)
@@ -137,7 +142,8 @@ def run_scenario_insider_win(server_bin, client_bin, temp_dir):
     server_cmd = [
         server_bin, "--no-tcp", "--no-unix",
         "--tls-bind-address", "127.0.0.1", "--tls-port", str(port),
-        "--tls-cert", cert_file, "--tls-key", key_file
+        "--tls-cert", cert_file, "--tls-key", key_file,
+        "--control-queue", control_queue_name()
     ]
     server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     time.sleep(0.8)
@@ -249,7 +255,8 @@ def run_scenario_elimination_and_employees_win(server_bin, client_bin, temp_dir)
     server_cmd = [
         server_bin, "--no-tcp", "--no-unix",
         "--tls-bind-address", "127.0.0.1", "--tls-port", str(port),
-        "--tls-cert", cert_file, "--tls-key", key_file
+        "--tls-cert", cert_file, "--tls-key", key_file,
+        "--control-queue", control_queue_name()
     ]
     server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     time.sleep(0.8)
@@ -516,7 +523,8 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
     server_cmd = [
         server_bin, "--no-tcp", "--no-unix",
         "--tls-bind-address", "127.0.0.1", "--tls-port", str(port),
-        "--tls-cert", cert_file, "--tls-key", key_file
+        "--tls-cert", cert_file, "--tls-key", key_file,
+        "--control-queue", control_queue_name()
     ]
     server_proc = subprocess.Popen(server_cmd, env=server_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     time.sleep(0.8)
@@ -547,7 +555,8 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         san_key, san_cert, san_fp = generate_cert(temp_dir, "192.168.1.99")
         san_server = subprocess.Popen(
             [server_bin, "--no-tcp", "--no-unix", "--tls-bind-address", "127.0.0.1", "--tls-port", str(san_port),
-             "--tls-cert", san_cert, "--tls-key", san_key],
+             "--tls-cert", san_cert, "--tls-key", san_key,
+             "--control-queue", control_queue_name()],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         time.sleep(0.8)
@@ -619,7 +628,8 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         # Start server with TCP port enabled for raw frame testing
         tcp_port = find_free_port()
         tcp_server = subprocess.Popen(
-            [server_bin, "--no-unix", "--no-tls", "--bind-address", "127.0.0.1", "--port", str(tcp_port)],
+            [server_bin, "--no-unix", "--no-tls", "--bind-address", "127.0.0.1", "--port", str(tcp_port),
+             "--control-queue", control_queue_name()],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
         )
         time.sleep(0.8)

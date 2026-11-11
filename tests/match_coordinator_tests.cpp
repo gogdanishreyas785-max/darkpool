@@ -325,6 +325,7 @@ void test_multiple_investigator_clues_reverse_order() {
 
 void test_match_lifecycle_cleanup_and_isolation() {
   MatchCoordinator coordinator;
+  CHECK(coordinator.active_match_count() == 0U);
   coordinator.register_session(100, SessionRole::Moderator);
   coordinator.register_session(200, SessionRole::Moderator);
 
@@ -344,6 +345,7 @@ void test_match_lifecycle_cleanup_and_isolation() {
   const auto match_c_info = create(coordinator, 200, 3);
   CHECK(match_c_info["type"] == "match_created");
   const auto match_c = match_c_info["match_id"].get<std::uint64_t>();
+  CHECK(coordinator.active_match_count() == 3U);
 
   // Players 1..4 join Match A (leaving 1 seat open)
   for (std::uint64_t s = 1; s <= 4; ++s) {
@@ -396,6 +398,7 @@ void test_match_lifecycle_cleanup_and_isolation() {
   const auto act_b = coordinator.handle(6, json{{"type", "match_status"}, {"match_id", match_b}});
   CHECK(act_a && (*act_a)["type"] == "error" && (*act_a)["error"] == "unknown match");
   CHECK(act_b && (*act_b)["type"] == "error" && (*act_b)["error"] == "unknown match");
+  CHECK(coordinator.active_match_count() == 1U);
 
   // Detached player 1 can now join valid Match C (created by Moderator 200) without stale identity
   const auto p1_join_c = join(coordinator, 1, match_c);
