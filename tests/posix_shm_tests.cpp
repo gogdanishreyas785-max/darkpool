@@ -34,8 +34,10 @@ using darkpool::network::Frame;
 using darkpool::network::json;
 using darkpool::telemetry::ServerState;
 using darkpool::telemetry::TelemetryObserver;
+using darkpool::telemetry::TelemetryPayload;
 using darkpool::telemetry::TelemetryPublisher;
 using darkpool::telemetry::TelemetrySharedMemory;
+using darkpool::telemetry::verify_telemetry_integrity;
 
 int g_failures = 0;
 
@@ -406,6 +408,197 @@ void test_unit_and_edge_cases() {
   std::cerr << "[shm test] unit and edge case tests passed\n";
 }
 
+void test_observer_mapping_survives_publisher_shutdown() {
+  std::cerr << "[shm test] running test_observer_mapping_survives_publisher_shutdown\n";
+
+  // Case 1: Normal publisher stop while observer remains mapped
+  {
+    const auto token = unique_token();
+    const auto shm_name = "/darkpool_test_survive_shm_" + token;
+    const auto sem_name = "/darkpool_test_survive_sem_" + token;
+
+    // 1. Create a publisher with unique shared-memory and semaphore names
+    TelemetryPublisher pub(shm_name, sem_name);
+    std::string start_err;
+    CHECK(pub.start({1, 2, 3, 4, 64, 256}, start_err));
+
+    // 2. Open a TelemetryObserver while publisher is running
+    TelemetryObserver obs;
+    std::string open_err;
+    CHECK(obs.open(shm_name, sem_name, open_err));
+
+    // 3. Verify initial snapshot is valid and has state Running
+    std::string read_err;
+    auto snap1 = obs.read_snapshot(500ms, read_err);
+    CHECK(snap1.has_value());
+    if (snap1) {
+      CHECK(snap1->server_state == ServerState::Running);
+      CHECK(snap1->sequence == 1U);
+      CHECK(snap1->active_matches == 1U);
+      CHECK(snap1->connected_players == 2U);
+      CHECK(snap1->connected_moderators == 3U);
+      CHECK(verify_telemetry_integrity(TelemetryPayload{
+          .sequence = snap1->sequence,
+          .timestamp_ns = snap1->timestamp_ns,
+          .server_pid = snap1->server_pid,
+          .server_state = static_cast<std::uint32_t>(snap1->server_state),
+          .integrity = snap1->integrity,
+          .active_matches = snap1->active_matches,
+          .connected_players = snap1->connected_players,
+          .connected_moderators = snap1->connected_moderators,
+          .match_capacity = snap1->match_capacity,
+          .players_per_match_capacity = snap1->players_per_match_capacity,
+          .player_connection_capacity = snap1->player_connection_capacity,
+      }));
+    }
+
+    // 4. Keep observer open and mapped
+    // 5. Call TelemetryPublisher::stop() without closing observer first
+    pub.stop();
+
+    // 6. Verify existing observer can still call read_snapshot() successfully
+    // 7. Verify final snapshot has state Stopping and valid integrity
+    auto snap2 = obs.read_snapshot(500ms, read_err);
+    CHECK(snap2.has_value());
+    if (snap2) {
+      CHECK(snap2->server_state == ServerState::Stopping);
+      CHECK(snap2->sequence == 2U);
+      CHECK(verify_telemetry_integrity(TelemetryPayload{
+          .sequence = snap2->sequence,
+          .timestamp_ns = snap2->timestamp_ns,
+          .server_pid = snap2->server_pid,
+          .server_state = static_cast<std::uint32_t>(snap2->server_state),
+          .integrity = snap2->integrity,
+          .active_matches = snap2->active_matches,
+          .connected_players = snap2->connected_players,
+          .connected_moderators = snap2->connected_moderators,
+          .match_capacity = snap2->match_capacity,
+          .players_per_match_capacity = snap2->players_per_match_capacity,
+          .player_connection_capacity = snap2->player_connection_capacity,
+      }));
+    }
+
+    // 8. Verify new observers cannot open the unlinked named objects
+    TelemetryObserver new_obs;
+    std::string new_open_err;
+    CHECK(!new_obs.open(shm_name, sem_name, new_open_err));
+    CHECK(new_open_err.find("does not exist") != std::string::npos);
+
+    // 9. Close existing observer and ensure cleanup is complete
+    obs.close();
+    errno = 0;
+    const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+    CHECK(fd < 0 && errno == ENOENT);
+    if (fd >= 0) (void)::close(fd);
+
+    errno = 0;
+    sem_t* sem = ::sem_open(sem_name.c_str(), 0);
+    CHECK(sem == SEM_FAILED && errno == ENOENT);
+    if (sem != SEM_FAILED) (void)::sem_close(sem);
+  }
+
+  // Case 2: Concurrency - Lock held by observer beyond bounded acquisition timeout during shutdown
+  {
+    const auto token = unique_token();
+    const auto shm_name = "/darkpool_test_timeout_shm_" + token;
+    const auto sem_name = "/darkpool_test_timeout_sem_" + token;
+
+    TelemetryPublisher pub(shm_name, sem_name);
+    std::string start_err;
+    CHECK(pub.start({5, 10, 1, 4, 64, 256}, start_err));
+
+    TelemetryObserver obs;
+    std::string open_err;
+    CHECK(obs.open(shm_name, sem_name, open_err));
+
+    // Two unidirectional pipes for deterministic parent-child coordination
+    int pipe_c2p[2]{-1, -1};
+    int pipe_p2c[2]{-1, -1};
+    CHECK(::pipe(pipe_c2p) == 0);
+    CHECK(::pipe(pipe_p2c) == 0);
+
+    const pid_t child_pid = ::fork();
+    CHECK(child_pid >= 0);
+    if (child_pid == 0) {
+      // Child process
+      (void)::close(pipe_c2p[0]);
+      (void)::close(pipe_p2c[1]);
+
+      int shm_fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+      if (shm_fd < 0) ::_exit(1);
+      auto* raw = static_cast<TelemetrySharedMemory*>(
+          ::mmap(nullptr, sizeof(TelemetrySharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
+      if (raw == MAP_FAILED) ::_exit(2);
+
+      // Acquire the robust mutex
+      if (::pthread_mutex_lock(&raw->mutex) != 0) ::_exit(3);
+
+      // Signal parent that child holds the lock
+      char ack = 'L';
+      if (::write(pipe_c2p[1], &ack, 1) != 1) ::_exit(4);
+
+      // Wait for parent signal before releasing mutex
+      char release_cmd = 0;
+      if (::read(pipe_p2c[0], &release_cmd, 1) != 1) ::_exit(5);
+
+      // Release mutex cleanly
+      (void)::pthread_mutex_unlock(&raw->mutex);
+      (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+      (void)::close(shm_fd);
+      (void)::close(pipe_c2p[1]);
+      (void)::close(pipe_p2c[0]);
+      ::_exit(0);
+    }
+
+    // Parent process
+    (void)::close(pipe_c2p[1]);
+    (void)::close(pipe_p2c[0]);
+
+    // Wait until child has acquired the mutex
+    char lock_held = 0;
+    CHECK(::read(pipe_c2p[0], &lock_held, 1) == 1 && lock_held == 'L');
+
+    // Call publisher shutdown while the lock is held beyond bounded acquisition timeout
+    const auto t_start = std::chrono::steady_clock::now();
+    pub.stop();
+    const auto t_elapsed = std::chrono::steady_clock::now() - t_start;
+    // Verify shutdown returned without blocking indefinitely (bounded ~500ms timeout)
+    CHECK(t_elapsed >= 400ms && t_elapsed <= 2000ms);
+
+    // Tell child to release the mutex
+    char rel_cmd = 'R';
+    CHECK(::write(pipe_p2c[1], &rel_cmd, 1) == 1);
+
+    // Reap child and verify exit status 0
+    int child_status = 0;
+    CHECK(::waitpid(child_pid, &child_status, 0) == child_pid);
+    CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
+
+    (void)::close(pipe_c2p[0]);
+    (void)::close(pipe_p2c[1]);
+
+    // Verify existing mapping remains usable and mutex has not been destroyed
+    std::string read_err;
+    auto snap = obs.read_snapshot(500ms, read_err);
+    CHECK(snap.has_value());
+    if (snap) {
+      CHECK(snap->server_state == ServerState::Running);  // was not updated to Stopping due to lock timeout
+      CHECK(snap->sequence == 1U);
+      CHECK(snap->active_matches == 5U);
+    }
+
+    // Verify new observers cannot open the unlinked named objects
+    TelemetryObserver new_obs;
+    std::string new_open_err;
+    CHECK(!new_obs.open(shm_name, sem_name, new_open_err));
+    CHECK(new_open_err.find("does not exist") != std::string::npos);
+
+    obs.close();
+  }
+
+  std::cerr << "[shm test] test_observer_mapping_survives_publisher_shutdown passed\n";
+}
+
 void test_server_and_watch_integration(const char* server_bin, const char* watch_bin,
                                        const char* ctl_bin) {
   std::cerr << "[shm test] running full server & watch integration test\n";
@@ -683,11 +876,28 @@ void test_server_sigterm_shutdown(const char* server_bin, const char* watch_bin)
   auto watch_follow = launch_cmd({watch_bin, "--shm", shm_name, "--sem", sem_name, "--follow"});
   CHECK(watch_follow.process.pid() >= 0);
 
+  // Wait until darkpool_watch is ready and has read the initial snapshot before sending SIGTERM
+  std::string initial_out;
+  const auto ready_deadline = std::chrono::steady_clock::now() + 5s;
+  while (std::chrono::steady_clock::now() < ready_deadline) {
+    pollfd pfd{.fd = watch_follow.output_fd, .events = POLLIN, .revents = 0};
+    if (::poll(&pfd, 1, 50) > 0 && (pfd.revents & POLLIN) != 0) {
+      char b[256];
+      const auto n = ::read(watch_follow.output_fd, b, sizeof(b));
+      if (n > 0) {
+        initial_out.append(b, static_cast<std::size_t>(n));
+        if (initial_out.find("running") != std::string::npos) break;
+      }
+    }
+  }
+  CHECK(initial_out.find("running") != std::string::npos);
+
   // Send SIGTERM to server process using kill()
   CHECK(::kill(server_child.pid(), SIGTERM) == 0);
 
   // Observer must detect stopping state and exit cleanly (code 0)
   auto follow_res = collect_cmd(watch_follow, 5s);
+  follow_res.output = initial_out + follow_res.output;
   CHECK(follow_res.exit_code == 0);
   CHECK(follow_res.output.find("stopping") != std::string::npos);
 
@@ -790,6 +1000,7 @@ int main(int argc, char** argv) {
   }
 
   test_unit_and_edge_cases();
+  test_observer_mapping_survives_publisher_shutdown();
   test_server_and_watch_integration(argv[1], argv[2], argv[3]);
   test_server_sigterm_shutdown(argv[1], argv[2]);
   test_load_harness_cleanup_after_forced_server_exit(argv[1]);
