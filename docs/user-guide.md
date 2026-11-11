@@ -454,4 +454,48 @@ The server creates its queue exclusively and removes only the queue it created o
 
 Linux `epoll` polling of POSIX MQ descriptors is used by this implementation. It is not a cross-platform promise about POSIX MQ readiness. See [Architecture: local POSIX MQ control plane](architecture.md#92-local-posix-mq-control-plane) for request format, event-loop ownership, and the D-Bus trade-off.
 
+## 13. Local POSIX shared memory telemetry (IPC-2)
+
+On Linux, the server publishes its aggregate operational telemetry snapshot to POSIX shared memory (`/darkpool_telemetry_<effective-uid>`), synchronized with a process-shared robust mutex and signaled with a POSIX named semaphore (`/darkpool_telemetry_notify_<effective-uid>`).
+
+Unlike `darkpool_ctl`, which sends requests through a message queue, `darkpool_watch` observes the latest state without sending any request frames to the server:
+
+~~~bash
+build/darkpool_watch --once
+build/darkpool_watch --follow
+~~~
+
+- `--once` (default): Reads and validates one telemetry snapshot, prints JSON, and exits immediately.
+- `--follow`: Waits on semaphore notifications and sequence updates, printing each new snapshot until terminated with `SIGINT` (Ctrl+C) or until the server publishes its `stopping` lifecycle state.
+
+Both commands require running under the same local user (effective UID) as the server process.
+
+Custom shared memory and semaphore names can be passed with `--shm` and `--sem`:
+
+~~~bash
+build/darkpool_server --telemetry-shm /darkpool_telemetry_1000_custom --telemetry-sem /darkpool_telemetry_notify_1000_custom
+build/darkpool_watch --shm /darkpool_telemetry_1000_custom --sem /darkpool_telemetry_notify_1000_custom --once
+~~~
+
+### Telemetry scope and properties
+
+- **No private game state:** The snapshot contains sequence number, timestamp, server PID, lifecycle state (`running` or `stopping`), active match count, connected player count, connected moderator count, and configured match/player capacities. It never exposes roles, player IDs, match IDs, clues, votes, balances, holdings, or credentials.
+- **Not authoritative game state or durable storage:** Shared memory only holds the latest aggregate snapshot. Authoritative game and match state remains in the server process.
+- **Nonblocking server event loop & publication deduplication:** The server updates shared memory using nonblocking `pthread_mutex_trylock`. If an observer holds the mutex, publication is skipped without blocking gameplay networking and retried on subsequent ticks. Unchanged telemetry state does not increment the sequence number and does not generate redundant notifications.
+- **Integrity verification & robust recovery:** Every snapshot includes a CRC32 integrity checksum committed after all other payload fields. If a process terminates while holding the mutex (`EOWNERDEAD`), the observer or publisher verifies the payload integrity before restoring consistency.
+- **Logically read-only observer:** `darkpool_watch` never modifies telemetry or server state. However, POSIX robust mutex state requires writable synchronization memory, so the shared segment is mapped `PROT_READ | PROT_WRITE` under a same-user (`0600`) trust boundary.
+- **Stale resource recovery:** Newly created shared memory and semaphore objects use mode `0600` and are created exclusively (`O_CREAT | O_EXCL`). If the server terminates abnormally and leaves behind stale objects, an operator can remove them after verifying that the owning server is no longer running. Do not use broad wildcards; remove only the specific objects for the effective UID:
+  ~~~bash
+  # 1. Verify no darkpool_server instance is currently running
+  pgrep -u $UID darkpool_server
+  # (Proceed ONLY if no live server process was found)
+
+  # 2. Remove the specific stale shared-memory segment
+  rm -f /dev/shm/darkpool_telemetry_$UID
+
+  # 3. Remove the specific stale named semaphore (POSIX named semaphores are prefixed with 'sem.')
+  rm -f /dev/shm/sem.darkpool_telemetry_notify_$UID
+  ~~~
+  If custom names were configured with `--telemetry-shm` or `--telemetry-sem`, remove those exact paths (e.g. `/dev/shm/<custom_shm>` and `/dev/shm/sem.<custom_sem>`).
+
 For an uncovered issue, capture the exact command, full error text, transport mode, and relevant server-side output. Never post live moderator or match tokens publicly.

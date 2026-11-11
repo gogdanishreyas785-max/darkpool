@@ -12,6 +12,7 @@ int main() {
 #include "darkpool/match_coordinator.hpp"
 #include "darkpool/network.hpp"
 #include "darkpool/posix_mq_control.hpp"
+#include "darkpool/posix_shm_telemetry.hpp"
 #include "darkpool/server_runtime.hpp"
 #include "darkpool/socket_primitives.hpp"
 #include "darkpool/systemd_notify.hpp"
@@ -53,6 +54,8 @@ struct ServerConfig {
   std::string tls_cert_path;
   std::string tls_key_path;
   std::string control_mq_queue;
+  std::string telemetry_shm;
+  std::string telemetry_sem;
   bool open_lobby{false};
 };
 
@@ -203,6 +206,18 @@ bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string&
         return false;
       }
       config.control_mq_queue = argv[++i];
+    } else if (arg == "--telemetry-shm") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --telemetry-shm";
+        return false;
+      }
+      config.telemetry_shm = argv[++i];
+    } else if (arg == "--telemetry-sem") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --telemetry-sem";
+        return false;
+      }
+      config.telemetry_sem = argv[++i];
     } else {
       std::uint16_t p = 0;
       if (darkpool::network::parse_port(argv[i], p)) {
@@ -243,7 +258,8 @@ int main(int argc, char** argv) {
     }
     std::cerr << "usage: darkpool_server [--bind-address <IPv4>] [--port <port>] [--socket <path>] "
                  "[--tls-bind-address <IPv4>] [--tls-port <port>] [--tls-cert <cert.pem>] [--tls-key <key.pem>] "
-                 "[--control-queue <name>] [--open-lobby] [--no-tcp] [--no-unix] [port] [socket_path]\n";
+                 "[--control-queue <name>] [--telemetry-shm <name>] [--telemetry-sem <name>] "
+                 "[--open-lobby] [--no-tcp] [--no-unix] [port] [socket_path]\n";
     return 2;
   }
 
@@ -269,6 +285,26 @@ int main(int argc, char** argv) {
   std::string control_error;
   if (!control_server.start(control_error)) {
     std::cerr << "error: control channel startup failed: " << control_error << '\n';
+    return 1;
+  }
+
+  darkpool::telemetry::TelemetryPublisher telemetry_publisher(
+      config.telemetry_shm.empty() ? darkpool::telemetry::default_shm_name()
+                                   : config.telemetry_shm,
+      config.telemetry_sem.empty() ? darkpool::telemetry::default_sem_name()
+                                   : config.telemetry_sem);
+  std::string telemetry_error;
+  if (!telemetry_publisher.start(
+          darkpool::telemetry::TelemetryInput{
+              .active_matches = 0U,
+              .connected_players = 0U,
+              .connected_moderators = 0U,
+              .match_capacity = kMaxMatches,
+              .players_per_match_capacity = kMaxPlayersPerMatch,
+              .player_connection_capacity = kMaxPlayerConnections,
+          },
+          telemetry_error)) {
+    std::cerr << "error: telemetry startup failed: " << telemetry_error << '\n';
     return 1;
   }
 
@@ -311,6 +347,19 @@ int main(int argc, char** argv) {
   std::size_t players = 0;
   std::size_t moderators = 0;
 
+  auto publish_telemetry = [&](bool is_stopping = false) {
+    (void)telemetry_publisher.publish(
+        darkpool::telemetry::TelemetryInput{
+            .active_matches = static_cast<std::uint64_t>(coordinator.active_match_count()),
+            .connected_players = static_cast<std::uint64_t>(players),
+            .connected_moderators = static_cast<std::uint64_t>(moderators),
+            .match_capacity = static_cast<std::uint64_t>(kMaxMatches),
+            .players_per_match_capacity = static_cast<std::uint64_t>(kMaxPlayersPerMatch),
+            .player_connection_capacity = static_cast<std::uint64_t>(kMaxPlayerConnections),
+        },
+        is_stopping);
+  };
+
   runtime.set_disconnect_handler([&](std::uint64_t session_id) {
     const auto found = session_kinds.find(session_id);
     if (found != session_kinds.end()) {
@@ -322,6 +371,7 @@ int main(int argc, char** argv) {
       session_kinds.erase(found);
     }
     coordinator.unregister_session(session_id);
+    publish_telemetry();
   });
 
   runtime.set_message_handler([&](std::uint64_t session_id, const Frame& frame) -> bool {
@@ -342,6 +392,7 @@ int main(int argc, char** argv) {
         ++players;
         coordinator.register_session(session_id, darkpool::server::SessionRole::Player);
         runtime.set_authenticated(session_id, true);
+        publish_telemetry();
         return runtime.send_message(session_id, Frame(json{{"type", "connect"}, {"role", "player"}}));
       } else if (role == "moderator") {
         const char* server_token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
@@ -362,6 +413,7 @@ int main(int argc, char** argv) {
         ++moderators;
         coordinator.register_session(session_id, darkpool::server::SessionRole::Moderator);
         runtime.set_authenticated(session_id, true);
+        publish_telemetry();
         return runtime.send_message(session_id, Frame(json{{"type", "connect"}, {"role", "moderator"}}));
       } else {
         return false;
@@ -382,6 +434,7 @@ int main(int argc, char** argv) {
         runtime.send_message(recipient_id, Frame(notif.payload));
       }
     }
+    publish_telemetry();
     return ok;
   });
 
@@ -394,6 +447,7 @@ int main(int argc, char** argv) {
         runtime.send_message(recipient_id, Frame(notif.payload));
       }
     }
+    publish_telemetry();
   });
 
   std::string start_err;
@@ -423,6 +477,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   systemd_notifier.ready();
+  publish_telemetry();
 
   if (config.enable_tcp) {
     if (config.bind_address != "127.0.0.1") {
@@ -444,6 +499,7 @@ int main(int argc, char** argv) {
   const int run_result = runtime.run();
   runtime.stop();
   systemd_notifier.stopping();
+  telemetry_publisher.stop();
   return run_result;
 }
 
