@@ -506,76 +506,156 @@ void test_observer_mapping_survives_publisher_shutdown() {
     TelemetryPublisher pub(shm_name, sem_name);
     std::string start_err;
     CHECK(pub.start({5, 10, 1, 4, 64, 256}, start_err));
+    if (!pub.running()) return;
 
     TelemetryObserver obs;
     std::string open_err;
     CHECK(obs.open(shm_name, sem_name, open_err));
+    if (!obs.is_open()) {
+      pub.stop();
+      return;
+    }
 
-    // Two unidirectional pipes for deterministic parent-child coordination
-    int pipe_c2p[2]{-1, -1};
-    int pipe_p2c[2]{-1, -1};
-    CHECK(::pipe(pipe_c2p) == 0);
-    CHECK(::pipe(pipe_p2c) == 0);
+    // Bidirectional UNIX-domain socketpair with MSG_NOSIGNAL for deterministic, SIGPIPE-safe coordination
+    int comm_socks[2]{-1, -1};
+    if (::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, comm_socks) != 0) {
+      CHECK(false && "socketpair failed");
+      obs.close();
+      pub.stop();
+      return;
+    }
 
     const pid_t child_pid = ::fork();
-    CHECK(child_pid >= 0);
+    if (child_pid < 0) {
+      CHECK(false && "fork failed");
+      (void)::close(comm_socks[0]);
+      (void)::close(comm_socks[1]);
+      obs.close();
+      pub.stop();
+      return;
+    }
+
     if (child_pid == 0) {
-      // Child process
-      (void)::close(pipe_c2p[0]);
-      (void)::close(pipe_p2c[1]);
+      // Child process: closes parent socket endpoint
+      (void)::close(comm_socks[0]);
+      const int child_sock = comm_socks[1];
 
       int shm_fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
-      if (shm_fd < 0) ::_exit(1);
+      if (shm_fd < 0) {
+        (void)::close(child_sock);
+        ::_exit(10);
+      }
+
       auto* raw = static_cast<TelemetrySharedMemory*>(
           ::mmap(nullptr, sizeof(TelemetrySharedMemory), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0));
-      if (raw == MAP_FAILED) ::_exit(2);
+      if (raw == MAP_FAILED) {
+        (void)::close(shm_fd);
+        (void)::close(child_sock);
+        ::_exit(11);
+      }
 
       // Acquire the robust mutex
-      if (::pthread_mutex_lock(&raw->mutex) != 0) ::_exit(3);
+      int lock_rc = ::pthread_mutex_lock(&raw->mutex);
+      if (lock_rc == EOWNERDEAD) {
+        (void)::pthread_mutex_consistent(&raw->mutex);
+      } else if (lock_rc != 0) {
+        (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+        (void)::close(shm_fd);
+        (void)::close(child_sock);
+        ::_exit(12);
+      }
 
       // Signal parent that child holds the lock
       char ack = 'L';
-      if (::write(pipe_c2p[1], &ack, 1) != 1) ::_exit(4);
+      ssize_t sent = ::send(child_sock, &ack, 1, MSG_NOSIGNAL);
+      if (sent != 1) {
+        (void)::pthread_mutex_unlock(&raw->mutex);
+        (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+        (void)::close(shm_fd);
+        (void)::close(child_sock);
+        ::_exit(13);
+      }
 
-      // Wait for parent signal before releasing mutex
+      // Wait for parent signal before releasing mutex (bounded 5s timeout)
+      pollfd pfd{.fd = child_sock, .events = POLLIN, .revents = 0};
+      int p_res = ::poll(&pfd, 1, 5000);
+      if (p_res <= 0 || (pfd.revents & POLLIN) == 0) {
+        (void)::pthread_mutex_unlock(&raw->mutex);
+        (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+        (void)::close(shm_fd);
+        (void)::close(child_sock);
+        ::_exit(14);
+      }
+
       char release_cmd = 0;
-      if (::read(pipe_p2c[0], &release_cmd, 1) != 1) ::_exit(5);
+      ssize_t n = ::recv(child_sock, &release_cmd, 1, 0);
+      if (n != 1 || release_cmd != 'R') {
+        (void)::pthread_mutex_unlock(&raw->mutex);
+        (void)::munmap(raw, sizeof(TelemetrySharedMemory));
+        (void)::close(shm_fd);
+        (void)::close(child_sock);
+        ::_exit(15);
+      }
 
-      // Release mutex cleanly
-      (void)::pthread_mutex_unlock(&raw->mutex);
+      // Release mutex and verify return code
+      int unlock_rc = ::pthread_mutex_unlock(&raw->mutex);
       (void)::munmap(raw, sizeof(TelemetrySharedMemory));
       (void)::close(shm_fd);
-      (void)::close(pipe_c2p[1]);
-      (void)::close(pipe_p2c[0]);
+      (void)::close(child_sock);
+
+      if (unlock_rc != 0) {
+        ::_exit(16);
+      }
       ::_exit(0);
     }
 
-    // Parent process
-    (void)::close(pipe_c2p[1]);
-    (void)::close(pipe_p2c[0]);
+    // Parent process: closes child socket endpoint
+    (void)::close(comm_socks[1]);
+    const int parent_sock = comm_socks[0];
 
-    // Wait until child has acquired the mutex
+    // Wait until child has acquired the mutex (bounded 5s timeout)
+    pollfd pfd{.fd = parent_sock, .events = POLLIN, .revents = 0};
+    int p_res = ::poll(&pfd, 1, 5000);
     char lock_held = 0;
-    CHECK(::read(pipe_c2p[0], &lock_held, 1) == 1 && lock_held == 'L');
+    ssize_t recvd = -1;
+    if (p_res > 0 && (pfd.revents & POLLIN) != 0) {
+      recvd = ::recv(parent_sock, &lock_held, 1, 0);
+    }
 
-    // Call publisher shutdown while the lock is held beyond bounded acquisition timeout
+    if (recvd != 1 || lock_held != 'L') {
+      // Child setup or lock acquisition failed!
+      CHECK(false && "Child process failed to acquire lock or complete handshake");
+      (void)::close(parent_sock);
+      int child_status = 0;
+      (void)::waitpid(child_pid, &child_status, 0);
+      if (WIFEXITED(child_status)) {
+        std::cerr << "[shm test] child exited prematurely with code "
+                  << WEXITSTATUS(child_status) << '\n';
+      }
+      obs.close();
+      pub.stop();
+      return;
+    }
+
+    // Now child is guaranteed to hold the mutex.
+    // Call publisher shutdown while the lock is held beyond bounded acquisition timeout.
     const auto t_start = std::chrono::steady_clock::now();
     pub.stop();
     const auto t_elapsed = std::chrono::steady_clock::now() - t_start;
     // Verify shutdown returned without blocking indefinitely (bounded ~500ms timeout)
     CHECK(t_elapsed >= 400ms && t_elapsed <= 2000ms);
 
-    // Tell child to release the mutex
+    // Tell child to release the mutex using MSG_NOSIGNAL to prevent SIGPIPE
     char rel_cmd = 'R';
-    CHECK(::write(pipe_p2c[1], &rel_cmd, 1) == 1);
+    ssize_t sent = ::send(parent_sock, &rel_cmd, 1, MSG_NOSIGNAL);
+    CHECK(sent == 1);
 
-    // Reap child and verify exit status 0
+    (void)::close(parent_sock);
+
+    // Reap child and verify exit status 0 (asserting successful pthread_mutex_unlock)
     int child_status = 0;
     CHECK(::waitpid(child_pid, &child_status, 0) == child_pid);
     CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0);
-
-    (void)::close(pipe_c2p[0]);
-    (void)::close(pipe_p2c[1]);
 
     // Verify existing mapping remains usable and mutex has not been destroyed
     std::string read_err;
