@@ -550,18 +550,27 @@ void test_real_server_cli_concurrency_and_cleanup(const char* server_executable,
 
   const int network_fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
   CHECK(network_fd >= 0);
+  std::cerr << "[mq test] created UNIX socket fd=" << network_fd << '\n';
   if (network_fd >= 0) {
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     std::memcpy(address.sun_path, socket_path.c_str(), socket_path.size() + 1U);
-    CHECK(::connect(network_fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0);
+    const int connect_result = ::connect(network_fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address));
+    std::cerr << "[mq test] UNIX connect result=" << connect_result << " errno=" << errno << '\n';
+    CHECK(connect_result == 0);
     const auto connect_frame = Frame(json{{"type", "connect"}, {"role", "player"}}).serialize();
-    CHECK(send_bytes(network_fd, connect_frame));
+    const bool sent_connect = send_bytes(network_fd, connect_frame);
+    std::cerr << "[mq test] sent connect frame=" << sent_connect << '\n';
+    CHECK(sent_connect);
     const auto connected = receive_frame(network_fd);
+    std::cerr << "[mq test] received connect response=" << connected.has_value() << '\n';
     CHECK(connected && connected->value("type", std::string{}) == "connect");
     const json echo{{"type", "ipc_network_regression_probe"}, {"nonce", token}};
-    CHECK(send_bytes(network_fd, Frame(echo).serialize()));
+    const bool sent_echo = send_bytes(network_fd, Frame(echo).serialize());
+    std::cerr << "[mq test] sent echo=" << sent_echo << '\n';
+    CHECK(sent_echo);
     const auto echo_response = receive_frame(network_fd);
+    std::cerr << "[mq test] received echo response=" << echo_response.has_value() << '\n';
     CHECK(echo_response && *echo_response == echo);
     auto connected_status_child = launch_cli(cli_executable, queue_name, "status");
     const auto connected_status = collect_cli(connected_status_child);
