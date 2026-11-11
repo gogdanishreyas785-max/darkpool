@@ -440,7 +440,10 @@ int setattr_calls = 0;
 int send_calls = 0;
 int receive_calls = 0;
 int retry_wait_calls = 0;
+int wait_interruptions_to_inject = 0;
 std::chrono::nanoseconds last_retry_wait{};
+std::chrono::nanoseconds previous_retry_wait{};
+std::chrono::steady_clock::time_point fake_retry_now{};
 volatile sig_atomic_t* hook_interrupted = nullptr;
 
 int hooked_getattr(mqd_t descriptor, mq_attr* attributes) {
@@ -483,10 +486,25 @@ ssize_t hooked_receive(mqd_t descriptor, char* buffer, std::size_t size, unsigne
   return ::mq_receive(descriptor, buffer, size, priority);
 }
 
-void hooked_retry_wait(std::chrono::nanoseconds delay) {
+int hooked_retry_wait(std::chrono::nanoseconds delay, std::chrono::nanoseconds* remaining) {
   ++retry_wait_calls;
+  previous_retry_wait = last_retry_wait;
   last_retry_wait = delay;
+  if (wait_interruptions_to_inject > 0) {
+    --wait_interruptions_to_inject;
+    *remaining = delay / 2;
+    fake_retry_now += delay - *remaining;
+    errno = EINTR;
+    return -1;
+  }
+  *remaining = std::chrono::nanoseconds::zero();
+  fake_retry_now += delay;
   if (hook_interrupted != nullptr) *hook_interrupted = 1;
+  return 0;
+}
+
+std::chrono::steady_clock::time_point hooked_retry_clock() {
+  return fake_retry_now;
 }
 
 void reset_eintr_counters() {
@@ -494,12 +512,14 @@ void reset_eintr_counters() {
   inject_setattr_eintr = 0;
   inject_send_eintr = 0;
   inject_receive_eintr = 0;
+  wait_interruptions_to_inject = 0;
   getattr_calls = 0;
   setattr_calls = 0;
   send_calls = 0;
   receive_calls = 0;
   retry_wait_calls = 0;
   last_retry_wait = std::chrono::nanoseconds::zero();
+  previous_retry_wait = std::chrono::nanoseconds::zero();
 }
 
 void test_deterministic_eintr_retry_budget() {
@@ -511,8 +531,10 @@ void test_deterministic_eintr_retry_budget() {
   CHECK(queue.has_value());
   if (!queue) return;
 
+  fake_retry_now = std::chrono::steady_clock::now();
   darkpool::control::testing::set_mq_syscall_hooks(
-      hooked_getattr, hooked_setattr, hooked_send, hooked_receive, hooked_retry_wait);
+      hooked_getattr, hooked_setattr, hooked_send, hooked_receive,
+      hooked_retry_wait, hooked_retry_clock);
   mq_attr attributes{};
   int error_number = 0;
   unsigned priority = 0U;
@@ -526,6 +548,26 @@ void test_deterministic_eintr_retry_budget() {
   CHECK(retry_wait_calls == kRetryBudget);
   CHECK(last_retry_wait > std::chrono::nanoseconds::zero());
   CHECK(last_retry_wait <= 100us);
+
+  // An interrupted nanosleep resumes with its reported remainder before retrying MQ.
+  reset_eintr_counters();
+  inject_send_eintr = 1;
+  wait_interruptions_to_inject = 1;
+  CHECK(queue->send("resume", 0U, error_number));
+  CHECK(send_calls == 2);
+  CHECK(retry_wait_calls == 2);
+  CHECK(previous_retry_wait == 100us);
+  CHECK(last_retry_wait == 50us);
+
+  // A repeated signal storm during the wait is itself capped; it cannot spin
+  // indefinitely or consume further MQ retry attempts.
+  reset_eintr_counters();
+  inject_send_eintr = 64;
+  wait_interruptions_to_inject = 64;
+  CHECK(!queue->send("wait-storm", 0U, error_number));
+  CHECK(error_number == EINTR);
+  CHECK(send_calls == 1);
+  CHECK(retry_wait_calls == 8);
 
   // Keep a real message queued while receive keeps returning EINTR.
   CHECK(::mq_send(static_cast<mqd_t>(queue->descriptor()), "queued", 6U, 0U) == 0);
@@ -555,17 +597,14 @@ void test_deterministic_eintr_retry_budget() {
   CHECK(setattr_calls == kCallsIncludingInitial);
   CHECK(retry_wait_calls == kRetryBudget);
 
-  // A finite deadline that expires during the wait must win over retry-budget exhaustion.
+  // The fake monotonic clock advances through the wait to the absolute deadline.
   reset_eintr_counters();
   inject_receive_eintr = 64;
-  darkpool::control::testing::set_mq_syscall_hooks(
-      hooked_getattr, hooked_setattr, hooked_send, hooked_receive);
-  const auto deadline = std::chrono::steady_clock::now() + 100us;
+  const auto deadline = fake_retry_now + 100us;
   CHECK(!queue->receive(priority, error_number, nullptr, deadline));
   CHECK(error_number == ETIMEDOUT);
-  CHECK(receive_calls >= 1 && receive_calls <= kCallsIncludingInitial);
-  darkpool::control::testing::set_mq_syscall_hooks(
-      hooked_getattr, hooked_setattr, hooked_send, hooked_receive, hooked_retry_wait);
+  CHECK(receive_calls == 1);
+  CHECK(retry_wait_calls == 1);
 
   // Cancellation raised during the injected wait is reported as EINTR.
   reset_eintr_counters();
@@ -600,6 +639,7 @@ void test_deterministic_eintr_retry_budget() {
   }
 
   darkpool::control::testing::reset_mq_syscall_hooks();
+  hook_interrupted = nullptr;
 }
 
 }  // namespace

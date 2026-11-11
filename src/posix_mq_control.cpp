@@ -29,6 +29,7 @@ using Clock = std::chrono::steady_clock;
 constexpr mode_t kQueuePermissions = 0600;
 constexpr std::size_t kMaximumQueueName = 255;
 constexpr unsigned kMaximumEintrRetries = 8U;
+constexpr unsigned kMaximumInterruptedWaits = 8U;
 constexpr auto kEintrRetryDelay = std::chrono::microseconds(100);
 
 struct MqSyscallHooks {
@@ -37,9 +38,28 @@ struct MqSyscallHooks {
   testing::MqSendHook send{nullptr};
   testing::MqReceiveHook receive{nullptr};
   testing::MqRetryWaitHook retry_wait{nullptr};
+  testing::MqRetryClockHook retry_clock{nullptr};
 };
 
 MqSyscallHooks mq_hooks;
+
+Clock::time_point retry_now() noexcept {
+  return mq_hooks.retry_clock != nullptr ? mq_hooks.retry_clock() : Clock::now();
+}
+
+int retry_sleep(std::chrono::nanoseconds requested, std::chrono::nanoseconds& remaining) {
+  if (mq_hooks.retry_wait != nullptr) return mq_hooks.retry_wait(requested, &remaining);
+  const auto count = requested.count();
+  const timespec request{
+      static_cast<time_t>(count / 1'000'000'000LL),
+      static_cast<long>(count % 1'000'000'000LL)};
+  timespec rest{};
+  const int result = ::nanosleep(&request, &rest);
+  if (result != 0 && errno == EINTR) {
+    remaining = std::chrono::seconds(rest.tv_sec) + std::chrono::nanoseconds(rest.tv_nsec);
+  }
+  return result;
+}
 
 int mq_getattr_call(mqd_t descriptor, mq_attr* attributes) {
   return mq_hooks.getattr != nullptr ? mq_hooks.getattr(descriptor, attributes)
@@ -68,7 +88,7 @@ bool retry_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point dea
     error_number = EINTR;
     return false;
   }
-  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
+  if (deadline != Clock::time_point::max() && retry_now() >= deadline) {
     error_number = ETIMEDOUT;
     return false;
   }
@@ -81,38 +101,54 @@ bool retry_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point dea
 }
 
 bool wait_after_eintr(const volatile sig_atomic_t* interrupted, Clock::time_point deadline,
-                      unsigned& retries, int& error_number) {
+                      unsigned& retries, unsigned& interrupted_waits, int& error_number) {
   // EINTR retries deliberately ignore MQ readiness: a ready descriptor would make
   // poll return immediately and turn a persistent interruption into a busy loop.
   if (!retry_eintr(interrupted, deadline, retries, error_number)) return false;
-  auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(kEintrRetryDelay);
-  if (deadline != Clock::time_point::max()) {
-    const auto remaining = deadline - Clock::now();
-    if (remaining <= Clock::duration::zero()) {
+  auto remaining = std::chrono::duration_cast<std::chrono::nanoseconds>(kEintrRetryDelay);
+  while (remaining > std::chrono::nanoseconds::zero()) {
+    if (interrupted != nullptr && *interrupted != 0) {
+      error_number = EINTR;
+      return false;
+    }
+    auto requested = remaining;
+    if (deadline != Clock::time_point::max()) {
+      const auto now = retry_now();
+      if (now >= deadline) {
+        error_number = ETIMEDOUT;
+        return false;
+      }
+      requested = std::min(requested,
+          std::chrono::ceil<std::chrono::nanoseconds>(deadline - now));
+    }
+    std::chrono::nanoseconds sleep_remaining{};
+    const int result = retry_sleep(requested, sleep_remaining);
+    const int sleep_error = errno;
+
+    // Check both termination conditions after every sleep attempt, including EINTR.
+    if (interrupted != nullptr && *interrupted != 0) {
+      error_number = EINTR;
+      return false;
+    }
+    if (deadline != Clock::time_point::max() && retry_now() >= deadline) {
       error_number = ETIMEDOUT;
       return false;
     }
-    delay = std::min(delay, std::chrono::duration_cast<std::chrono::nanoseconds>(remaining));
-  }
-  if (interrupted != nullptr && *interrupted != 0) {
-    error_number = EINTR;
-    return false;
-  }
-  const auto delay_count = delay.count();
-  struct timespec requested {
-    static_cast<time_t>(delay_count / 1'000'000'000LL),
-    static_cast<long>(delay_count % 1'000'000'000LL)
-  };
-  (void)::nanosleep(&requested, nullptr);
-  if (mq_hooks.retry_wait != nullptr) mq_hooks.retry_wait(delay);
-  // A cancellation or deadline reached during the wait wins over retrying.
-  if (interrupted != nullptr && *interrupted != 0) {
-    error_number = EINTR;
-    return false;
-  }
-  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
-    error_number = ETIMEDOUT;
-    return false;
+    if (result == 0) {
+      remaining -= requested;
+      continue;
+    }
+    if (sleep_error != EINTR) {
+      error_number = sleep_error;
+      return false;
+    }
+    if (++interrupted_waits >= kMaximumInterruptedWaits) {
+      error_number = EINTR;
+      return false;
+    }
+    // POSIX nanosleep returns the unslept portion on EINTR. Keep waiting for
+    // precisely that remainder, but cap repeated signal interruptions above.
+    remaining = std::clamp(sleep_remaining, std::chrono::nanoseconds::zero(), requested);
   }
   error_number = 0;
   return true;
@@ -321,8 +357,10 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
   }
   mq_attr attributes{};
   unsigned retries = 0U;
+  unsigned interrupted_waits = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries,
+                                            interrupted_waits, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -331,8 +369,10 @@ bool MessageQueue::send(std::string_view message, unsigned priority,
     return false;
   }
   retries = 0U;
+  interrupted_waits = 0U;
   while (mq_send_call(descriptor_, message.data(), message.size(), priority) != 0) {
-    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries,
+                                            interrupted_waits, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -352,14 +392,16 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
     error_number = EINTR;
     return std::nullopt;
   }
-  if (deadline != Clock::time_point::max() && Clock::now() >= deadline) {
+  if (deadline != Clock::time_point::max() && retry_now() >= deadline) {
     error_number = ETIMEDOUT;
     return std::nullopt;
   }
   mq_attr attributes{};
   unsigned retries = 0U;
+  unsigned interrupted_waits = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries,
+                                            interrupted_waits, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return std::nullopt;
   }
@@ -371,10 +413,11 @@ std::optional<std::string> MessageQueue::receive(unsigned& priority,
   unsigned received_priority = 0U;
   ssize_t count = -1;
   retries = 0U;
+  interrupted_waits = 0U;
   do {
     count = mq_receive_call(descriptor_, buffer.data(), buffer.size(), &received_priority);
     if (count < 0 && errno == EINTR &&
-        wait_after_eintr(interrupted, deadline, retries, error_number)) {
+        wait_after_eintr(interrupted, deadline, retries, interrupted_waits, error_number)) {
       continue;
     }
     break;
@@ -404,8 +447,10 @@ bool MessageQueue::get_attributes(mq_attr& attributes,
     return false;
   }
   unsigned retries = 0U;
+  unsigned interrupted_waits = 0U;
   while (mq_getattr_call(descriptor_, &attributes) != 0) {
-    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries, error_number)) continue;
+    if (errno == EINTR && wait_after_eintr(interrupted, deadline, retries,
+                                            interrupted_waits, error_number)) continue;
     if (errno != EINTR) error_number = errno;
     return false;
   }
@@ -439,10 +484,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
                                    Clock::time_point deadline) noexcept {
   mq_attr current{};
   unsigned retries = 0U;
+  unsigned interrupted_waits = 0U;
   int result = mq_getattr_call(descriptor_, &current);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, interrupted_waits, error_number)) {
       error_message = error_text("mq_getattr", error_number);
       return false;
     }
@@ -455,10 +501,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
   mq_attr desired{};
   desired.mq_flags = current.mq_flags | O_NONBLOCK;
   retries = 0U;
+  interrupted_waits = 0U;
   result = mq_setattr_call(descriptor_, &desired, nullptr);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, interrupted_waits, error_number)) {
       error_message = error_text("mq_setattr", error_number);
       return false;
     }
@@ -469,10 +516,11 @@ bool MessageQueue::set_nonblocking(std::string& error_message,
     return false;
   }
   retries = 0U;
+  interrupted_waits = 0U;
   result = mq_getattr_call(descriptor_, &current);
   while (result != 0 && errno == EINTR) {
     int error_number = EINTR;
-    if (!wait_after_eintr(interrupted, deadline, retries, error_number)) {
+    if (!wait_after_eintr(interrupted, deadline, retries, interrupted_waits, error_number)) {
       error_message = error_text("mq_getattr", error_number);
       return false;
     }
@@ -783,8 +831,9 @@ namespace testing {
 
 void set_mq_syscall_hooks(MqGetattrHook getattr, MqSetattrHook setattr,
                           MqSendHook send, MqReceiveHook receive,
-                          MqRetryWaitHook retry_wait) noexcept {
-  mq_hooks = MqSyscallHooks{getattr, setattr, send, receive, retry_wait};
+                          MqRetryWaitHook retry_wait,
+                          MqRetryClockHook retry_clock) noexcept {
+  mq_hooks = MqSyscallHooks{getattr, setattr, send, receive, retry_wait, retry_clock};
 }
 
 void reset_mq_syscall_hooks() noexcept {
