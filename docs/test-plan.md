@@ -65,6 +65,26 @@ The Linux-only asynchronous concurrency primitives suite can be run independentl
 ctest --test-dir build --output-on-failure -R '^darkpool_ipc_async_tests$'
 ~~~
 
+### Microbenchmarks: Asynchronous IPC primitives (IPC-6)
+
+The standalone executable `darkpool_ipc_benchmark` benchmarks `BoundedMpmcQueue` and `EventNotifier` against canonical baseline implementations (`BoundedMutexQueue` and nonblocking `pipe`). It is deliberately excluded from `CTest` so standard regression testing remains non-intrusive and fast.
+
+To run the benchmark suite manually:
+
+~~~bash
+# Run all benchmark families with default workload sizes (human-readable table)
+./build/darkpool_ipc_benchmark
+
+# Run focused workloads with custom item counts and queue capacity
+./build/darkpool_ipc_benchmark --benchmark=queue --items=200000 --capacity=1024
+./build/darkpool_ipc_benchmark --benchmark=notify --items=100000
+
+# Export results to JSON
+./build/darkpool_ipc_benchmark --json-out=docs/ipc_benchmark_results.json
+~~~
+
+The benchmark reports throughput (`ops/sec`), elapsed time, failed push/pop attempts (contention retries), and roundtrip latency (`ns`). Every queue run explicitly validates that 100% of generated items are consumed without loss or duplication. Machine-readable JSON captures system and compiler metadata alongside workload metrics.
+
 It launches the real server and `darkpool_ctl`, as well as direct queue requests for malformed and boundary cases. It verifies orderly queue/socket cleanup and partial-startup cleanup. POSIX MQ descriptor polling through `epoll` is specific to the supported Linux runtime; the non-Linux build does not include this control target.
 
 ## Benchmark evidence

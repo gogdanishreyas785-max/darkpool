@@ -413,3 +413,21 @@ To prepare for future off-thread worker integration, IPC-5 introduces two reusab
 
 **Integration boundary:** These primitives represent a standalone concurrency foundation. Production server dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` do not use them yet. No worker threads or eventfd descriptors are registered in the production `epoll` loop in this milestone.
 
+### 9.7 Asynchronous IPC microbenchmarks (IPC-6)
+
+IPC-6 provides an explicit, standalone microbenchmark suite (`darkpool_ipc_benchmark`) to evaluate the throughput, scalability, and latency characteristics of `BoundedMpmcQueue` and `EventNotifier` against canonical baseline implementations.
+
+- **Target and isolation:** Built as an independent Linux-only executable (`benchmarks/ipc_benchmark.cpp`). It is deliberately excluded from `CTest` so that standard test runs remain rapid and deterministic.
+- **Baselines:**
+  - `BoundedMpmcQueue` is compared against `BoundedMutexQueue`, a mutex-and-`std::deque`-based bounded queue protected by a single `std::mutex`.
+  - `EventNotifier` (Linux `eventfd`) is compared against `PipeNotifier`, a nonblocking POSIX `pipe2(O_NONBLOCK | O_CLOEXEC)` carrying 1-byte control tokens.
+- **Workload configurations:**
+  - `queue_spsc`: Single-producer, single-consumer streaming measuring raw throughput and push/pop retry overheads.
+  - `queue_mpmc`: High-contention multi-producer, multi-consumer (4 producers, 4 consumers) verifying atomics scalability versus lock serialization.
+  - `notify_spsc`: Unbatched notification streaming measuring per-event signaling overhead.
+  - `notify_batched`: Coalesced notification throughput comparing eventfd counter accumulation against batched byte reads across a pipe stream.
+  - `notify_latency`: Strict ping-pong request/reply between two threads measuring median roundtrip notification latency.
+- **Semantic differences:** Benchmarking highlights key architectural tradeoffs:
+  - `EventNotifier` maintains an in-kernel 64-bit scalar counter rather than a byte buffer. It coalesces bursts naturally, never blocks or drops notifications unless saturated at `UINT64_MAX - 1`, and consumes with a single 8-byte read. In contrast, pipes require buffering individual byte tokens (subject to `PIPE_BUF` limits and stream framing).
+  - `BoundedMpmcQueue` avoids thread descheduling and OS synchronization primitives under contention, providing order-of-magnitude higher throughput in multi-threaded workloads, though ticket progression at the FIFO head is obstruction-sensitive.
+
