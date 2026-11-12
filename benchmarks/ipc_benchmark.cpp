@@ -256,7 +256,9 @@ class PipeNotifier {
     }
   }
 
-  std::size_t drain(std::uint64_t* out_read_syscalls = nullptr, int* error_code = nullptr) noexcept {
+  std::size_t drain(std::uint64_t* out_read_syscalls = nullptr,
+                    std::uint64_t* out_successful_reads = nullptr,
+                    int* error_code = nullptr) noexcept {
     if (error_code) *error_code = 0;
     if (read_fd_ < 0) return 0;
     std::size_t total_bytes = 0;
@@ -265,6 +267,7 @@ class PipeNotifier {
       if (out_read_syscalls) (*out_read_syscalls)++;
       const ssize_t rc = ::read(read_fd_, buf, sizeof(buf));
       if (rc > 0) {
+        if (out_successful_reads) (*out_successful_reads)++;
         total_bytes += static_cast<std::size_t>(rc);
         continue;
       }
@@ -636,6 +639,8 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
   std::atomic<std::uint64_t> write_syscalls{0};
   std::atomic<std::uint64_t> write_retries{0};
   std::atomic<std::uint64_t> empty_consumes{0};
+  std::atomic<std::uint64_t> successful_notifies{0};
+  std::atomic<std::uint64_t> successful_consumes{0};
 
   auto report_error = [&](const std::string& err) {
     std::lock_guard<std::mutex> lk(error_mutex);
@@ -662,15 +667,9 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
           return;
         }
         total_consumed_count.fetch_add(val, std::memory_order_relaxed);
+        successful_consumes.fetch_add(1, std::memory_order_relaxed);
       } else if (status == ConsumeStatus::Empty) {
         empty_consumes.fetch_add(1, std::memory_order_relaxed);
-        if (producer_done.load(std::memory_order_acquire)) {
-          read_syscalls.fetch_add(1, std::memory_order_relaxed);
-          if (notifier.consume(val, &err) == ConsumeStatus::Success) {
-            total_consumed_count.fetch_add(val, std::memory_order_relaxed);
-          }
-          if (total_consumed_count.load(std::memory_order_relaxed) >= num_notifications) break;
-        }
         if (std::chrono::steady_clock::now() > deadline) {
           abort_test.store(true, std::memory_order_relaxed);
           break;
@@ -692,6 +691,7 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
         int err = 0;
         const auto st = notifier.notify(1, &err);
         if (st == NotifyStatus::Success) {
+          successful_notifies.fetch_add(1, std::memory_order_relaxed);
           break;
         }
         if (st == NotifyStatus::Saturated) {
@@ -720,7 +720,7 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
   res.read_syscalls = read_syscalls.load();
   res.push_failures = write_retries.load();
   res.pop_failures = empty_consumes.load();
-  res.successful_operations = num_notifications;
+  res.successful_operations = successful_notifies.load() + successful_consumes.load();
   res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (res.elapsed_ms > 0.0) {
@@ -772,6 +772,8 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
   std::atomic<std::uint64_t> read_syscalls{0};
   std::atomic<std::uint64_t> write_retries{0};
   std::atomic<std::uint64_t> empty_consumes{0};
+  std::atomic<std::uint64_t> successful_notifies{0};
+  std::atomic<std::uint64_t> successful_consumes{0};
 
   auto report_error = [&](const std::string& err) {
     std::lock_guard<std::mutex> lk(error_mutex);
@@ -794,15 +796,9 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
       const auto status = notifier.consume(token, &err);
       if (status == ConsumeStatus::Success) {
         total_consumed_count.fetch_add(1, std::memory_order_relaxed);
+        successful_consumes.fetch_add(1, std::memory_order_relaxed);
       } else if (status == ConsumeStatus::Empty) {
         empty_consumes.fetch_add(1, std::memory_order_relaxed);
-        if (producer_done.load(std::memory_order_acquire)) {
-          read_syscalls.fetch_add(1, std::memory_order_relaxed);
-          if (notifier.consume(token, &err) == ConsumeStatus::Success) {
-            total_consumed_count.fetch_add(1, std::memory_order_relaxed);
-          }
-          if (total_consumed_count.load(std::memory_order_relaxed) >= num_notifications) break;
-        }
         if (std::chrono::steady_clock::now() > deadline) {
           abort_test.store(true, std::memory_order_relaxed);
           break;
@@ -824,6 +820,7 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
         int err = 0;
         const auto st = notifier.notify(1, &err);
         if (st == NotifyStatus::Success) {
+          successful_notifies.fetch_add(1, std::memory_order_relaxed);
           break;
         }
         if (st == NotifyStatus::Saturated) {
@@ -852,7 +849,7 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
   res.read_syscalls = read_syscalls.load();
   res.push_failures = write_retries.load();
   res.pop_failures = empty_consumes.load();
-  res.successful_operations = num_notifications;
+  res.successful_operations = successful_notifies.load() + successful_consumes.load();
   res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (res.elapsed_ms > 0.0) {
@@ -964,6 +961,7 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
   std::uint64_t total_consumed = 0;
   std::uint64_t writes = 0;
   std::uint64_t reads = 0;
+  std::uint64_t successful_reads = 0;
 
   const auto start_time = std::chrono::steady_clock::now();
   for (std::size_t b = 0; b < batches; ++b) {
@@ -976,9 +974,9 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
         return res;
       }
     }
-    // Drains the buffered bytes in batch, accurately counting read syscalls
+    // Drains the buffered bytes in batch, accurately counting read syscalls and successful reads
     int err = 0;
-    const std::size_t drained = notifier.drain(&reads, &err);
+    const std::size_t drained = notifier.drain(&reads, &successful_reads, &err);
     if (err != 0) {
       res.correctness_passed = false;
       res.correctness_error = "PipeNotifier drain failed with errno=" + std::to_string(err);
@@ -992,7 +990,7 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
   res.transferred_items = total_consumed;
   res.write_syscalls = writes;
   res.read_syscalls = reads;
-  res.successful_operations = writes + (reads > 0 ? reads - batches : 0); // read calls returning data
+  res.successful_operations = writes + successful_reads; // actual successful write + read operations
   res.attempted_operations = writes + reads;
 
   if (res.elapsed_ms > 0.0) {
@@ -1121,7 +1119,7 @@ BenchmarkResult run_notify_latency_eventfd(std::size_t roundtrips) {
   res.transferred_items = completed;
   res.write_syscalls = write_syscalls.load();
   res.read_syscalls = read_syscalls.load();
-  res.successful_operations = completed * 2; // full roundtrips
+  res.successful_operations = completed * 4; // 2 writes + 2 reads per completed roundtrip
   res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (completed > 0) {
@@ -1258,7 +1256,7 @@ BenchmarkResult run_notify_latency_pipe(std::size_t roundtrips) {
   res.transferred_items = completed;
   res.write_syscalls = write_syscalls.load();
   res.read_syscalls = read_syscalls.load();
-  res.successful_operations = completed * 2;
+  res.successful_operations = completed * 4; // 2 writes + 2 reads per completed roundtrip
   res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (completed > 0) {
