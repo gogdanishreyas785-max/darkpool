@@ -474,3 +474,28 @@ IPC-7 demonstrates that `EventNotifier` and `BoundedMpmcQueue` can integrate as 
 - **Integration Boundary:**
   The IPC-7 prototype (`darkpool_ipc_epoll_tests`) demonstrates that these primitives cooperate correctly with `ServerRuntime`. It does **not** integrate asynchronous worker threads or eventfd descriptors into the production `darkpool_server` daemon. Production gameplay dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` remain single-threaded within the reactor loop.
 
+### 9.9 End-to-end epoll reactor work-delivery benchmark (IPC-8)
+
+IPC-8 implements a standalone, end-to-end Linux performance benchmark (`darkpool_ipc_reactor_benchmark`) measuring the complete producer-to-reactor work-delivery path:
+
+```text
+Producer → BoundedMpmcQueue → notification primitive → epoll_wait → ServerRuntime callback → queue drain
+```
+
+- **Target and Isolation:**
+  Built as an independent Linux-only executable (`benchmarks/ipc_reactor_benchmark.cpp`). Like the IPC-6 primitive benchmarks, it is deliberately excluded from `CTest` and CI runs so that automated regression testing remains rapid and deterministic.
+- **Architectural Comparisons:**
+  Evaluates two notification primitives driving the identical `ServerRuntime` epoll event loop and draining the identical `BoundedMpmcQueue<WorkItem, 4096>`:
+  1. `EventNotifier`: Linux `eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)` with nonblocking counter increments (`notify(1)`) and 64-bit scalar counter consumption.
+  2. `PipeNotifier`: Nonblocking POSIX `pipe2(O_NONBLOCK | O_CLOEXEC)` baseline writing 1-byte control tokens and draining tokens in batches with `EINTR` and `EAGAIN` handling.
+- **Evaluated Configurations:**
+  - 1 producer, 1 reactor (1P/1C): Evaluates uncontended work streaming, baseline wakeup overhead, and strict global FIFO ordering.
+  - 4 producers, 1 reactor (4P/1C): Evaluates concurrent enqueue contention on `BoundedMpmcQueue`, multi-producer notification signaling, and per-producer FIFO preservation without duplicates or omissions.
+- **Latency Boundary Definition:**
+  Delivery latency measures the elapsed time from publication until the reactor callback dequeues the work item (`now - item.published_at`). To isolate delivery latency from queue-full backoff time, `published_at` is timestamped with `std::chrono::steady_clock` immediately before each successful `queue.try_push()` invocation. The suite reports p50, p95, p99, and maximum delivery latencies in nanoseconds.
+- **Throughput & Coalescing Accounting:**
+  The benchmark measures transferred items per second, total callback invocations, notifications signaled, and notifications consumed. Coalescing ratio is tracked as `notifications_signaled / callback_invocations`, quantifying how effectively notification bursts collapse into batches during reactor execution. To eliminate fixed execution order bias and cache warming artifacts, primitive execution order alternates across repetitions.
+- **Observed Characteristics & Environmental Context:**
+  In our WSL2 evaluation environment, `EventNotifier` demonstrates lower p50 delivery latencies and higher coalescing efficiency than the pipe baseline, while both primitives reliably achieve full work delivery and adhere to strict FIFO invariants. These measurements reflect the specific virtualized WSL2 benchmarking environment and serve as comparative evidence between the primitives, rather than an extrapolation of production server capacity.
+
+
