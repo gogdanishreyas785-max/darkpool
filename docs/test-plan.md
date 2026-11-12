@@ -94,7 +94,9 @@ The benchmark reports both successfully transferred items per second (`transferr
 
 ### End-to-End epoll Reactor Performance Benchmark (IPC-8)
 
-The standalone executable `darkpool_ipc_reactor_benchmark` evaluates the end-to-end work-delivery path (`Producer → BoundedMpmcQueue → notification primitive → epoll_wait → ServerRuntime callback → queue drain`) comparing `EventNotifier` (Linux `eventfd`) against `PipeNotifier` (nonblocking `pipe2`). It is excluded from `CTest` and CI to preserve fast regression runs.
+The standalone executable `darkpool_ipc_reactor_benchmark` evaluates the end-to-end work-delivery path (`Producer → BoundedMpmcQueue → notification primitive → epoll_wait → ServerRuntime callback → queue drain`) comparing `EventNotifier` (Linux `eventfd`) against `PipeNotifier` (nonblocking `pipe2`).
+
+The benchmark executable is built as part of the normal CMake all-target build (`cmake --build build --parallel`), which ensures it compiles cleanly in CI alongside all other binaries. However, it is not registered as a CTest test and is not executed automatically by CI. Running the benchmark workload and generating its evidence artifact remain explicit manual operations.
 
 To run the reactor benchmark manually:
 
