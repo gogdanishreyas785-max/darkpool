@@ -124,6 +124,12 @@ void test_validation_and_permissions() {
   CHECK(!ProcessSharedQueue::create("/has/slash", 10, QueueEndpointRole::Producer, err).has_value());
   CHECK(!ProcessSharedQueue::create("/", 10, QueueEndpointRole::Producer, err).has_value());
 
+  // Invalid role enum cast rejection
+  CHECK(!ProcessSharedQueue::create("/dp_test_inv_role", 10, static_cast<QueueEndpointRole>(99), err).has_value());
+  CHECK(err.find("Invalid QueueEndpointRole") != std::string::npos);
+  CHECK(!ProcessSharedQueue::open_existing("/dp_test_inv_role", static_cast<QueueEndpointRole>(99), err).has_value());
+  CHECK(err.find("Invalid QueueEndpointRole") != std::string::npos);
+
   // Invalid capacity
   CHECK(!ProcessSharedQueue::create("/dp_test_zero", 0, QueueEndpointRole::Producer, err).has_value());
   CHECK(!ProcessSharedQueue::create("/dp_test_too_large", 1000001, QueueEndpointRole::Producer, err).has_value());
@@ -541,6 +547,259 @@ void test_owner_death_on_already_open_participant() {
 }
 
 // ============================================================================
+// Test 10: Concurrent Create and Open Publication Protocol
+// ============================================================================
+
+void test_concurrent_create_and_open() {
+  std::cerr << "[process_shared_queue_tests] running test_concurrent_create_and_open\n";
+  const std::string shm_name = make_test_shm_name("concurrent_pub");
+  ProcessSharedQueue::unlink(shm_name);
+
+  // Parent will hold off completing initialization slightly using raw shm creation
+  // Or: child forks and loops attempting open_existing while parent creates.
+  const pid_t pid = ::fork();
+  CHECK(pid >= 0);
+
+  if (pid == 0) {
+    // Child: repeatedly attempts open_existing
+    std::string child_err;
+    std::optional<ProcessSharedQueue> cons;
+    for (int attempt = 0; attempt < 500; ++attempt) {
+      cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, child_err);
+      if (cons.has_value()) {
+        break;
+      }
+      struct timespec req { 0, 5'000'000L }; // 5ms
+      ::nanosleep(&req, nullptr);
+    }
+
+    if (!cons.has_value()) {
+      std::cerr << "Child consumer failed to open: " << child_err << '\n';
+      ::_exit(1);
+    }
+
+    // Wait for message
+    std::string msg;
+    QueueOpStatus st = cons->pop(msg, nullptr, 5000ms, &child_err);
+    if (st != QueueOpStatus::Success || msg != "concurrent_init_ok") {
+      std::cerr << "Child pop failed: status=" << static_cast<int>(st) << " err=" << child_err << '\n';
+      ::_exit(2);
+    }
+
+    ::_exit(0);
+  }
+
+  // Parent: delay slightly then create
+  struct timespec req { 0, 20'000'000L }; // 20ms
+  ::nanosleep(&req, nullptr);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 4, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+
+  // Push message
+  CHECK(prod->push("concurrent_init_ok", 5000ms, &err) == QueueOpStatus::Success);
+
+  int status = 0;
+  CHECK(wait_child_bounded(pid, status, 10s));
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+  ProcessSharedQueue::unlink(shm_name);
+}
+
+// ============================================================================
+// Test 11: Slot Integrity and Sequence Verification in pop()
+// ============================================================================
+
+void test_slot_integrity_rejection() {
+  std::cerr << "[process_shared_queue_tests] running test_slot_integrity_rejection\n";
+  const std::string shm_name = make_test_shm_name("slot_integrity");
+  ProcessSharedQueue::unlink(shm_name);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 4, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+  auto cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, err);
+  CHECK(cons.has_value());
+
+  CHECK(prod->push("msg1") == QueueOpStatus::Success);
+
+  // Directly tamper with slot sequence in shared memory
+  const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+  CHECK(fd >= 0);
+  std::size_t total_size = sizeof(QueueSharedHeader) + 4 * sizeof(QueueMessageSlot);
+  auto* base = reinterpret_cast<std::uint8_t*>(
+      ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  CHECK(base != MAP_FAILED);
+
+  auto* slots = reinterpret_cast<QueueMessageSlot*>(base + sizeof(QueueSharedHeader));
+
+  // Case A: Corrupt sequence
+  slots[0].sequence = 999; // Expected 0
+
+  std::string pop_msg;
+  std::string pop_err;
+  QueueOpStatus st = cons->pop(pop_msg, nullptr, 100ms, &pop_err);
+  CHECK(st == QueueOpStatus::Faulted);
+  CHECK(pop_err.find("Slot corruption") != std::string::npos);
+  CHECK(cons->is_faulted());
+  CHECK(prod->is_faulted());
+
+  ::munmap(base, total_size);
+  ::close(fd);
+  ProcessSharedQueue::unlink(shm_name);
+
+  // Case B: Corrupt slot.size = 0
+  const std::string shm_name2 = make_test_shm_name("slot_integrity_sz");
+  ProcessSharedQueue::unlink(shm_name2);
+  prod = ProcessSharedQueue::create(shm_name2, 4, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+  cons = ProcessSharedQueue::open_existing(shm_name2, QueueEndpointRole::Consumer, err);
+  CHECK(cons.has_value());
+
+  CHECK(prod->push("msg2") == QueueOpStatus::Success);
+
+  const int fd2 = ::shm_open(shm_name2.c_str(), O_RDWR, 0);
+  CHECK(fd2 >= 0);
+  base = reinterpret_cast<std::uint8_t*>(
+      ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd2, 0));
+  CHECK(base != MAP_FAILED);
+  slots = reinterpret_cast<QueueMessageSlot*>(base + sizeof(QueueSharedHeader));
+  slots[0].size = 0; // Invalid slot size
+
+  pop_err.clear();
+  st = cons->pop(pop_msg, nullptr, 100ms, &pop_err);
+  CHECK(st == QueueOpStatus::Faulted);
+  CHECK(pop_err.find("Slot corruption") != std::string::npos);
+  CHECK(cons->is_faulted());
+
+  ::munmap(base, total_size);
+  ::close(fd2);
+  ProcessSharedQueue::unlink(shm_name2);
+}
+
+// ============================================================================
+// Test 12: Deterministic ENOTRECOVERABLE Handling & Condition-Wait Owner Death
+// ============================================================================
+
+void test_deterministic_enotrecoverable_and_condition_wait_death() {
+  std::cerr << "[process_shared_queue_tests] running test_deterministic_enotrecoverable_and_condition_wait_death\n";
+  const std::string shm_name = make_test_shm_name("enotrecoverable");
+  ProcessSharedQueue::unlink(shm_name);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 2, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+
+  // Fill the queue
+  CHECK(prod->push("item1") == QueueOpStatus::Success);
+  CHECK(prod->push("item2") == QueueOpStatus::Success);
+  CHECK(prod->full());
+
+  // 1. Test condition-wait owner death:
+  // Child A opens consumer and blocks waiting on not_empty (or child B producer blocks on not_full).
+  // Let child producer block on not_full in push("item3").
+  // Meanwhile, another process locks the mutex and dies with SIGKILL.
+  // The condition wait in child returns EOWNERDEAD, transitions to Faulted, makes mutex consistent, and unlocks.
+  //
+  // Now let's test ENOTRECOVERABLE:
+  // A process acquires the mutex after an owner death, but calls unlock WITHOUT pthread_mutex_consistent().
+  // POSIX specifies that subsequent calls to pthread_mutex_lock() return ENOTRECOVERABLE!
+
+  const std::string shm_enot = make_test_shm_name("enotrec_test");
+  ProcessSharedQueue::unlink(shm_enot);
+
+  auto q_holder = ProcessSharedQueue::create(shm_enot, 4, QueueEndpointRole::Producer, err);
+  CHECK(q_holder.has_value());
+
+  int sync_pipe1[2];
+  CHECK(::pipe(sync_pipe1) == 0);
+
+  // Child 1: locks mutex and dies with SIGKILL
+  pid_t p1 = ::fork();
+  CHECK(p1 >= 0);
+  if (p1 == 0) {
+    ::close(sync_pipe1[0]);
+    const int fd = ::shm_open(shm_enot.c_str(), O_RDWR, 0);
+    auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+        ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    ::pthread_mutex_lock(&hdr->mutex);
+
+    char b = '1';
+    const ssize_t w = ::write(sync_pipe1[1], &b, 1);
+    (void)w;
+    ::close(sync_pipe1[1]);
+    ::raise(SIGKILL);
+    ::_exit(1);
+  }
+
+  ::close(sync_pipe1[1]);
+  char ack = 0;
+  CHECK(::read(sync_pipe1[0], &ack, 1) == 1);
+  ::close(sync_pipe1[0]);
+  int st1 = 0;
+  CHECK(wait_child_bounded(p1, st1));
+
+  // Child 2: locks mutex (gets EOWNERDEAD), DOES NOT call pthread_mutex_consistent(), and unlocks!
+  int sync_pipe2[2];
+  CHECK(::pipe(sync_pipe2) == 0);
+  pid_t p2 = ::fork();
+  CHECK(p2 >= 0);
+  if (p2 == 0) {
+    ::close(sync_pipe2[0]);
+    const int fd = ::shm_open(shm_enot.c_str(), O_RDWR, 0);
+    auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+        ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+
+    int l_rc = ::pthread_mutex_lock(&hdr->mutex);
+    if (l_rc != EOWNERDEAD) {
+      std::cerr << "Child 2 expected EOWNERDEAD, got " << l_rc << '\n';
+      ::_exit(2);
+    }
+    // Deliberately do NOT call pthread_mutex_consistent()!
+    // Unlocking an inconsistent robust mutex puts it in ENOTRECOVERABLE state.
+    ::pthread_mutex_unlock(&hdr->mutex);
+
+    char b = '2';
+    const ssize_t w = ::write(sync_pipe2[1], &b, 1);
+    (void)w;
+    ::close(sync_pipe2[1]);
+    ::_exit(0);
+  }
+
+  ::close(sync_pipe2[1]);
+  CHECK(::read(sync_pipe2[0], &ack, 1) == 1);
+  ::close(sync_pipe2[0]);
+  int st2 = 0;
+  CHECK(wait_child_bounded(p2, st2));
+  CHECK(WIFEXITED(st2) && WEXITSTATUS(st2) == 0);
+
+  // Now, the mutex in shm_enot is ENOTRECOVERABLE!
+  // Verify push, pop, close, and snapshot on q_holder or a new consumer:
+  std::string op_err;
+  QueueOpStatus push_st = q_holder->push("should_fail", 100ms, &op_err);
+  CHECK(push_st == QueueOpStatus::Faulted);
+  CHECK(op_err.find("ENOTRECOVERABLE") != std::string::npos);
+
+  // Close should fail safely
+  CHECK(!q_holder->close(&op_err));
+
+  // Snapshot should report Faulted
+  auto snap = q_holder->snapshot();
+  CHECK(snap.is_faulted);
+  CHECK(snap.state == QueueState::Faulted);
+
+  // open_existing on this queue must fail safely without unlocking
+  std::string open_err;
+  auto cons_fail = ProcessSharedQueue::open_existing(shm_enot, QueueEndpointRole::Consumer, open_err);
+  CHECK(!cons_fail.has_value());
+  CHECK(open_err.find("ENOTRECOVERABLE") != std::string::npos || open_err.find("Failed to acquire") != std::string::npos);
+
+  ProcessSharedQueue::unlink(shm_enot);
+  ProcessSharedQueue::unlink(shm_name);
+}
+
+// ============================================================================
 // Test 9: Synchronized Public Accessors
 // ============================================================================
 
@@ -590,6 +849,9 @@ int main() {
   test_deterministic_owner_death_on_open();
   test_owner_death_on_already_open_participant();
   test_synchronized_accessors();
+  test_concurrent_create_and_open();
+  test_slot_integrity_rejection();
+  test_deterministic_enotrecoverable_and_condition_wait_death();
 
   if (g_failures.load() == 0) {
     std::cerr << "[process_shared_queue_tests] ALL TESTS PASSED\n";

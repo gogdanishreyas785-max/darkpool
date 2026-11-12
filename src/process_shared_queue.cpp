@@ -171,6 +171,11 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     std::size_t capacity,
     QueueEndpointRole role,
     std::string& error_msg) {
+  if (role != QueueEndpointRole::Producer && role != QueueEndpointRole::Consumer) {
+    error_msg = "Invalid QueueEndpointRole";
+    return std::nullopt;
+  }
+
   if (!is_valid_queue_shm_name(shm_name)) {
     error_msg = "Invalid shared memory name: " + std::string(shm_name);
     return std::nullopt;
@@ -278,8 +283,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     return abort_creation("pthread_cond_init(not_full_cond) failed: " + std::string(std::strerror(rc)), true, true);
   }
 
-  // 3. Populate header
-  hdr->magic = kQueueMagic;
+  // 3. Populate header metadata and publication flags
   hdr->abi_version = kQueueAbiVersion;
   hdr->struct_size = static_cast<std::uint32_t>(sizeof(QueueSharedHeader));
   hdr->owner_uid = static_cast<std::uint32_t>(::geteuid());
@@ -295,6 +299,12 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     hdr->consumer_pid = hdr->creator_pid;
   }
 
+  // Memory barrier and publish readiness LAST
+  __sync_synchronize();
+  hdr->magic = kQueueMagic;
+  hdr->init_done = 1U;
+  __sync_synchronize();
+
   return ProcessSharedQueue(std::move(name), fd, total_size, addr, capacity, role, true);
 }
 
@@ -302,6 +312,11 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
     std::string_view shm_name,
     QueueEndpointRole role,
     std::string& error_msg) {
+  if (role != QueueEndpointRole::Producer && role != QueueEndpointRole::Consumer) {
+    error_msg = "Invalid QueueEndpointRole";
+    return std::nullopt;
+  }
+
   if (!is_valid_queue_shm_name(shm_name)) {
     error_msg = "Invalid shared memory name: " + std::string(shm_name);
     return std::nullopt;
@@ -358,15 +373,28 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
 
   auto* hdr = reinterpret_cast<QueueSharedHeader*>(hdr_map);
 
-  // 4. Validate magic, ABI version, struct size, owner UID
-  if (hdr->magic != kQueueMagic) {
-    error_msg = "Shared memory magic mismatch: expected 0x" +
-                std::to_string(kQueueMagic) + ", got 0x" + std::to_string(hdr->magic);
+  // 4. Bounded wait for publication readiness (up to 2000ms in 1ms increments)
+  // Ensures open_existing() never inspects partially initialized metadata or locks uninitialized pthread objects.
+  bool is_ready = false;
+  for (int attempt = 0; attempt < 2000; ++attempt) {
+    __sync_synchronize();
+    if (hdr->init_done == 1U && hdr->magic == kQueueMagic) {
+      is_ready = true;
+      break;
+    }
+    struct timespec req { 0, 1'000'000L };  // 1ms
+    ::nanosleep(&req, nullptr);
+  }
+
+  if (!is_ready) {
+    error_msg = "Shared memory queue not ready or magic mismatch: magic=0x" +
+                std::to_string(hdr->magic) + ", init_done=" + std::to_string(hdr->init_done);
     ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
   }
 
+  // Validate ABI version, struct size, owner UID
   if (hdr->abi_version != kQueueAbiVersion) {
     error_msg = "Shared memory ABI version mismatch: expected " +
                 std::to_string(kQueueAbiVersion) + ", got " + std::to_string(hdr->abi_version);
@@ -400,18 +428,10 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
     return std::nullopt;
   }
 
-  if (static_cast<std::size_t>(sb.st_size) != expected_total_size) {
+  // Re-check actual file size against expected_total_size
+  if (::fstat(fd, &sb) != 0 || static_cast<std::size_t>(sb.st_size) != expected_total_size) {
     error_msg = "Shared memory size mismatch: expected " + std::to_string(expected_total_size) +
                 ", got " + std::to_string(sb.st_size);
-    ::munmap(hdr_map, sizeof(QueueSharedHeader));
-    ::close(fd);
-    return std::nullopt;
-  }
-
-  // 6. Validate lifecycle state
-  if (hdr->state != static_cast<std::uint32_t>(QueueState::Active) &&
-      hdr->state != static_cast<std::uint32_t>(QueueState::Closed)) {
-    error_msg = "Queue is in non-connectable state: " + std::to_string(hdr->state);
     ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
@@ -432,7 +452,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
 
   ProcessSharedQueue queue(std::move(name), fd, expected_total_size, addr, capacity, role, false);
 
-  // 7. Atomic role binding under robust lock
+  // 6. Acquire robust lock before inspecting mutable lifecycle state or binding role
   const pid_t my_pid = ::getpid();
   const int lock_rc = queue.acquire_mutex(&error_msg);
   if (lock_rc == EOWNERDEAD) {
@@ -447,10 +467,16 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
     return std::nullopt;
   }
 
-  // Double check state under lock
+  // 7. Validate mutable lifecycle state under lock
   if (queue.header_->state == static_cast<std::uint32_t>(QueueState::Faulted)) {
     queue.release_mutex();
     error_msg = "Queue is in Faulted state";
+    return std::nullopt;
+  }
+  if (queue.header_->state != static_cast<std::uint32_t>(QueueState::Active) &&
+      queue.header_->state != static_cast<std::uint32_t>(QueueState::Closed)) {
+    queue.release_mutex();
+    error_msg = "Queue is in non-connectable state: " + std::to_string(queue.header_->state);
     return std::nullopt;
   }
 
@@ -666,6 +692,20 @@ QueueOpStatus ProcessSharedQueue::pop(
       // Message available
       const std::size_t slot_idx = header_->head % header_->capacity;
       const auto& slot = slots_[slot_idx];
+
+      // Validate slot integrity before copying
+      if (slot.size == 0 || slot.size > kMaxMessageDataSize || slot.sequence != header_->total_popped) {
+        header_->state = static_cast<std::uint32_t>(QueueState::Faulted);
+        ::pthread_cond_broadcast(&header_->not_empty_cond);
+        ::pthread_cond_broadcast(&header_->not_full_cond);
+        release_mutex();
+        if (error_msg) {
+          *error_msg = "Slot corruption detected: slot.size=" + std::to_string(slot.size) +
+                       ", slot.sequence=" + std::to_string(slot.sequence) +
+                       ", expected_sequence=" + std::to_string(header_->total_popped);
+        }
+        return QueueOpStatus::Faulted;
+      }
 
       if (buffer_capacity < slot.size) {
         release_mutex();

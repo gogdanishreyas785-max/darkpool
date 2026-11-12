@@ -61,6 +61,8 @@ struct QueueSharedHeader {
 
   std::uint32_t capacity;
   std::uint32_t state;
+  std::uint32_t init_done;  // 1 when fully initialized (mutex, cond, fields ready)
+  std::uint32_t reserved;
 
   std::uint64_t head;       // Next dequeue index
   std::uint64_t tail;       // Next enqueue index
