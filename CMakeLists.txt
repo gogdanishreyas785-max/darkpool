@@ -106,6 +106,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   endif()
   darkpool_enable_warnings(darkpool_telemetry)
 
+  add_library(darkpool_ipc_async src/event_notifier.cpp)
+  target_include_directories(darkpool_ipc_async PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(darkpool_ipc_async PUBLIC cxx_std_20)
+  target_link_libraries(darkpool_ipc_async PUBLIC Threads::Threads)
+  darkpool_enable_warnings(darkpool_ipc_async)
+
   target_sources(darkpool_communications PRIVATE
     src/tls_transport.cpp
     src/socket_primitives.cpp
@@ -139,6 +145,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_posix_shm_tests
     COMMAND $<TARGET_FILE:darkpool_posix_shm_tests> $<TARGET_FILE:darkpool_server> $<TARGET_FILE:darkpool_watch> $<TARGET_FILE:darkpool_ctl>)
   set_tests_properties(darkpool_posix_shm_tests PROPERTIES TIMEOUT 90)
+
+  add_executable(darkpool_ipc_async_tests tests/ipc_async_tests.cpp)
+  target_link_libraries(darkpool_ipc_async_tests PRIVATE darkpool_ipc_async Threads::Threads)
+  darkpool_enable_warnings(darkpool_ipc_async_tests)
+  add_test(NAME darkpool_ipc_async_tests COMMAND darkpool_ipc_async_tests)
+  set_tests_properties(darkpool_ipc_async_tests PROPERTIES TIMEOUT 30)
 
   add_executable(darkpool_client src/client_main.cpp)
   target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_communications)

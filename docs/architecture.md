@@ -397,3 +397,12 @@ DARKPOOL applies several distinct controls:
 
 Current limitations remain: the application does not provide durable crash recovery, and this is not a hardened public-Internet deployment design. Keep the service on trusted/private networks and follow the TLS setup instructions in the [User Guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan).
 
+### 9.6 Asynchronous concurrency primitives foundation (IPC-5)
+
+To prepare for future off-thread worker integration, IPC-5 introduces two reusable concurrency primitives in `darkpool::ipc`:
+
+1. **`EventNotifier` (`include/darkpool/event_notifier.hpp`):** A move-only RAII wrapper around Linux `eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`. It provides nonblocking counter-based notifications with standard coalescing semantics. Writes increment the 64-bit kernel counter, while nonblocking reads consume the accumulated counter and atomically reset it to zero. The underlying file descriptor is exposed for future integration into Linux `epoll` loops.
+2. **`BoundedMpmcQueue` (`include/darkpool/bounded_mpmc_queue.hpp`):** A fixed-capacity multi-producer, multi-consumer queue implementing Dmitry Vyukov's bounded MPMC algorithm using per-slot atomic sequence counters with acquire/release memory ordering. Capacities must be a power of two. The queue is completely nonblocking (no mutexes, condition variables, futexes, or system calls) and performs no heap allocations during queue operations. Slot ticket allocation is lock-free; however, end-to-end progress is obstruction-tolerant rather than strictly lock-free because a thread suspended between slot reservation and sequence publishing temporarily delays operations on that specific slot.
+
+**Integration boundary:** These primitives represent a standalone concurrency foundation. Production server dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` do not use them yet. No worker threads or eventfd descriptors are registered in the production `epoll` loop in this milestone.
+
