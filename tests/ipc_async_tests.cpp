@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <fcntl.h>
 #include <iostream>
+#include <mutex>
 #include <numeric>
 #include <poll.h>
 #include <string>
@@ -23,11 +24,14 @@ using darkpool::ipc::ConsumeStatus;
 using darkpool::ipc::EventNotifier;
 using darkpool::ipc::NotifyStatus;
 
-int g_failures = 0;
+// Thread-safe failure reporting
+inline std::atomic<int> g_failures{0};
+inline std::mutex g_log_mutex;
 
 void check(bool condition, const char* expression, int line) {
   if (!condition) {
-    ++g_failures;
+    g_failures.fetch_add(1, std::memory_order_relaxed);
+    std::lock_guard<std::mutex> lock(g_log_mutex);
     std::cerr << "FAIL line " << line << ": " << expression << '\n';
   }
 }
@@ -51,10 +55,9 @@ void test_event_notifier_initial_state_and_nonblocking() {
   CHECK(err == EAGAIN || err == EWOULDBLOCK);
   CHECK(!notifier.try_consume().has_value());
 
-  // Invalid increments
+  // Invalid increments: 0 and UINT64_MAX (0xFFFFFFFFFFFFFFFFULL)
   CHECK(notifier.notify(0) == NotifyStatus::InvalidIncrement);
   CHECK(notifier.notify(0xffffffffffffffffULL) == NotifyStatus::InvalidIncrement);
-  CHECK(notifier.notify(0xfffffffffffffffeULL) == NotifyStatus::InvalidIncrement);
 }
 
 void test_event_notifier_notify_and_consume() {
@@ -93,6 +96,32 @@ void test_event_notifier_coalescing() {
   CHECK(consumed.value() == 18);
 
   // Now counter is zero
+  CHECK(!notifier.try_consume().has_value());
+}
+
+void test_event_notifier_maximum_and_saturation() {
+  std::cerr << "[ipc_async_tests] running test_event_notifier_maximum_and_saturation\n";
+  EventNotifier notifier;
+  CHECK(notifier.valid());
+
+  constexpr std::uint64_t kMaxCounter = 0xFFFFFFFFFFFFFFFEULL;  // UINT64_MAX - 1
+
+  // 1. Notify with UINT64_MAX - 1; expect Success.
+  CHECK(notifier.notify(kMaxCounter) == NotifyStatus::Success);
+
+  // 2. Notify with 1; expect Saturated (counter would exceed UINT64_MAX - 1).
+  int err = 0;
+  CHECK(notifier.notify(1, &err) == NotifyStatus::Saturated);
+  CHECK(err == EAGAIN || err == EWOULDBLOCK);
+
+  // 3. Consume the counter; expect exactly UINT64_MAX - 1.
+  std::uint64_t val = 0;
+  CHECK(notifier.consume(val, &err) == ConsumeStatus::Success);
+  CHECK(val == kMaxCounter);
+  CHECK(err == 0);
+
+  // 4. Verify the counter is empty afterward.
+  CHECK(notifier.consume(val, &err) == ConsumeStatus::Empty);
   CHECK(!notifier.try_consume().has_value());
 }
 
@@ -272,6 +301,86 @@ void test_queue_repeated_wraparound() {
   CHECK(queue.empty());
 }
 
+// Custom item to deterministically test the pending-head slot scenario
+struct PendingHeadItem {
+  int id{0};
+  static inline std::atomic<bool> inside_ctor{false};
+  static inline std::atomic<bool> release_gate{false};
+
+  static void reset() noexcept {
+    inside_ctor.store(false, std::memory_order_relaxed);
+    release_gate.store(false, std::memory_order_relaxed);
+  }
+
+  PendingHeadItem() noexcept = default;
+  explicit PendingHeadItem(int v, bool block) noexcept : id(v) {
+    if (block) {
+      inside_ctor.store(true, std::memory_order_release);
+      const auto deadline = std::chrono::steady_clock::now() + 5s;
+      while (!release_gate.load(std::memory_order_acquire)) {
+        if (std::chrono::steady_clock::now() > deadline) {
+          break;
+        }
+        std::this_thread::yield();
+      }
+    }
+  }
+
+  PendingHeadItem(PendingHeadItem&&) noexcept = default;
+  PendingHeadItem& operator=(PendingHeadItem&&) noexcept = default;
+  PendingHeadItem(const PendingHeadItem&) noexcept = default;
+  PendingHeadItem& operator=(const PendingHeadItem&) noexcept = default;
+  ~PendingHeadItem() noexcept = default;
+};
+
+void test_queue_pending_head_behavior() {
+  std::cerr << "[ipc_async_tests] running test_queue_pending_head_behavior\n";
+  PendingHeadItem::reset();
+
+  BoundedMpmcQueue<PendingHeadItem> queue(4);
+
+  // 1. Start producer A in a separate thread.
+  // It reserves the first slot and blocks inside its constructor.
+  std::thread producer_a([&queue]() {
+    CHECK(queue.try_emplace(1, true /* block inside ctor */));
+  });
+
+  // Wait until producer A has claimed slot 0 and entered its constructor
+  const auto wait_a_deadline = std::chrono::steady_clock::now() + 5s;
+  while (!PendingHeadItem::inside_ctor.load(std::memory_order_acquire)) {
+    if (std::chrono::steady_clock::now() > wait_a_deadline) {
+      CHECK(false && "Timed out waiting for producer A to claim slot 0");
+      PendingHeadItem::release_gate.store(true, std::memory_order_release);
+      producer_a.join();
+      return;
+    }
+    std::this_thread::yield();
+  }
+
+  // 2. Start producer B (here on main thread) and enqueue a second item successfully
+  CHECK(queue.try_emplace(2, false /* do not block */));
+
+  // 3. Verify try_pop() behavior while producer A's head slot remains unpublished:
+  // Even though item 2 is fully enqueued in slot 1, the FIFO head (slot 0) is not published,
+  // so try_pop() MUST return false / nullopt!
+  PendingHeadItem item{};
+  CHECK(!queue.try_pop(item));
+  CHECK(!queue.try_pop().has_value());
+
+  // 4. Release producer A
+  PendingHeadItem::release_gate.store(true, std::memory_order_release);
+  producer_a.join();
+
+  // 5. Verify both items can now be consumed in the expected FIFO reservation order:
+  CHECK(queue.try_pop(item));
+  CHECK(item.id == 1);
+
+  CHECK(queue.try_pop(item));
+  CHECK(item.id == 2);
+
+  CHECK(!queue.try_pop(item));
+}
+
 void test_queue_mpmc_concurrent() {
   std::cerr << "[ipc_async_tests] running test_queue_mpmc_concurrent\n";
   constexpr std::size_t kCapacity = 64;
@@ -283,6 +392,7 @@ void test_queue_mpmc_concurrent() {
   constexpr std::uint64_t kTotalItems = kProducers * kItemsPerProducer;
 
   std::atomic<bool> producers_done{false};
+  std::atomic<bool> abort_test{false};
   std::atomic<std::uint64_t> total_consumed{0};
 
   // Start consumers
@@ -291,21 +401,27 @@ void test_queue_mpmc_concurrent() {
   consumers.reserve(kConsumers);
 
   for (int c = 0; c < kConsumers; ++c) {
-    consumers.emplace_back([&queue, &producers_done, &total_consumed, &consumer_results, c]() {
+    consumers.emplace_back([&queue, &producers_done, &abort_test, &total_consumed, &consumer_results, c]() {
       auto& my_results = consumer_results[static_cast<std::size_t>(c)];
-      while (true) {
+      const auto consumer_deadline = std::chrono::steady_clock::now() + 15s;
+      while (!abort_test.load(std::memory_order_relaxed)) {
         std::uint64_t item = 0;
         if (queue.try_pop(item)) {
           my_results.push_back(item);
           total_consumed.fetch_add(1, std::memory_order_relaxed);
         } else {
           if (producers_done.load(std::memory_order_acquire) && queue.empty()) {
-            // Check once more to prevent race between empty and last item pushed
+            // Drain check to prevent race between empty and last item pushed
             if (!queue.try_pop(item)) {
               break;
             }
             my_results.push_back(item);
             total_consumed.fetch_add(1, std::memory_order_relaxed);
+          }
+          if (std::chrono::steady_clock::now() > consumer_deadline) {
+            check(false, "Consumer timed out in MPMC test", __LINE__);
+            abort_test.store(true, std::memory_order_relaxed);
+            break;
           }
           std::this_thread::yield();
         }
@@ -318,11 +434,25 @@ void test_queue_mpmc_concurrent() {
   producers.reserve(kProducers);
 
   for (int p = 0; p < kProducers; ++p) {
-    producers.emplace_back([&queue, p]() {
+    producers.emplace_back([&queue, &abort_test, p]() {
+      const auto producer_deadline = std::chrono::steady_clock::now() + 15s;
       for (std::uint64_t i = 0; i < kItemsPerProducer; ++i) {
+        if (abort_test.load(std::memory_order_relaxed)) {
+          break;
+        }
         const std::uint64_t item = (static_cast<std::uint64_t>(p) << 32) | i;
-        while (!queue.try_push(item)) {
+        bool pushed = false;
+        while (std::chrono::steady_clock::now() < producer_deadline) {
+          if (queue.try_push(item)) {
+            pushed = true;
+            break;
+          }
           std::this_thread::yield();
+        }
+        if (!pushed) {
+          check(false, "Producer timed out waiting to push item", __LINE__);
+          abort_test.store(true, std::memory_order_relaxed);
+          break;
         }
       }
     });
@@ -339,20 +469,39 @@ void test_queue_mpmc_concurrent() {
     th.join();
   }
 
+  CHECK(!abort_test.load());
   CHECK(total_consumed.load() == kTotalItems);
 
-  // Verify all items are unique and cover every item from every producer
-  std::unordered_set<std::uint64_t> seen;
-  seen.reserve(kTotalItems);
+  // Strengthened verification:
+  // 1. Verify every item has valid producer ID and sequence range.
+  // 2. Verify exact item count.
+  // 3. Verify no duplicates.
+  // 4. Ensure no missing generated item.
+  std::vector<std::vector<bool>> seen(kProducers, std::vector<bool>(kItemsPerProducer, false));
+  std::uint64_t verified_count = 0;
 
   for (const auto& res : consumer_results) {
     for (std::uint64_t item : res) {
-      auto [it, inserted] = seen.insert(item);
-      CHECK(inserted);  // No duplicates!
+      const auto prod_id = item >> 32;
+      const auto seq = item & 0xFFFFFFFFULL;
+      CHECK(prod_id < static_cast<std::uint64_t>(kProducers));
+      CHECK(seq < kItemsPerProducer);
+      if (prod_id < static_cast<std::uint64_t>(kProducers) && seq < kItemsPerProducer) {
+        CHECK(!seen[prod_id][seq]);  // Duplicate check!
+        seen[prod_id][seq] = true;
+        ++verified_count;
+      }
     }
   }
 
-  CHECK(seen.size() == kTotalItems);
+  CHECK(verified_count == kTotalItems);
+
+  // Verify no missing generated items across all producers
+  for (int p = 0; p < kProducers; ++p) {
+    for (std::uint64_t i = 0; i < kItemsPerProducer; ++i) {
+      CHECK(seen[static_cast<std::size_t>(p)][static_cast<std::size_t>(i)]);
+    }
+  }
 }
 
 // Track object lifetimes to test queue cleanup upon destruction
@@ -431,15 +580,21 @@ void test_queue_with_event_notifier() {
   constexpr std::uint64_t kTotalItems = kProducers * kItemsPerProducer;
 
   std::atomic<bool> producers_done{false};
+  std::atomic<bool> abort_test{false};
   std::vector<std::uint64_t> consumed_items;
   consumed_items.reserve(kTotalItems);
 
   // Single consumer thread using poll on EventNotifier descriptor to drain queue
-  std::thread consumer([&queue, &notifier, &producers_done, &consumed_items]() {
+  std::thread consumer([&queue, &notifier, &producers_done, &abort_test, &consumed_items]() {
     pollfd pfd{.fd = notifier.descriptor(), .events = POLLIN, .revents = 0};
+    const auto consumer_deadline = std::chrono::steady_clock::now() + 15s;
 
-    while (consumed_items.size() < kTotalItems) {
-      // Bounded poll wait (100ms)
+    while (consumed_items.size() < kTotalItems && !abort_test.load(std::memory_order_relaxed)) {
+      if (std::chrono::steady_clock::now() > consumer_deadline) {
+        check(false, "Consumer timed out in combined test", __LINE__);
+        abort_test.store(true, std::memory_order_relaxed);
+        break;
+      }
       pfd.revents = 0;
       int p_rc = ::poll(&pfd, 1, 100);
       if (p_rc > 0 && (pfd.revents & POLLIN) != 0) {
@@ -471,11 +626,25 @@ void test_queue_with_event_notifier() {
   producers.reserve(kProducers);
 
   for (int p = 0; p < kProducers; ++p) {
-    producers.emplace_back([&queue, &notifier, p]() {
+    producers.emplace_back([&queue, &notifier, &abort_test, p]() {
+      const auto producer_deadline = std::chrono::steady_clock::now() + 15s;
       for (std::uint64_t i = 0; i < kItemsPerProducer; ++i) {
+        if (abort_test.load(std::memory_order_relaxed)) {
+          break;
+        }
         const std::uint64_t item = (static_cast<std::uint64_t>(p) << 32) | i;
-        while (!queue.try_push(item)) {
+        bool pushed = false;
+        while (std::chrono::steady_clock::now() < producer_deadline) {
+          if (queue.try_push(item)) {
+            pushed = true;
+            break;
+          }
           std::this_thread::yield();
+        }
+        if (!pushed) {
+          check(false, "Producer timed out in combined test", __LINE__);
+          abort_test.store(true, std::memory_order_relaxed);
+          break;
         }
         // Signal readiness
         CHECK(notifier.notify(1) == NotifyStatus::Success);
@@ -495,16 +664,27 @@ void test_queue_with_event_notifier() {
   // Join consumer
   consumer.join();
 
+  CHECK(!abort_test.load());
   CHECK(consumed_items.size() == kTotalItems);
 
   // Verify all elements present and unique
-  std::unordered_set<std::uint64_t> seen;
-  seen.reserve(kTotalItems);
+  std::vector<std::vector<bool>> seen(kProducers, std::vector<bool>(kItemsPerProducer, false));
   for (std::uint64_t item : consumed_items) {
-    auto [it, inserted] = seen.insert(item);
-    CHECK(inserted);
+    const auto prod_id = item >> 32;
+    const auto seq = item & 0xFFFFFFFFULL;
+    CHECK(prod_id < static_cast<std::uint64_t>(kProducers));
+    CHECK(seq < kItemsPerProducer);
+    if (prod_id < static_cast<std::uint64_t>(kProducers) && seq < kItemsPerProducer) {
+      CHECK(!seen[prod_id][seq]);
+      seen[prod_id][seq] = true;
+    }
   }
-  CHECK(seen.size() == kTotalItems);
+
+  for (int p = 0; p < kProducers; ++p) {
+    for (std::uint64_t i = 0; i < kItemsPerProducer; ++i) {
+      CHECK(seen[static_cast<std::size_t>(p)][static_cast<std::size_t>(i)]);
+    }
+  }
 }
 
 }  // namespace
@@ -516,6 +696,7 @@ int main() {
   test_event_notifier_initial_state_and_nonblocking();
   test_event_notifier_notify_and_consume();
   test_event_notifier_coalescing();
+  test_event_notifier_maximum_and_saturation();
   test_event_notifier_concurrent_producers();
   test_event_notifier_poll_readiness();
   test_event_notifier_move_and_cleanup();
@@ -524,17 +705,18 @@ int main() {
   test_queue_empty_and_full();
   test_queue_single_producer_consumer_fifo();
   test_queue_repeated_wraparound();
+  test_queue_pending_head_behavior();
   test_queue_mpmc_concurrent();
   test_queue_destruction_with_queued_items();
 
   // Combined test
   test_queue_with_event_notifier();
 
-  if (g_failures == 0) {
+  if (g_failures.load() == 0) {
     std::cerr << "=== all darkpool_ipc_async_tests PASSED ===\n";
     return 0;
   }
-  std::cerr << "=== darkpool_ipc_async_tests FAILED: " << g_failures << " failures ===\n";
+  std::cerr << "=== darkpool_ipc_async_tests FAILED: " << g_failures.load() << " failures ===\n";
   return 1;
 }
 
@@ -545,4 +727,3 @@ int main() {
 }
 
 #endif
-

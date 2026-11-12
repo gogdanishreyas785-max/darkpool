@@ -48,8 +48,8 @@ class EventNotifier {
   // Increment the eventfd counter.
   // Returns:
   // - Success: counter incremented (coalesced with any existing counter value)
-  // - InvalidIncrement: increment is 0 or >= 0xFFFFFFFFFFFFFFFEULL
-  // - Saturated: counter would overflow 0xFFFFFFFFFFFFFFFEULL (EAGAIN under EFD_NONBLOCK)
+  // - InvalidIncrement: increment is 0 or UINT64_MAX (0xFFFFFFFFFFFFFFFFULL)
+  // - Saturated: counter would exceed 0xFFFFFFFFFFFFFFFEULL (EAGAIN under EFD_NONBLOCK)
   // - Error: syscall failure (e.g. invalid descriptor)
   [[nodiscard]] NotifyStatus notify(std::uint64_t increment = 1, int* error_code = nullptr) noexcept;
 
@@ -60,7 +60,9 @@ class EventNotifier {
   // - Error: syscall failure
   [[nodiscard]] ConsumeStatus consume(std::uint64_t& value, int* error_code = nullptr) noexcept;
 
-  // Convenient nonblocking consume helper returning std::optional
+  // Convenient nonblocking consume helper returning std::optional.
+  // Note: Returns std::nullopt both when the counter is empty and if an unexpected read error occurs.
+  // Callers requiring explicit error distinction must use consume().
   [[nodiscard]] std::optional<std::uint64_t> try_consume() noexcept;
 
   static std::optional<EventNotifier> create(std::string* error_msg = nullptr);

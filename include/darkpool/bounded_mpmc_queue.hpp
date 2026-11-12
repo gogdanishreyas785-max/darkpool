@@ -18,12 +18,29 @@ namespace darkpool::ipc {
  * Implements Dmitry Vyukov's bounded MPMC queue algorithm using per-slot atomic
  * sequence counters with acquire/release memory ordering.
  *
- * Progress Guarantees:
+ * Progress and Availability Semantics:
  * - Nonblocking: Operations do not acquire OS mutexes, sleep, or make kernel syscalls.
- * - Thread arbitration for slot tickets is lock-free (via compare_exchange_weak on positions).
- * - Not strictly wait-free or lock-free end-to-end: If a thread claims a slot and is
- *   suspended before publishing its sequence update, other operations on that specific slot
- *   cannot complete until the thread is resumed.
+ * - Ticket arbitration on enqueue_pos_ and dequeue_pos_ is lock-free (via compare_exchange_weak).
+ * - Not strictly lock-free or wait-free end-to-end: If a producer thread claims an earlier slot
+ *   and is suspended before publishing its sequence update, later producers may still complete
+ *   their enqueue operations in subsequent slots. A consumer inspecting the queue will receive
+ *   `false` from `try_pop()` because the FIFO head slot is not yet published.
+ * - Therefore, `try_pop() == false` does NOT necessarily mean that no producer has completed
+ *   an enqueue anywhere in the queue. A stalled producer temporarily prevents progress at the FIFO head.
+ * - Observation metrics `size()`, `empty()`, and `full()` are approximate snapshots during
+ *   concurrent operations and must NOT be relied upon as synchronization or correctness conditions.
+ * - Destruction requires all concurrent queue operations to have stopped (quiescence precondition).
+ *   `clear()` is private and executed by the destructor during quiescence.
+ *
+ * Exception Safety Constraints:
+ * - `try_emplace` requires `std::is_nothrow_constructible_v<T, Args...>`.
+ * - `try_push(const T&)` requires `std::is_nothrow_copy_constructible_v<T>`.
+ * - `try_push(T&&)` requires `std::is_nothrow_move_constructible_v<T>`.
+ * - `try_pop(T&)` requires `std::is_nothrow_move_assignable_v<T>`.
+ * - `try_pop()` requires `std::is_nothrow_move_constructible_v<T>`.
+ * - `T` must have a non-throwing destructor (`std::is_nothrow_destructible_v<T>`).
+ * - No potentially throwing user operation can occur after a ticket is claimed and before
+ *   the slot's sequence state is published.
  *
  * Invariants:
  * - Capacity must be a power of two >= 2.
@@ -36,9 +53,7 @@ namespace darkpool::ipc {
 template <typename T, std::size_t StaticCapacity = 0>
 class BoundedMpmcQueue {
   static_assert(std::is_destructible_v<T>, "T must be destructible");
-  static_assert(std::is_nothrow_destructible_v<T>, "T must be nothrow destructible");
-  static_assert(std::is_move_constructible_v<T> || std::is_copy_constructible_v<T>,
-                "T must be move constructible or copy constructible");
+  static_assert(std::is_nothrow_destructible_v<T>, "T must have a nothrow destructor");
   static_assert(StaticCapacity == 0 ||
                     (StaticCapacity >= 2 && (StaticCapacity & (StaticCapacity - 1)) == 0),
                 "StaticCapacity must be a power of two and >= 2");
@@ -62,6 +77,7 @@ class BoundedMpmcQueue {
     }
   }
 
+  // Precondition: All concurrent queue operations must have stopped (quiescence).
   ~BoundedMpmcQueue() {
     clear();
   }
@@ -73,7 +89,8 @@ class BoundedMpmcQueue {
   BoundedMpmcQueue& operator=(BoundedMpmcQueue&&) = delete;
 
   template <typename... Args>
-  bool try_emplace(Args&&... args) {
+    requires std::is_nothrow_constructible_v<T, Args...>
+  bool try_emplace(Args&&... args) noexcept {
     std::size_t pos = enqueue_pos_.load(std::memory_order_relaxed);
     while (true) {
       auto& slot = buffer_[pos & buffer_mask_];
@@ -94,15 +111,18 @@ class BoundedMpmcQueue {
     }
   }
 
-  bool try_push(const T& item) {
+  bool try_push(const T& item) noexcept
+    requires std::is_nothrow_copy_constructible_v<T> {
     return try_emplace(item);
   }
 
-  bool try_push(T&& item) {
+  bool try_push(T&& item) noexcept
+    requires std::is_nothrow_move_constructible_v<T> {
     return try_emplace(std::move(item));
   }
 
-  bool try_pop(T& item) {
+  bool try_pop(T& item) noexcept
+    requires std::is_nothrow_move_assignable_v<T> {
     std::size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     while (true) {
       auto& slot = buffer_[pos & buffer_mask_];
@@ -125,7 +145,8 @@ class BoundedMpmcQueue {
     }
   }
 
-  std::optional<T> try_pop() {
+  std::optional<T> try_pop() noexcept
+    requires std::is_nothrow_move_constructible_v<T> {
     std::size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     while (true) {
       auto& slot = buffer_[pos & buffer_mask_];
@@ -171,6 +192,9 @@ class BoundedMpmcQueue {
     return size() >= capacity_;
   }
 
+ private:
+  // Clears and destructs all remaining queued items.
+  // Precondition: All concurrent queue operations must have stopped (quiescence).
   void clear() noexcept {
     std::size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
     while (true) {
@@ -189,7 +213,6 @@ class BoundedMpmcQueue {
     dequeue_pos_.store(pos, std::memory_order_relaxed);
   }
 
- private:
   struct Slot {
     std::atomic<std::size_t> sequence{0};
     alignas(alignof(T)) std::byte storage[sizeof(T)];
@@ -204,4 +227,3 @@ class BoundedMpmcQueue {
 };
 
 }  // namespace darkpool::ipc
-

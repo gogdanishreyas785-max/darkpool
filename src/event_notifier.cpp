@@ -52,8 +52,9 @@ NotifyStatus EventNotifier::notify(std::uint64_t increment, int* error_code) noe
     if (error_code) *error_code = EBADF;
     return NotifyStatus::Error;
   }
-  // Linux eventfd maximum value is 0xFFFFFFFFFFFFFFFEULL. Writing 0 returns EINVAL.
-  if (increment == 0 || increment >= 0xfffffffffffffffeULL) {
+  // Linux eventfd: writing 0 or 0xFFFFFFFFFFFFFFFFULL (UINT64_MAX) is rejected with EINVAL.
+  // Valid increment values are in the range [1, 0xFFFFFFFFFFFFFFFEULL] (1 to UINT64_MAX - 1).
+  if (increment == 0 || increment == 0xffffffffffffffffULL) {
     if (error_code) *error_code = EINVAL;
     return NotifyStatus::InvalidIncrement;
   }
