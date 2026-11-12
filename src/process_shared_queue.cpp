@@ -170,7 +170,8 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     std::string_view shm_name,
     std::size_t capacity,
     QueueEndpointRole role,
-    std::string& error_msg) {
+    std::string& error_msg,
+    std::function<void()> pre_init_sync_hook) {
   if (role != QueueEndpointRole::Producer && role != QueueEndpointRole::Consumer) {
     error_msg = "Invalid QueueEndpointRole";
     return std::nullopt;
@@ -216,6 +217,13 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
 
   std::memset(addr, 0, total_size);
   auto* hdr = reinterpret_cast<QueueSharedHeader*>(addr);
+
+  // If a pre-init synchronization hook was provided (for testing publication sequencing),
+  // invoke it now after memory has been mapped and zeroed but BEFORE any pthread objects
+  // or readiness indicators are initialized.
+  if (pre_init_sync_hook) {
+    pre_init_sync_hook();
+  }
 
   // Helper lambda for partial initialization abort cleanup
   auto abort_creation = [&](const std::string& msg, bool destroy_mutex, bool destroy_not_empty) {
@@ -299,11 +307,13 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     hdr->consumer_pid = hdr->creator_pid;
   }
 
-  // Memory barrier and publish readiness LAST
-  __sync_synchronize();
+  // Set magic before publishing readiness flag
   hdr->magic = kQueueMagic;
-  hdr->init_done = 1U;
-  __sync_synchronize();
+
+  // Publish readiness LAST using explicit atomic store with release semantics.
+  // Guarantees all prior writes (pthread_mutex_init, pthread_cond_init, metadata, magic)
+  // are visible to any peer before init_done is observed as 1.
+  __atomic_store_n(&hdr->init_done, 1U, __ATOMIC_RELEASE);
 
   return ProcessSharedQueue(std::move(name), fd, total_size, addr, capacity, role, true);
 }
@@ -311,7 +321,8 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
 std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
     std::string_view shm_name,
     QueueEndpointRole role,
-    std::string& error_msg) {
+    std::string& error_msg,
+    std::chrono::milliseconds wait_timeout) {
   if (role != QueueEndpointRole::Producer && role != QueueEndpointRole::Consumer) {
     error_msg = "Invalid QueueEndpointRole";
     return std::nullopt;
@@ -373,13 +384,18 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
 
   auto* hdr = reinterpret_cast<QueueSharedHeader*>(hdr_map);
 
-  // 4. Bounded wait for publication readiness (up to 2000ms in 1ms increments)
+  // 4. Bounded wait for publication readiness using explicit atomic load with acquire semantics.
   // Ensures open_existing() never inspects partially initialized metadata or locks uninitialized pthread objects.
+  // If the creator crashes before publication, open_existing() times out cleanly and safely unmaps
+  // without touching uninitialized synchronization objects.
+  const int max_attempts = std::max(1, static_cast<int>(wait_timeout.count()));
   bool is_ready = false;
-  for (int attempt = 0; attempt < 2000; ++attempt) {
-    __sync_synchronize();
-    if (hdr->init_done == 1U && hdr->magic == kQueueMagic) {
-      is_ready = true;
+  for (int attempt = 0; attempt < max_attempts; ++attempt) {
+    const std::uint32_t ready_flag = __atomic_load_n(&hdr->init_done, __ATOMIC_ACQUIRE);
+    if (ready_flag == 1U) {
+      if (hdr->magic == kQueueMagic) {
+        is_ready = true;
+      }
       break;
     }
     struct timespec req { 0, 1'000'000L };  // 1ms
@@ -387,8 +403,9 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
   }
 
   if (!is_ready) {
+    const std::uint32_t observed_ready = __atomic_load_n(&hdr->init_done, __ATOMIC_ACQUIRE);
     error_msg = "Shared memory queue not ready or magic mismatch: magic=0x" +
-                std::to_string(hdr->magic) + ", init_done=" + std::to_string(hdr->init_done);
+                std::to_string(hdr->magic) + ", init_done=" + std::to_string(observed_ready);
     ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;

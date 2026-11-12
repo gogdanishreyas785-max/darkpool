@@ -2,9 +2,11 @@
 
 #if defined(__linux__)
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <pthread.h>
 #include <string>
@@ -61,7 +63,7 @@ struct QueueSharedHeader {
 
   std::uint32_t capacity;
   std::uint32_t state;
-  std::uint32_t init_done;  // 1 when fully initialized (mutex, cond, fields ready)
+  alignas(4) std::uint32_t init_done;  // 1 when fully initialized (mutex, cond, fields ready)
   std::uint32_t reserved;
 
   std::uint64_t head;       // Next dequeue index
@@ -77,6 +79,9 @@ struct QueueSharedHeader {
 #pragma pack(pop)
 
 static_assert(std::is_standard_layout_v<QueueSharedHeader>, "QueueSharedHeader must be standard layout");
+static_assert(std::atomic<std::uint32_t>::is_always_lock_free, "std::uint32_t atomic operations must be lock-free");
+static_assert(offsetof(QueueSharedHeader, init_done) % alignof(std::uint32_t) == 0,
+              "QueueSharedHeader::init_done must be naturally aligned for lock-free atomic operations");
 
 struct QueueSnapshot {
   std::size_t capacity{0};
@@ -105,12 +110,14 @@ class ProcessSharedQueue {
       std::string_view shm_name,
       std::size_t capacity,
       QueueEndpointRole role,
-      std::string& error_msg);
+      std::string& error_msg,
+      std::function<void()> pre_init_sync_hook = nullptr);
 
   static std::optional<ProcessSharedQueue> open_existing(
       std::string_view shm_name,
       QueueEndpointRole role,
-      std::string& error_msg);
+      std::string& error_msg,
+      std::chrono::milliseconds wait_timeout = std::chrono::milliseconds{2000});
 
   QueueOpStatus push(
       const void* data,
