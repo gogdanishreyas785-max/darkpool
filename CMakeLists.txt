@@ -152,6 +152,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME darkpool_ipc_async_tests COMMAND darkpool_ipc_async_tests)
   set_tests_properties(darkpool_ipc_async_tests PROPERTIES TIMEOUT 30)
 
+  add_executable(darkpool_ipc_epoll_tests tests/ipc_eventfd_epoll_tests.cpp)
+  target_link_libraries(darkpool_ipc_epoll_tests PRIVATE darkpool_ipc_async darkpool_communications Threads::Threads)
+  darkpool_enable_warnings(darkpool_ipc_epoll_tests)
+  add_test(NAME darkpool_ipc_epoll_tests COMMAND darkpool_ipc_epoll_tests)
+  set_tests_properties(darkpool_ipc_epoll_tests PROPERTIES TIMEOUT 30)
+
   add_executable(darkpool_ipc_benchmark benchmarks/ipc_benchmark.cpp)
   target_include_directories(darkpool_ipc_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
   target_compile_features(darkpool_ipc_benchmark PUBLIC cxx_std_20)
