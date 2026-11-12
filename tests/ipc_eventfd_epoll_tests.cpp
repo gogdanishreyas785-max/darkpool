@@ -158,12 +158,12 @@ void test_eventfd_epoll_queue_integration() {
   CHECK(runtime.start(start_err));
   CHECK(runtime.is_running());
 
-  // 2. Deterministic coordination primitives
+  // 2. Deterministic coordination primitives with cooperative cancellation
   std::mutex sync_mutex;
   std::condition_variable sync_cv;
   bool stage1_ack = false;
   bool stage2_burst_done = false;
-  bool producer_finished = false;
+  bool abort_requested = false;
   bool producer_failed = false;
   std::string producer_error_msg;
 
@@ -217,50 +217,66 @@ void test_eventfd_epoll_queue_integration() {
   CHECK(reg_ok);
   CHECK(reg_err.empty());
 
-  // 4. Producer thread executing controlled two-stage sequence
+  // 4. Producer thread executing controlled two-stage sequence with cooperative cancellation
   std::thread producer([&]() {
-    auto fail_producer = [&](const std::string& msg) {
-      std::lock_guard<std::mutex> lock(sync_mutex);
+    // Helper to record failure without self-deadlock
+    auto record_failure = [&](std::unique_lock<std::mutex>& lock, const std::string& msg) {
       producer_failed = true;
       producer_error_msg = msg;
-      producer_finished = true;
       sync_cv.notify_all();
+      lock.unlock();
     };
 
-    // Stage 1: Wait briefly so reactor enters bounded step(), then enqueue item 0
-    std::this_thread::sleep_for(20ms);
-
-    if (!queue.try_push(0)) {
-      fail_producer("Queue push failed for item 0");
-      return;
-    }
-    int err = 0;
-    if (notifier.notify(1, &err) != NotifyStatus::Success) {
-      fail_producer("EventNotifier notify failed for item 0: errno=" + std::to_string(err));
-      return;
-    }
-
-    // Wait for reactor to acknowledge processing item 0 via stage1_ack
+    // Initial cancellation check
     {
       std::unique_lock<std::mutex> lock(sync_mutex);
-      const auto stage1_deadline = std::chrono::steady_clock::now() + 5s;
-      if (!sync_cv.wait_until(lock, stage1_deadline, [&] { return stage1_ack || producer_failed; })) {
-        fail_producer("Timed out waiting for reactor stage 1 acknowledgement");
-        return;
-      }
-      if (producer_failed) return;
+      if (abort_requested) return;
     }
 
-    // Stage 2: Push remaining items 1..511 in a continuous burst while reactor is not calling step()
+    // Stage 1: Brief initial yield so reactor enters bounded step(), then enqueue item 0
+    std::this_thread::sleep_for(20ms);
+
+    {
+      std::unique_lock<std::mutex> lock(sync_mutex);
+      if (abort_requested) return;
+
+      if (!queue.try_push(0)) {
+        record_failure(lock, "Queue push failed for item 0");
+        return;
+      }
+      int err = 0;
+      if (notifier.notify(1, &err) != NotifyStatus::Success) {
+        record_failure(lock, "EventNotifier notify failed for item 0: errno=" + std::to_string(err));
+        return;
+      }
+
+      // Wait for reactor to acknowledge processing item 0 via stage1_ack
+      const auto stage1_deadline = std::chrono::steady_clock::now() + 5s;
+      const bool ack_received = sync_cv.wait_until(
+          lock, stage1_deadline, [&] { return stage1_ack || abort_requested || producer_failed; });
+      if (!ack_received) {
+        record_failure(lock, "Timed out waiting for reactor stage 1 acknowledgement");
+        return;
+      }
+      if (abort_requested || producer_failed) return;
+    }
+
+    // Stage 2: Push remaining items 1..511 in a continuous burst while reactor is waiting
     for (std::uint64_t i = 1; i < kItemCount; ++i) {
+      {
+        std::unique_lock<std::mutex> lock(sync_mutex);
+        if (abort_requested) return;
+      }
+
       if (!queue.try_push(i)) {
-        fail_producer("Queue push failed during burst at item " + std::to_string(i));
+        std::unique_lock<std::mutex> lock(sync_mutex);
+        record_failure(lock, "Queue push failed during burst at item " + std::to_string(i));
         return;
       }
       int n_err = 0;
       if (notifier.notify(1, &n_err) != NotifyStatus::Success) {
-        fail_producer("EventNotifier notify failed during burst at item " + std::to_string(i) +
-                      ": errno=" + std::to_string(n_err));
+        std::unique_lock<std::mutex> lock(sync_mutex);
+        record_failure(lock, "EventNotifier notify failed during burst at item " + std::to_string(n_err));
         return;
       }
     }
@@ -268,44 +284,67 @@ void test_eventfd_epoll_queue_integration() {
     // Signal burst completion to reactor
     {
       std::lock_guard<std::mutex> lock(sync_mutex);
-      stage2_burst_done = true;
-      producer_finished = true;
+      if (!abort_requested) {
+        stage2_burst_done = true;
+      }
       sync_cv.notify_all();
     }
   });
 
-  // 5. Reactor Thread (Main thread) executing controlled two-stage steps
-  // Step A: Drive reactor for stage 1 (wake on item 0)
-  CHECK(runtime.step(500));
-  CHECK(callback_executions == 1);
-  CHECK(consumed_items.size() == 1);
-  CHECK(consumed_items[0] == 0);
+  // 5. Reactor Thread (Main thread) executing controlled two-stage steps with safe failure handling
+  auto cancel_producer_and_join = [&]() {
+    {
+      std::lock_guard<std::mutex> lock(sync_mutex);
+      abort_requested = true;
+      sync_cv.notify_all();
+    }
+    if (producer.joinable()) {
+      producer.join();
+    }
+  };
 
-  // Wait for producer to finish Stage 2 burst before reactor calls step() again
+  // Step A: Drive reactor for stage 1 (wake on item 0)
+  bool stage1_ok = runtime.step(500);
+  if (!stage1_ok || callback_executions != 1 || consumed_items.empty() || consumed_items[0] != 0) {
+    CHECK(false);
+    std::cerr << "Stage 1 reactor step failed: step=" << stage1_ok
+              << " callbacks=" << callback_executions
+              << " consumed=" << consumed_items.size() << '\n';
+    cancel_producer_and_join();
+    runtime.stop();
+    return;
+  }
+
+  // Wait for producer to complete Stage 2 burst before reactor calls step() again
+  bool burst_ok = false;
   {
     std::unique_lock<std::mutex> lock(sync_mutex);
     const auto burst_deadline = std::chrono::steady_clock::now() + 5s;
-    if (!sync_cv.wait_until(lock, burst_deadline, [&] { return stage2_burst_done || producer_failed; })) {
+    burst_ok = sync_cv.wait_until(
+        lock, burst_deadline, [&] { return stage2_burst_done || producer_failed; });
+    if (!burst_ok || producer_failed) {
       CHECK(false);
-      std::cerr << "Timed out waiting for producer stage 2 burst completion\n";
+      std::cerr << "Stage 2 producer burst failed or timed out: burst_ok=" << burst_ok
+                << " producer_failed=" << producer_failed
+                << " error=" << producer_error_msg << '\n';
     }
   }
 
-  // Verify producer did not fail
-  {
-    std::lock_guard<std::mutex> lock(sync_mutex);
-    if (producer_failed) {
-      CHECK(!producer_failed);
-      std::cerr << "Producer failed: " << producer_error_msg << '\n';
-    }
+  if (!burst_ok || producer_failed) {
+    cancel_producer_and_join();
+    runtime.stop();
+    return;
   }
 
   // Step B: Drive reactor for stage 2 (wake on coalesced burst of 511 items)
-  CHECK(runtime.step(500));
+  bool stage2_ok = runtime.step(500);
+  CHECK(stage2_ok);
   CHECK(callback_executions == 2);
 
-  // Join producer thread cleanly before validating results or tearing down
-  producer.join();
+  // Cleanly join producer thread
+  if (producer.joinable()) {
+    producer.join();
+  }
 
   // 6. Validate deterministic two-stage execution results
   CHECK(consumed_items.size() == kItemCount);
@@ -353,11 +392,100 @@ void test_eventfd_epoll_queue_integration() {
   CHECK(!runtime.is_running());
 }
 
+// ============================================================================
+// Test 3: Failure & Cancellation Path Verification
+// ============================================================================
+
+void test_producer_cancellation_and_timeout_path() {
+  std::cerr << "[ipc_eventfd_epoll_tests] running test_producer_cancellation_and_timeout_path\n";
+
+  constexpr std::size_t kQueueCapacity = 16;
+  EventNotifier notifier;
+  CHECK(notifier.valid());
+  BoundedMpmcQueue<std::uint64_t, kQueueCapacity> queue;
+
+  std::mutex sync_mutex;
+  std::condition_variable sync_cv;
+  bool stage1_ack = false;
+  bool abort_requested = false;
+  bool producer_failed = false;
+  std::string producer_error_msg;
+
+  // Launch a producer with a tight stage 1 acknowledgement deadline (100ms)
+  // to deliberately trigger the timeout failure path and verify no self-deadlock occurs
+  std::thread producer([&]() {
+    auto record_failure = [&](std::unique_lock<std::mutex>& lock, const std::string& msg) {
+      producer_failed = true;
+      producer_error_msg = msg;
+      sync_cv.notify_all();
+      lock.unlock();
+    };
+
+    std::unique_lock<std::mutex> lock(sync_mutex);
+    if (!queue.try_push(999)) {
+      record_failure(lock, "Queue push failed");
+      return;
+    }
+    if (notifier.notify(1) != NotifyStatus::Success) {
+      record_failure(lock, "Notify failed");
+      return;
+    }
+
+    // Deliberately wait with a short 100ms deadline where reactor does NOT acknowledge
+    const auto timeout_deadline = std::chrono::steady_clock::now() + 100ms;
+    const bool ack = sync_cv.wait_until(
+        lock, timeout_deadline, [&] { return stage1_ack || abort_requested || producer_failed; });
+    if (!ack) {
+      // Must unlock safely and record failure without deadlocking
+      record_failure(lock, "Intentional timeout waiting for stage 1 acknowledgement");
+      return;
+    }
+  });
+
+  // Wait for producer to time out and report failure
+  {
+    std::unique_lock<std::mutex> lock(sync_mutex);
+    const auto wait_deadline = std::chrono::steady_clock::now() + 2s;
+    const bool done = sync_cv.wait_until(
+        lock, wait_deadline, [&] { return producer_failed || abort_requested; });
+    CHECK(done);
+    CHECK(producer_failed);
+    CHECK(producer_error_msg == "Intentional timeout waiting for stage 1 acknowledgement");
+  }
+
+  // Cleanly join producer
+  producer.join();
+
+  // Test cooperative cancellation before producer starts
+  {
+    std::unique_lock<std::mutex> lock(sync_mutex);
+    abort_requested = true;
+    producer_failed = false;
+    producer_error_msg.clear();
+  }
+
+  std::thread cancelled_producer([&]() {
+    std::unique_lock<std::mutex> lock(sync_mutex);
+    if (abort_requested) return;
+    (void)queue.try_push(123);
+  });
+
+  cancelled_producer.join();
+
+  // Drain the single unacknowledged item from queue and notifier to clean up
+  std::uint64_t dummy = 0;
+  CHECK(queue.try_pop(dummy));
+  CHECK(dummy == 999);
+  CHECK(notifier.consume(dummy) == ConsumeStatus::Success);
+  CHECK(dummy == 1);
+}
+
 } // namespace
 
 int main() {
   test_registration_and_lifetime();
   test_eventfd_epoll_queue_integration();
+  test_producer_cancellation_and_timeout_path();
 
   if (g_failures.load() == 0) {
     std::cout << "All IPC eventfd-epoll integration tests PASSED\n";
