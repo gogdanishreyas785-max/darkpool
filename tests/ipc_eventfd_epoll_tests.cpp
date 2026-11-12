@@ -276,7 +276,8 @@ void test_eventfd_epoll_queue_integration() {
       int n_err = 0;
       if (notifier.notify(1, &n_err) != NotifyStatus::Success) {
         std::unique_lock<std::mutex> lock(sync_mutex);
-        record_failure(lock, "EventNotifier notify failed during burst at item " + std::to_string(n_err));
+        record_failure(lock, "EventNotifier notify failed during burst at item " + std::to_string(i) +
+                             ": errno=" + std::to_string(n_err));
         return;
       }
     }
@@ -317,20 +318,24 @@ void test_eventfd_epoll_queue_integration() {
 
   // Wait for producer to complete Stage 2 burst before reactor calls step() again
   bool burst_ok = false;
+  bool producer_failure_seen = false;
+  std::string captured_error_msg;
   {
     std::unique_lock<std::mutex> lock(sync_mutex);
     const auto burst_deadline = std::chrono::steady_clock::now() + 5s;
     burst_ok = sync_cv.wait_until(
         lock, burst_deadline, [&] { return stage2_burst_done || producer_failed; });
-    if (!burst_ok || producer_failed) {
+    producer_failure_seen = producer_failed;
+    captured_error_msg = producer_error_msg;
+    if (!burst_ok || producer_failure_seen) {
       CHECK(false);
       std::cerr << "Stage 2 producer burst failed or timed out: burst_ok=" << burst_ok
-                << " producer_failed=" << producer_failed
-                << " error=" << producer_error_msg << '\n';
+                << " producer_failed=" << producer_failure_seen
+                << " error=" << captured_error_msg << '\n';
     }
   }
 
-  if (!burst_ok || producer_failed) {
+  if (!burst_ok || producer_failure_seen) {
     cancel_producer_and_join();
     runtime.stop();
     return;
@@ -478,6 +483,11 @@ void test_producer_cancellation_and_timeout_path() {
   CHECK(dummy == 999);
   CHECK(notifier.consume(dummy) == ConsumeStatus::Success);
   CHECK(dummy == 1);
+
+  // Explicitly verify the cancelled producer did not enqueue item 123
+  std::uint64_t unexpected_item = 0;
+  CHECK(!queue.try_pop(unexpected_item));
+  CHECK(queue.empty());
 }
 
 } // namespace
