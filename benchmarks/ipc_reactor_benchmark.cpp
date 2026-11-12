@@ -45,6 +45,12 @@ using darkpool::network::ServerRuntimeConfig;
 using json = nlohmann::ordered_json;
 
 constexpr std::size_t kQueueCapacity = 4096;
+constexpr int kReactorStepTimeoutMs = 50;
+
+// CLI limits
+constexpr std::size_t kMaxItemsPerProducer = 500000;
+constexpr std::size_t kMaxRepetitions = 20;
+constexpr std::size_t kMaxTotalWorkload = 2000000;
 
 // ============================================================================
 // WorkItem Definition
@@ -142,8 +148,10 @@ class PipeNotifier {
   }
 
   std::size_t drain_all(std::uint64_t* out_read_syscalls = nullptr,
-                        int* error_code = nullptr) noexcept {
+                        int* error_code = nullptr,
+                        bool* unexpected_eof = nullptr) noexcept {
     if (error_code) *error_code = 0;
+    if (unexpected_eof) *unexpected_eof = false;
     if (read_fd_ < 0) return 0;
     std::size_t total_bytes = 0;
     char buf[4096];
@@ -153,6 +161,11 @@ class PipeNotifier {
       if (rc > 0) {
         total_bytes += static_cast<std::size_t>(rc);
         continue;
+      }
+      if (rc == 0) {
+        // Unexpected EOF while write descriptor should remain open
+        if (unexpected_eof) *unexpected_eof = true;
+        break;
       }
       if (rc < 0 && errno == EINTR) continue;
       if (rc < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
@@ -219,6 +232,7 @@ LatencyStats compute_latency_stats(std::vector<std::uint64_t>& latencies_ns) {
 }
 
 struct SingleRunResult {
+  std::size_t repetition_index{0};
   std::string notification_primitive;
   std::size_t producers{1};
   std::size_t items_per_producer{0};
@@ -231,11 +245,12 @@ struct SingleRunResult {
   LatencyStats delivery_latency{};
 
   std::uint64_t callback_invocations{0};
+  std::uint64_t callbacks_with_zero_work{0};
   std::uint64_t notifications_signaled{0};
   std::uint64_t notifications_consumed{0};
   double average_items_per_callback{0.0};
   double max_items_in_single_callback{0.0};
-  double coalescing_ratio{0.0}; // notifications_signaled / callback_invocations
+  double coalescing_ratio{0.0}; // notifications_signaled / callback_invocations (batching indicator)
 
   std::uint64_t push_retry_count{0};
   std::uint64_t notify_retry_count{0};
@@ -245,6 +260,7 @@ struct SingleRunResult {
 
   [[nodiscard]] json to_json() const {
     json j;
+    j["repetition_index"] = repetition_index;
     j["notification_primitive"] = notification_primitive;
     j["producers"] = producers;
     j["items_per_producer"] = items_per_producer;
@@ -255,6 +271,7 @@ struct SingleRunResult {
     j["throughput_items_per_sec"] = throughput_items_per_sec;
     j["delivery_latency"] = delivery_latency.to_json();
     j["callback_invocations"] = callback_invocations;
+    j["callbacks_with_zero_work"] = callbacks_with_zero_work;
     j["notifications_signaled"] = notifications_signaled;
     j["notifications_consumed"] = notifications_consumed;
     j["average_items_per_callback"] = average_items_per_callback;
@@ -318,10 +335,12 @@ struct ScenarioAggregateResult {
 // ============================================================================
 
 template <typename NotifierT>
-SingleRunResult execute_scenario(const std::string& primitive_name,
+SingleRunResult execute_scenario(std::size_t rep_index,
+                                 const std::string& primitive_name,
                                  std::size_t producer_count,
                                  std::size_t items_per_producer) {
   SingleRunResult res{};
+  res.repetition_index = rep_index;
   res.notification_primitive = primitive_name;
   res.producers = producer_count;
   res.items_per_producer = items_per_producer;
@@ -344,7 +363,7 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
   config.enable_tls = false;
   config.enable_unix = false;
   config.handle_signals = false;
-  config.epoll_timeout_ms = 50; // Wake periodically or on eventfd
+  config.epoll_timeout_ms = kReactorStepTimeoutMs;
 
   ServerRuntime runtime(config);
   std::string start_err;
@@ -356,12 +375,14 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
 
   // 3. Shared synchronization state
   std::atomic<bool> abort_benchmark{false};
+  std::string abort_reason;
   std::atomic<std::size_t> completed_producers{0};
   std::atomic<std::uint64_t> push_retries{0};
   std::atomic<std::uint64_t> notify_retries{0};
   std::atomic<std::uint64_t> total_signaled{0};
 
   std::uint64_t callback_invocations = 0;
+  std::uint64_t callbacks_with_zero_work = 0;
   std::uint64_t notifications_consumed = 0;
   std::uint64_t max_items_in_callback = 0;
 
@@ -372,8 +393,6 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
   received_items.reserve(res.total_target_items);
 
   // 4. Register epoll event source
-  // For EventNotifier: descriptor is notifier.descriptor()
-  // For PipeNotifier: descriptor is notifier.read_descriptor()
   int register_fd = -1;
   if constexpr (std::is_same_v<NotifierT, EventNotifier>) {
     register_fd = notifier.descriptor();
@@ -395,18 +414,27 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
           if (st == ConsumeStatus::Success) {
             notifications_consumed += counter;
           } else if (st == ConsumeStatus::Error) {
+            abort_reason = "EventNotifier::consume error: errno=" + std::to_string(c_err);
+            abort_benchmark.store(true, std::memory_order_relaxed);
+          } else if (st == ConsumeStatus::Empty) {
+            abort_reason = "EventNotifier::consume unexpected Empty on EPOLLIN callback";
             abort_benchmark.store(true, std::memory_order_relaxed);
           }
         } else {
           int d_err = 0;
-          const std::size_t bytes = notifier.drain_all(nullptr, &d_err);
+          bool eof_seen = false;
+          const std::size_t bytes = notifier.drain_all(nullptr, &d_err, &eof_seen);
           notifications_consumed += bytes;
           if (d_err != 0) {
+            abort_reason = "PipeNotifier::drain_all read error: errno=" + std::to_string(d_err);
+            abort_benchmark.store(true, std::memory_order_relaxed);
+          } else if (eof_seen) {
+            abort_reason = "PipeNotifier::drain_all unexpected EOF while write descriptor expected open";
             abort_benchmark.store(true, std::memory_order_relaxed);
           }
         }
 
-        // Drain queue
+        // Drain queue exclusively inside callback
         std::uint64_t items_in_this_cb = 0;
         WorkItem item{};
         while (queue.try_pop(item)) {
@@ -418,6 +446,10 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
           items_in_this_cb++;
         }
 
+        if (items_in_this_cb == 0) {
+          callbacks_with_zero_work++;
+        }
+
         if (items_in_this_cb > max_items_in_callback) {
           max_items_in_callback = items_in_this_cb;
         }
@@ -426,6 +458,7 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
 
   if (!reg_ok) {
     runtime.stop();
+    notifier.close();
     res.correctness_passed = false;
     res.correctness_error = "add_epoll_event_source failed: " + reg_err;
     return res;
@@ -455,7 +488,8 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
             break;
           }
           push_retries.fetch_add(1, std::memory_order_relaxed);
-          if (std::chrono::steady_clock::now() > benchmark_deadline) {
+          if (std::chrono::steady_clock::now() > benchmark_deadline ||
+              abort_benchmark.load(std::memory_order_relaxed)) {
             abort_benchmark.store(true, std::memory_order_relaxed);
             return;
           }
@@ -463,8 +497,6 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
         }
 
         // Bounded notify loop:
-        // For EventNotifier: notify(1). If saturated, yield and retry.
-        // For PipeNotifier: notify(1). If saturated (pipe buffer full), yield and retry.
         while (true) {
           int n_err = 0;
           NotifyStatus st = NotifyStatus::Error;
@@ -475,12 +507,13 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
           }
 
           if (st == NotifyStatus::Success) {
-            total_signaled.fetch_add(1, std::memory_order_relaxed);
+            total_signaled.fetch_add(1, std::memory_order_release);
             break;
           }
           if (st == NotifyStatus::Saturated) {
             notify_retries.fetch_add(1, std::memory_order_relaxed);
-            if (std::chrono::steady_clock::now() > benchmark_deadline) {
+            if (std::chrono::steady_clock::now() > benchmark_deadline ||
+                abort_benchmark.load(std::memory_order_relaxed)) {
               abort_benchmark.store(true, std::memory_order_relaxed);
               return;
             }
@@ -497,57 +530,38 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
     });
   }
 
-  // 6. Reactor loop (consumer): concurrent with producers!
-  // Producers run in background threads while reactor steps until all items are received.
-  while (received_items.size() < res.total_target_items &&
-         !abort_benchmark.load(std::memory_order_relaxed)) {
+  // 6. Reactor loop (consumer)
+  // Drive runtime.step() until ALL three termination conditions are satisfied:
+  // 1) completed_producers == producer_count
+  // 2) received_items.size() == total_target_items
+  // 3) notifications_consumed == total_signaled
+  while (!abort_benchmark.load(std::memory_order_relaxed)) {
+    const std::size_t prods_done = completed_producers.load(std::memory_order_acquire);
+    const std::uint64_t signaled = total_signaled.load(std::memory_order_acquire);
+
+    if (prods_done == producer_count &&
+        received_items.size() == res.total_target_items &&
+        notifications_consumed == signaled) {
+      break;
+    }
+
     if (std::chrono::steady_clock::now() > benchmark_deadline) {
+      abort_reason = "Benchmark timed out waiting for producer completion and callback work/notification delivery";
       abort_benchmark.store(true, std::memory_order_relaxed);
       break;
     }
-    // step(50) runs epoll_wait up to 50ms (or wakes immediately when notified)
-    runtime.step(50);
+
+    const bool step_ok = runtime.step(kReactorStepTimeoutMs);
+    if (!step_ok) {
+      abort_reason = "ServerRuntime::step() returned false during reactor execution loop";
+      abort_benchmark.store(true, std::memory_order_relaxed);
+      break;
+    }
   }
 
-  // Join producers
+  // Join all producers safely before stopping runtime or destroying notifier
   for (auto& th : producers) {
     if (th.joinable()) th.join();
-  }
-
-  // Final step/drain of any leftover notifications/items after producers finish
-  while (received_items.size() < res.total_target_items &&
-         !abort_benchmark.load(std::memory_order_relaxed)) {
-    if (std::chrono::steady_clock::now() > benchmark_deadline) {
-      abort_benchmark.store(true, std::memory_order_relaxed);
-      break;
-    }
-    runtime.step(10);
-  }
-
-  // Final drain of any leftover items in the queue
-  {
-    WorkItem item{};
-    while (queue.try_pop(item)) {
-      const auto pop_time = std::chrono::steady_clock::now();
-      const auto latency = std::chrono::duration_cast<std::chrono::nanoseconds>(
-          pop_time - item.published_at).count();
-      latencies_ns.push_back(static_cast<std::uint64_t>(std::max<std::int64_t>(0, latency)));
-      received_items.push_back(item);
-    }
-  }
-
-  // Drain any remaining unconsumed notifications in the descriptor
-  if constexpr (std::is_same_v<NotifierT, EventNotifier>) {
-    std::uint64_t counter = 0;
-    int c_err = 0;
-    const ConsumeStatus st = notifier.consume(counter, &c_err);
-    if (st == ConsumeStatus::Success) {
-      notifications_consumed += counter;
-    }
-  } else {
-    int d_err = 0;
-    const std::size_t bytes = notifier.drain_all(nullptr, &d_err);
-    notifications_consumed += bytes;
   }
 
   const auto benchmark_end = std::chrono::steady_clock::now();
@@ -560,10 +574,11 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
   res.elapsed_ms = std::chrono::duration<double, std::milli>(benchmark_end - benchmark_start).count();
   res.total_received_items = received_items.size();
   res.callback_invocations = callback_invocations;
-  res.notifications_signaled = total_signaled.load();
+  res.callbacks_with_zero_work = callbacks_with_zero_work;
+  res.notifications_signaled = total_signaled.load(std::memory_order_relaxed);
   res.notifications_consumed = notifications_consumed;
-  res.push_retry_count = push_retries.load();
-  res.notify_retry_count = notify_retries.load();
+  res.push_retry_count = push_retries.load(std::memory_order_relaxed);
+  res.notify_retry_count = notify_retries.load(std::memory_order_relaxed);
   res.max_items_in_single_callback = static_cast<double>(max_items_in_callback);
 
   if (res.elapsed_ms > 0.0) {
@@ -578,9 +593,16 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
   res.delivery_latency = compute_latency_stats(latencies_ns);
 
   // 9. Validation
-  if (abort_benchmark.load()) {
+  if (abort_benchmark.load(std::memory_order_relaxed)) {
     res.correctness_passed = false;
-    res.correctness_error = "Benchmark timed out or encountered unrecoverable notification error";
+    res.correctness_error = abort_reason.empty() ? "Benchmark aborted" : abort_reason;
+    return res;
+  }
+
+  if (completed_producers.load(std::memory_order_relaxed) != producer_count) {
+    res.correctness_passed = false;
+    res.correctness_error = "Not all producers completed: expected " + std::to_string(producer_count) +
+                            ", completed " + std::to_string(completed_producers.load(std::memory_order_relaxed));
     return res;
   }
 
@@ -599,14 +621,28 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
     return res;
   }
 
-  // Verify FIFO ordering
+  // Verify FIFO ordering and all identity fields
   if (producer_count == 1) {
     for (std::size_t i = 0; i < received_items.size(); ++i) {
+      if (received_items[i].producer_id != 0) {
+        res.correctness_passed = false;
+        res.correctness_error = "Producer ID mismatch at index " + std::to_string(i) +
+                                ": expected 0, got " + std::to_string(received_items[i].producer_id);
+        return res;
+      }
       if (received_items[i].sequence != static_cast<std::uint32_t>(i)) {
         res.correctness_passed = false;
         res.correctness_error = "Global FIFO violation at index " + std::to_string(i) +
                                 ": expected seq=" + std::to_string(i) +
                                 ", got seq=" + std::to_string(received_items[i].sequence);
+        return res;
+      }
+      const std::uint64_t expected_item_id = static_cast<std::uint64_t>(i);
+      if (received_items[i].item_id != expected_item_id) {
+        res.correctness_passed = false;
+        res.correctness_error = "Item ID mismatch at index " + std::to_string(i) +
+                                ": expected " + std::to_string(expected_item_id) +
+                                ", got " + std::to_string(received_items[i].item_id);
         return res;
       }
     }
@@ -624,8 +660,17 @@ SingleRunResult execute_scenario(const std::string& primitive_name,
         res.correctness_passed = false;
         res.correctness_error = "Per-producer FIFO violation for producer " + std::to_string(p) +
                                 " at item " + std::to_string(i) +
-                                ": expected " + std::to_string(next_expected_seq[p]) +
-                                ", got " + std::to_string(received_items[i].sequence);
+                                ": expected seq " + std::to_string(next_expected_seq[p]) +
+                                ", got seq " + std::to_string(received_items[i].sequence);
+        return res;
+      }
+      const std::uint64_t expected_item_id = (static_cast<std::uint64_t>(p) << 32) | next_expected_seq[p];
+      if (received_items[i].item_id != expected_item_id) {
+        res.correctness_passed = false;
+        res.correctness_error = "Item ID mismatch for producer " + std::to_string(p) +
+                                " at item " + std::to_string(i) +
+                                ": expected " + std::to_string(expected_item_id) +
+                                ", got " + std::to_string(received_items[i].item_id);
         return res;
       }
       next_expected_seq[p]++;
@@ -704,11 +749,13 @@ json gather_environment_metadata() {
 void print_help(const char* prog_name) {
   std::cout << "Usage: " << prog_name << " [options]\n\n"
             << "Options:\n"
-            << "  --items-per-producer=<N>  Items generated per producer thread (default: 100000)\n"
-            << "  --repetitions=<N>         Number of repetitions per scenario (default: 3)\n"
+            << "  --items-per-producer=<N>  Items generated per producer thread (1.." << kMaxItemsPerProducer << ", default: 100000)\n"
+            << "  --repetitions=<N>         Number of repetitions per scenario (1.." << kMaxRepetitions << ", default: 3)\n"
             << "  --json                    Output JSON results to stdout\n"
             << "  --json-out=<path>         Write JSON results to specified file\n"
-            << "  -h, --help                Show this help message\n";
+            << "  -h, --help                Show this help message\n\n"
+            << "Constraints:\n"
+            << "  Maximum total workload per scenario (producers * items_per_producer) is " << kMaxTotalWorkload << " items.\n";
 }
 
 bool parse_positive_uint64(std::string_view str, std::uint64_t& out_val) {
@@ -797,10 +844,32 @@ int main(int argc, char* argv[]) {
         return 1;
       }
     } else {
-      std::cerr << "Unknown argument: " << arg << "\n";
+      std::cerr << "Error: Unknown argument: " << arg << "\n";
       print_help(argv[0]);
       return 1;
     }
+  }
+
+  // Validate bounds
+  if (items_per_producer_arg > kMaxItemsPerProducer) {
+    std::cerr << "Error: --items-per-producer (" << items_per_producer_arg
+              << ") exceeds maximum limit (" << kMaxItemsPerProducer << ")\n";
+    return 1;
+  }
+
+  if (repetitions_arg > kMaxRepetitions) {
+    std::cerr << "Error: --repetitions (" << repetitions_arg
+              << ") exceeds maximum limit (" << kMaxRepetitions << ")\n";
+    return 1;
+  }
+
+  // Check 4-producer total workload against maximum total workload limit
+  constexpr std::size_t kMaxProducers = 4;
+  if (items_per_producer_arg > kMaxTotalWorkload / kMaxProducers) {
+    std::cerr << "Error: Total workload for 4-producer scenario ("
+              << (kMaxProducers * items_per_producer_arg)
+              << ") exceeds maximum limit (" << kMaxTotalWorkload << ")\n";
+    return 1;
   }
 
   const std::size_t items_per_producer = static_cast<std::size_t>(items_per_producer_arg);
@@ -809,7 +878,8 @@ int main(int argc, char* argv[]) {
   std::cerr << "[darkpool_ipc_reactor_benchmark] Configuration:\n"
             << "  Items per producer: " << items_per_producer << "\n"
             << "  Repetitions:        " << repetitions << "\n"
-            << "  Queue capacity:     " << kQueueCapacity << " (BoundedMpmcQueue compile-time capacity)\n\n";
+            << "  Queue capacity:     " << kQueueCapacity << " (BoundedMpmcQueue compile-time capacity)\n"
+            << "  Reactor timeout:    " << kReactorStepTimeoutMs << " ms\n\n";
 
   // Repetition storage for the 4 scenarios:
   // 0: EventNotifier 1P/1C
@@ -831,7 +901,7 @@ int main(int argc, char* argv[]) {
     // --- 1-Producer Scenarios ---
     if (eventfd_first) {
       std::cerr << "  [Run] 1 Producer -> EventNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r1 = execute_scenario<EventNotifier>("EventNotifier", 1, items_per_producer);
+      auto r1 = execute_scenario<EventNotifier>(rep, "EventNotifier", 1, items_per_producer);
       if (!r1.correctness_passed) {
         std::cerr << "    FAIL: " << r1.correctness_error << "\n";
         all_pass = false;
@@ -839,7 +909,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[0].push_back(r1);
 
       std::cerr << "  [Run] 1 Producer -> PipeNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r2 = execute_scenario<PipeNotifier>("PipeNotifier", 1, items_per_producer);
+      auto r2 = execute_scenario<PipeNotifier>(rep, "PipeNotifier", 1, items_per_producer);
       if (!r2.correctness_passed) {
         std::cerr << "    FAIL: " << r2.correctness_error << "\n";
         all_pass = false;
@@ -847,7 +917,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[1].push_back(r2);
     } else {
       std::cerr << "  [Run] 1 Producer -> PipeNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r2 = execute_scenario<PipeNotifier>("PipeNotifier", 1, items_per_producer);
+      auto r2 = execute_scenario<PipeNotifier>(rep, "PipeNotifier", 1, items_per_producer);
       if (!r2.correctness_passed) {
         std::cerr << "    FAIL: " << r2.correctness_error << "\n";
         all_pass = false;
@@ -855,7 +925,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[1].push_back(r2);
 
       std::cerr << "  [Run] 1 Producer -> EventNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r1 = execute_scenario<EventNotifier>("EventNotifier", 1, items_per_producer);
+      auto r1 = execute_scenario<EventNotifier>(rep, "EventNotifier", 1, items_per_producer);
       if (!r1.correctness_passed) {
         std::cerr << "    FAIL: " << r1.correctness_error << "\n";
         all_pass = false;
@@ -866,7 +936,7 @@ int main(int argc, char* argv[]) {
     // --- 4-Producer Scenarios ---
     if (eventfd_first) {
       std::cerr << "  [Run] 4 Producers -> EventNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r3 = execute_scenario<EventNotifier>("EventNotifier", 4, items_per_producer);
+      auto r3 = execute_scenario<EventNotifier>(rep, "EventNotifier", 4, items_per_producer);
       if (!r3.correctness_passed) {
         std::cerr << "    FAIL: " << r3.correctness_error << "\n";
         all_pass = false;
@@ -874,7 +944,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[2].push_back(r3);
 
       std::cerr << "  [Run] 4 Producers -> PipeNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r4 = execute_scenario<PipeNotifier>("PipeNotifier", 4, items_per_producer);
+      auto r4 = execute_scenario<PipeNotifier>(rep, "PipeNotifier", 4, items_per_producer);
       if (!r4.correctness_passed) {
         std::cerr << "    FAIL: " << r4.correctness_error << "\n";
         all_pass = false;
@@ -882,7 +952,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[3].push_back(r4);
     } else {
       std::cerr << "  [Run] 4 Producers -> PipeNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r4 = execute_scenario<PipeNotifier>("PipeNotifier", 4, items_per_producer);
+      auto r4 = execute_scenario<PipeNotifier>(rep, "PipeNotifier", 4, items_per_producer);
       if (!r4.correctness_passed) {
         std::cerr << "    FAIL: " << r4.correctness_error << "\n";
         all_pass = false;
@@ -890,7 +960,7 @@ int main(int argc, char* argv[]) {
       scenario_runs[3].push_back(r4);
 
       std::cerr << "  [Run] 4 Producers -> EventNotifier -> ServerRuntime (rep " << rep + 1 << ")...\n";
-      auto r3 = execute_scenario<EventNotifier>("EventNotifier", 4, items_per_producer);
+      auto r3 = execute_scenario<EventNotifier>(rep, "EventNotifier", 4, items_per_producer);
       if (!r3.correctness_passed) {
         std::cerr << "    FAIL: " << r3.correctness_error << "\n";
         all_pass = false;
@@ -973,7 +1043,12 @@ int main(int argc, char* argv[]) {
   root["configuration"] = {
       {"items_per_producer", items_per_producer},
       {"repetitions", repetitions},
-      {"queue_capacity", kQueueCapacity}
+      {"queue_capacity", kQueueCapacity},
+      {"reactor_step_timeout_ms", kReactorStepTimeoutMs},
+      {"latency_measurement_boundary", "published_at (immediately preceding successful queue.try_push()) to callback queue.try_pop()"},
+      {"max_items_per_producer_limit", kMaxItemsPerProducer},
+      {"max_repetitions_limit", kMaxRepetitions},
+      {"max_total_workload_limit", kMaxTotalWorkload}
   };
 
   json agg_array = json::array();
@@ -1008,4 +1083,3 @@ int main() {
 }
 
 #endif
-
