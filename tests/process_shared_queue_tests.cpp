@@ -795,7 +795,11 @@ void test_deterministic_enotrecoverable_and_condition_wait_death() {
   // --------------------------------------------------------------------------
   // Part 1: Condition-wait owner death
   // A participant blocks inside a real queue condition wait (pop() on empty queue).
-  // A peer process acquires the shared robust mutex and dies with SIGKILL.
+  // A narrowly scoped test seam triggers right before pthread_cond_timedwait() while
+  // the waiter still owns the mutex, signaling the test controller.
+  // The killer process attempts to acquire the robust mutex; its successful acquisition
+  // PROVES the waiter entered the condition wait and released the mutex.
+  // The killer then dies with SIGKILL.
   // The waiting participant wakes with EOWNERDEAD, transitions the queue to Faulted,
   // makes the mutex consistent, broadcasts, and returns QueueOpStatus::Faulted.
   // --------------------------------------------------------------------------
@@ -810,7 +814,7 @@ void test_deterministic_enotrecoverable_and_condition_wait_death() {
   CHECK(::pipe(sync_pipe_waiter) == 0);
 
   // Child 1: opens consumer and enters pop(..., timeout=5000ms).
-  // Before entering pop(), it notifies parent that it has opened.
+  // Uses pre_cond_wait_hook to notify parent immediately before pthread_cond_timedwait
   pid_t pid_waiter = ::fork();
   CHECK(pid_waiter >= 0);
   if (pid_waiter == 0) {
@@ -822,14 +826,17 @@ void test_deterministic_enotrecoverable_and_condition_wait_death() {
       ::_exit(1);
     }
 
-    char ready = 'W';
-    const ssize_t w = ::write(sync_pipe_waiter[1], &ready, 1);
-    (void)w;
-    ::close(sync_pipe_waiter[1]);
+    auto cond_wait_seam = [&]() {
+      // Waiter still owns the mutex here; immediately after this return it calls pthread_cond_timedwait
+      char ready = 'W';
+      const ssize_t w = ::write(sync_pipe_waiter[1], &ready, 1);
+      (void)w;
+      ::close(sync_pipe_waiter[1]);
+    };
 
     // Blocks in pthread_cond_timedwait(&header_->not_empty_cond, &header_->mutex, ...)
     std::string msg;
-    QueueOpStatus st = cons->pop(msg, nullptr, 5000ms, &c_err);
+    QueueOpStatus st = cons->pop(msg, nullptr, 5000ms, &c_err, cond_wait_seam);
     if (st != QueueOpStatus::Faulted) {
       std::cerr << "Child waiter expected Faulted from owner death, got " << static_cast<int>(st)
                 << " err=" << c_err << '\n';
@@ -844,14 +851,12 @@ void test_deterministic_enotrecoverable_and_condition_wait_death() {
 
   ::close(sync_pipe_waiter[1]);
   char w_ack = 0;
+  // Wait until waiter has entered pop() and is at the condition wait seam
   CHECK(::read(sync_pipe_waiter[0], &w_ack, 1) == 1);
   ::close(sync_pipe_waiter[0]);
 
-  // Give child waiter a short moment to release the mutex and block in pthread_cond_timedwait
-  struct timespec req_pause { 0, 50'000'000L }; // 50ms
-  ::nanosleep(&req_pause, nullptr);
-
-  // Child 2 (Killer): acquires robust mutex while waiter is in cond_wait, and dies
+  // Child 2 (Killer): acquires robust mutex and signals successful lock acquisition BEFORE dying.
+  // Successful acquisition guarantees the waiter has released the mutex into pthread_cond_timedwait!
   int sync_pipe_killer[2];
   CHECK(::pipe(sync_pipe_killer) == 0);
   pid_t pid_killer = ::fork();
@@ -861,8 +866,15 @@ void test_deterministic_enotrecoverable_and_condition_wait_death() {
     const int fd = ::shm_open(shm_cond_death.c_str(), O_RDWR, 0);
     auto* hdr = reinterpret_cast<QueueSharedHeader*>(
         ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
-    ::pthread_mutex_lock(&hdr->mutex);
 
+    // Acquires mutex (blocking until waiter releases it inside pthread_cond_timedwait)
+    int l_rc = ::pthread_mutex_lock(&hdr->mutex);
+    if (l_rc != 0) {
+      std::cerr << "Killer failed to acquire mutex: " << l_rc << '\n';
+      ::_exit(10);
+    }
+
+    // Signal controller that mutex has been acquired
     char k = 'K';
     const ssize_t w = ::write(sync_pipe_killer[1], &k, 1);
     (void)w;

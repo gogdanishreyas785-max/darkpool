@@ -138,13 +138,15 @@ class ProcessSharedQueue {
       std::size_t& out_size,
       std::uint64_t* out_sequence = nullptr,
       std::chrono::milliseconds timeout = kDefaultTimeout,
-      std::string* error_msg = nullptr);
+      std::string* error_msg = nullptr,
+      std::function<void()> pre_cond_wait_hook = nullptr);
 
   QueueOpStatus pop(
       std::string& out_message,
       std::uint64_t* out_sequence = nullptr,
       std::chrono::milliseconds timeout = kDefaultTimeout,
-      std::string* error_msg = nullptr);
+      std::string* error_msg = nullptr,
+      std::function<void()> pre_cond_wait_hook = nullptr);
 
   // Producer-owned graceful closure: consumer close attempts return false with error
   bool close(std::string* error_msg = nullptr);

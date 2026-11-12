@@ -215,11 +215,13 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     return std::nullopt;
   }
 
-  std::memset(addr, 0, total_size);
+  // POSIX specification guarantees that a newly created shared-memory object extended with
+  // ftruncate() is initialized with zero bytes. We do not call memset across the region,
+  // preventing any concurrent opener atomic load racing against a whole-region memset.
   auto* hdr = reinterpret_cast<QueueSharedHeader*>(addr);
 
   // If a pre-init synchronization hook was provided (for testing publication sequencing),
-  // invoke it now after memory has been mapped and zeroed but BEFORE any pthread objects
+  // invoke it now after memory has been mapped but BEFORE any pthread objects
   // or readiness indicators are initialized.
   if (pre_init_sync_hook) {
     pre_init_sync_hook();
@@ -672,7 +674,8 @@ QueueOpStatus ProcessSharedQueue::pop(
     std::size_t& out_size,
     std::uint64_t* out_sequence,
     std::chrono::milliseconds timeout,
-    std::string* error_msg) {
+    std::string* error_msg,
+    std::function<void()> pre_cond_wait_hook) {
   out_size = 0;
   if (role_ != QueueEndpointRole::Consumer) {
     if (error_msg) *error_msg = "Endpoint role is not Consumer";
@@ -756,7 +759,14 @@ QueueOpStatus ProcessSharedQueue::pop(
       return QueueOpStatus::Closed;
     }
 
-    // Queue is empty: wait on not_empty_cond
+    // Queue is empty: invoke pre_cond_wait_hook if provided (while mutex is still held)
+    if (pre_cond_wait_hook) {
+      pre_cond_wait_hook();
+      // Invoke hook only once to prevent repeated signaling on spurious wakeups
+      pre_cond_wait_hook = nullptr;
+    }
+
+    // Wait on not_empty_cond
     const int wait_rc = ::pthread_cond_timedwait(&header_->not_empty_cond, &header_->mutex, &deadline);
     if (wait_rc == ETIMEDOUT) {
       release_mutex();
@@ -792,10 +802,11 @@ QueueOpStatus ProcessSharedQueue::pop(
     std::string& out_message,
     std::uint64_t* out_sequence,
     std::chrono::milliseconds timeout,
-    std::string* error_msg) {
+    std::string* error_msg,
+    std::function<void()> pre_cond_wait_hook) {
   char buf[kMaxMessageDataSize];
   std::size_t size = 0;
-  const QueueOpStatus st = pop(buf, sizeof(buf), size, out_sequence, timeout, error_msg);
+  const QueueOpStatus st = pop(buf, sizeof(buf), size, out_sequence, timeout, error_msg, std::move(pre_cond_wait_hook));
   if (st == QueueOpStatus::Success) {
     out_message.assign(buf, size);
   } else {
