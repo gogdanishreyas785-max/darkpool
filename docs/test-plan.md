@@ -33,6 +33,7 @@ The CMake configuration defines tests for these areas:
 - **Local POSIX MQ control:** actual server and CLI processes, `ping`/aggregate `status`/graceful `shutdown`, request correlation and duplicate handling, concurrent clients, queue limits/priority/FIFO, malformed requests and reply destinations, permissions, queue-full/empty behavior, cleanup, and continued gameplay socket responsiveness.
 - **Local POSIX shared memory telemetry:** shared-memory initialization ordering, robust mutex synchronization, CRC32 snapshot integrity verification, observer recovery on owner death, `darkpool_watch` `--once` and `--follow` modes, observer mapping survival across publisher shutdown (IPC-4), pipe-coordinated concurrency tests verifying bounded lock acquisition and mutex preservation on lock timeouts, signal-based process termination (SIGTERM), and complete resource cleanup.
 - **Asynchronous concurrency primitives (IPC-5):** `EventNotifier` nonblocking operations, counter accumulation and coalescing, maximum counter boundary (`UINT64_MAX - 1`) and `Saturated` overflow handling, multi-producer thread safety, `poll()` readiness notification, RAII descriptor lifecycle and move semantics; `BoundedMpmcQueue` empty/full boundaries, single-producer single-consumer FIFO ordering, wraparound over thousands of cycles, deterministic pending-head stalled-producer availability verification, concurrent multi-producer multi-consumer consistency (every item consumed exactly once without loss or duplication, bounded execution with monotonic deadlines), and safe destruction with queued elements; combined queue and eventfd notification integration ensuring queue contents are authoritative.
+- **EventNotifier epoll reactor prototype (IPC-7):** integration of `EventNotifier` descriptor into `ServerRuntime::add_epoll_event_source()`, registration before startup failure validation, duplicate registration rejection, descriptor lifetime safety across `ServerRuntime::stop()` (unregistered via `EPOLL_CTL_DEL` without closing external descriptor), cross-thread producer-to-reactor notification wakeup, bounded MPMC queue work draining using compile-time queue capacity, 100% item delivery without loss or duplication in exact FIFO sequence, controlled two-stage notification coalescing verification (first callback counter = 1, second accumulated burst callback counter = 511, exactly two callback executions across 512 notifications), and nonblocking execution without spurious wakeups under bounded synchronization deadlines.
 - **Load-harness regressions:** harness self-tests and short functional workloads included in CTest.
 
 The canonical list of executable test targets is in CMakeLists.txt. To see the names available in a configured build:
@@ -63,6 +64,12 @@ The Linux-only asynchronous concurrency primitives suite can be run independentl
 
 ~~~bash
 ctest --test-dir build --output-on-failure -R '^darkpool_ipc_async_tests$'
+~~~
+
+The Linux-only EventNotifier epoll integration prototype suite can be run independently with:
+
+~~~bash
+ctest --test-dir build --output-on-failure -R '^darkpool_ipc_epoll_tests$'
 ~~~
 
 ### Microbenchmarks: Asynchronous IPC primitives (IPC-6)

@@ -431,3 +431,46 @@ IPC-6 provides an explicit, standalone microbenchmark suite (`darkpool_ipc_bench
   - `EventNotifier` maintains an in-kernel 64-bit scalar counter rather than a byte buffer. It coalesces bursts naturally, never blocks or drops notifications unless saturated at `UINT64_MAX - 1`, and consumes with a single 8-byte read. In contrast, pipes require buffering individual byte tokens (subject to `PIPE_BUF` limits and stream framing).
   - In our measured microbenchmark environment (WSL2), `BoundedMpmcQueue` observed higher item transfer rates than the mutex-protected circular vector under synthetic producer/consumer contention. Note that these microbenchmarks isolate low-level primitive behavior in a WSL2 VM environment; they do not simulate broader system scheduling or measure server context switches, and are not evidence of production server capacity.
 
+### 9.8 EventNotifier epoll reactor prototype (IPC-7)
+
+IPC-7 demonstrates that `EventNotifier` and `BoundedMpmcQueue` can integrate as a cross-thread wakeup and work-delivery mechanism with DARKPOOL's existing `ServerRuntime` epoll reactor loop without introducing secondary event loops or modifying server dispatch.
+
+- **Architecture:**
+  ```text
+                   PRODUCER THREAD
+                         |
+                   queue.try_push()
+                         |
+                         v
+               BoundedMpmcQueue
+                (authoritative data)
+                         |
+                  notifier.notify()
+                         |
+                         v
+                   eventfd counter
+                         |
+                         v
+                  Linux epoll_wait()
+                         |
+                         v
+               ServerRuntime callback
+                         |
+                         v
+                notifier.consume()
+                         |
+                         v
+                  Drain the queue
+                         |
+                         v
+               Process queued work items
+  ```
+- **Authoritative Data vs. Wakeup Signaling:**
+  The `eventfd` acts as an `EPOLLIN` readiness / wakeup notification mechanism for the reactor loop using the existing level-triggered epoll registration (`EPOLLIN | EPOLLERR | EPOLLHUP`). It carries no application payload or sequence state. The `BoundedMpmcQueue` is the sole authoritative source of work items. The epoll callback consumes the accumulated eventfd counter to reset readiness and then drains all available items from the queue with `try_pop()`.
+- **Notification Coalescing:**
+  Multiple rapid producer notifications coalesce into scalar increments of the 64-bit eventfd kernel counter. In our deterministic two-stage test sequence, the reactor executes an initial callback waking on item 0 (counter = 1), acknowledges the producer, and then waits while the producer enqueues items 1..511 in a continuous burst. The second reactor callback wakes on the coalesced burst and consumes the accumulated counter (counter = 511), draining all remaining work items in that single callback. Across the 512-item workload, exactly two callbacks execute, accounting for all 512 counter increments. The event loop avoids busy spinning: `epoll_wait()` sleeps when no items are pending and wakes immediately on producer notification.
+- **Descriptor Lifetime and Ownership:**
+  The `EventNotifier` is owned externally by the test harness or worker subsystem, not by `ServerRuntime`. Registering via `ServerRuntime::add_epoll_event_source(fd, handler, err)` adds the descriptor to the runtime's epoll set. When `ServerRuntime::stop()` is called, it unregisters the descriptor via `EPOLL_CTL_DEL` without closing it. The `EventNotifier` descriptor remains valid and open after runtime teardown. The notifier must outlive its epoll registration.
+- **Integration Boundary:**
+  The IPC-7 prototype (`darkpool_ipc_epoll_tests`) demonstrates that these primitives cooperate correctly with `ServerRuntime`. It does **not** integrate asynchronous worker threads or eventfd descriptors into the production `darkpool_server` daemon. Production gameplay dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` remain single-threaded within the reactor loop.
+
