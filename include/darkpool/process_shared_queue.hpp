@@ -76,9 +76,14 @@ struct QueueSharedHeader {
 
 static_assert(std::is_standard_layout_v<QueueSharedHeader>, "QueueSharedHeader must be standard layout");
 
-struct QueueMessage {
-  std::uint64_t sequence{0};
-  std::string payload;
+struct QueueSnapshot {
+  std::size_t capacity{0};
+  std::size_t size{0};
+  bool empty{true};
+  bool full{false};
+  QueueState state{QueueState::Uninitialized};
+  bool is_faulted{false};
+  bool is_closed{false};
 };
 
 bool is_valid_queue_shm_name(std::string_view name) noexcept;
@@ -132,18 +137,26 @@ class ProcessSharedQueue {
       std::chrono::milliseconds timeout = kDefaultTimeout,
       std::string* error_msg = nullptr);
 
+  // Producer-owned graceful closure: consumer close attempts return false with error
   bool close(std::string* error_msg = nullptr);
 
   [[nodiscard]] bool valid() const noexcept { return header_ != nullptr; }
   [[nodiscard]] std::string_view name() const noexcept { return shm_name_; }
   [[nodiscard]] QueueEndpointRole role() const noexcept { return role_; }
-  [[nodiscard]] std::size_t capacity() const noexcept;
+
+  // Immutable metadata
+  [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
+
+  // Synchronized accessors: acquires shared mutex to safely snapshot mutable state
   [[nodiscard]] std::size_t size() const noexcept;
   [[nodiscard]] bool empty() const noexcept;
   [[nodiscard]] bool full() const noexcept;
   [[nodiscard]] QueueState state() const noexcept;
   [[nodiscard]] bool is_faulted() const noexcept { return state() == QueueState::Faulted; }
   [[nodiscard]] bool is_closed() const noexcept { return state() == QueueState::Closed; }
+
+  // Atomic multi-attribute snapshot
+  [[nodiscard]] QueueSnapshot snapshot() const noexcept;
 
   // Manual unlink helper
   static bool unlink(std::string_view shm_name) noexcept;
@@ -153,17 +166,20 @@ class ProcessSharedQueue {
                               int fd,
                               std::size_t total_mapped_size,
                               void* mapped_base,
+                              std::size_t capacity,
                               QueueEndpointRole role,
                               bool is_creator);
 
   void cleanup() noexcept;
 
-  // Lock helper taking into account robust mutex and EOWNERDEAD
+  // Robust mutex lock helper:
   // Returns:
-  //   0 on normal lock,
-  //   EOWNERDEAD if previous owner died (state marked Faulted and mutex made consistent),
-  //   ENOTRECOVERABLE if unrecoverable,
-  //   or other errno.
+  //   0: Lock acquired normally.
+  //   EOWNERDEAD: Previous owner died while holding mutex. Mutex IS OWNED by caller;
+  //               State marked Faulted, condition variables broadcast,
+  //               and pthread_mutex_consistent() succeeded. Caller MUST unlock.
+  //   ENOTRECOVERABLE: Mutex cannot be acquired / recovery failed. Caller does NOT own mutex.
+  //   other errno: Failure, mutex not owned.
   int acquire_mutex(std::string* error_msg = nullptr) noexcept;
   void release_mutex() noexcept;
 
@@ -173,6 +189,7 @@ class ProcessSharedQueue {
   void* mapped_base_{nullptr};
   QueueSharedHeader* header_{nullptr};
   QueueMessageSlot* slots_{nullptr};
+  std::size_t capacity_{0};
   QueueEndpointRole role_{QueueEndpointRole::Producer};
   bool is_creator_{false};
 };
@@ -180,4 +197,3 @@ class ProcessSharedQueue {
 }  // namespace darkpool::ipc
 
 #endif
-

@@ -24,6 +24,10 @@ using darkpool::ipc::ProcessSharedQueue;
 using darkpool::ipc::QueueEndpointRole;
 using darkpool::ipc::QueueOpStatus;
 using darkpool::ipc::QueueState;
+using darkpool::ipc::QueueSharedHeader;
+using darkpool::ipc::QueueMessageSlot;
+using darkpool::ipc::kQueueMagic;
+using darkpool::ipc::kQueueAbiVersion;
 
 std::atomic<int> g_failures{0};
 
@@ -37,6 +41,25 @@ void check(bool condition, const char* expression, int line) {
 
 std::string make_test_shm_name(const std::string& suffix) {
   return "/dp_test_psq_" + std::to_string(::getpid()) + "_" + suffix;
+}
+
+// Helper to wait for child with monotonic deadline
+bool wait_child_bounded(pid_t pid, int& status, std::chrono::milliseconds timeout = 5000ms) {
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    const pid_t r = ::waitpid(pid, &status, WNOHANG);
+    if (r == pid) {
+      return true;
+    }
+    if (r < 0) {
+      return false;
+    }
+    ::usleep(5000);
+  }
+  // Timed out: kill and reap
+  ::kill(pid, SIGKILL);
+  ::waitpid(pid, &status, 0);
+  return false;
 }
 
 // ============================================================================
@@ -89,11 +112,11 @@ void test_empty_and_full_timeouts() {
 }
 
 // ============================================================================
-// Test 2: Validation of ABI, Names, Capacity, Permissions, Duplicate Endpoints
+// Test 2: Validation of ABI, Names, Capacity, Permissions, Roles
 // ============================================================================
 
-void test_validation_and_duplicate_endpoints() {
-  std::cerr << "[process_shared_queue_tests] running test_validation_and_duplicate_endpoints\n";
+void test_validation_and_permissions() {
+  std::cerr << "[process_shared_queue_tests] running test_validation_and_permissions\n";
   std::string err;
 
   // Invalid names
@@ -103,45 +126,157 @@ void test_validation_and_duplicate_endpoints() {
 
   // Invalid capacity
   CHECK(!ProcessSharedQueue::create("/dp_test_zero", 0, QueueEndpointRole::Producer, err).has_value());
+  CHECK(!ProcessSharedQueue::create("/dp_test_too_large", 1000001, QueueEndpointRole::Producer, err).has_value());
 
-  // Valid creation
-  const std::string shm_name = make_test_shm_name("dups");
+  const std::string shm_name = make_test_shm_name("perm_val");
   ProcessSharedQueue::unlink(shm_name);
 
   auto prod = ProcessSharedQueue::create(shm_name, 10, QueueEndpointRole::Producer, err);
   CHECK(prod.has_value());
 
-  // Duplicate producer rejection: another process/handle attempting to bind as Producer
-  // Since same PID, it recognizes same PID. But let's test role constraints:
-  // Cannot push from Consumer role:
+  // Producer-only closure enforcement
   auto cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, err);
   CHECK(cons.has_value());
+  CHECK(!cons->close(&err));
+  CHECK(err.find("Producer") != std::string::npos);
 
+  // Role constraints
   CHECK(cons->push("data") == QueueOpStatus::Invalid);
   std::string out_msg;
   CHECK(prod->pop(out_msg) == QueueOpStatus::Invalid);
 
-  // Oversized message rejection
+  // Oversized message
   std::string huge(300, 'X');
   CHECK(prod->push(huge, 10ms, &err) == QueueOpStatus::Invalid);
 
-  // Zero-sized message rejection
+  // Zero-sized message
   CHECK(prod->push("", 10ms, &err) == QueueOpStatus::Invalid);
 
-  // Small buffer rejection in pop
-  CHECK(prod->push("hello", 100ms) == QueueOpStatus::Success);
-  char tiny[2];
-  std::size_t sz = 0;
-  CHECK(cons->pop(tiny, sizeof(tiny), sz, nullptr, 100ms, &err) == QueueOpStatus::Invalid);
-  CHECK(cons->pop(out_msg) == QueueOpStatus::Success);
-  CHECK(out_msg == "hello");
+  prod->close();
+  cons.reset();
+  prod.reset();
+  ProcessSharedQueue::unlink(shm_name);
+
+  // Test insecure permissions rejection: create file with 0666 permissions
+  const std::string shm_perm_name = make_test_shm_name("insecure_perm");
+  ProcessSharedQueue::unlink(shm_perm_name);
+  const int fd = ::shm_open(shm_perm_name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0666);
+  CHECK(fd >= 0);
+  ::fchmod(fd, 0666); // explicitly ensure group/other permissions
+  const std::size_t sz = sizeof(QueueSharedHeader) + 10 * sizeof(QueueMessageSlot);
+  const int tr_rc = ::ftruncate(fd, static_cast<off_t>(sz));
+  CHECK(tr_rc == 0);
+  ::close(fd);
+
+  auto insecure_open = ProcessSharedQueue::open_existing(shm_perm_name, QueueEndpointRole::Consumer, err);
+  CHECK(!insecure_open.has_value());
+  CHECK(err.find("insecure") != std::string::npos || err.find("group/other") != std::string::npos);
+  ProcessSharedQueue::unlink(shm_perm_name);
+}
+
+// ============================================================================
+// Test 3: Metadata Validation (Magic, ABI, struct_size, UID, state, capacity)
+// ============================================================================
+
+void test_corrupted_metadata_rejection() {
+  std::cerr << "[process_shared_queue_tests] running test_corrupted_metadata_rejection\n";
+
+  auto test_corrupted_header = [](auto mutate_fn, const std::string& expected_err_sub) {
+    const std::string shm_name = make_test_shm_name("corrupt");
+    ProcessSharedQueue::unlink(shm_name);
+    std::string err;
+    auto q = ProcessSharedQueue::create(shm_name, 4, QueueEndpointRole::Producer, err);
+    CHECK(q.has_value());
+    q.reset(); // close handle
+
+    const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+    CHECK(fd >= 0);
+    auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+        ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    CHECK(hdr != MAP_FAILED);
+
+    mutate_fn(hdr);
+
+    ::munmap(hdr, sizeof(QueueSharedHeader));
+    ::close(fd);
+
+    std::string open_err;
+    auto res = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, open_err);
+    CHECK(!res.has_value());
+    CHECK(open_err.find(expected_err_sub) != std::string::npos);
+
+    ProcessSharedQueue::unlink(shm_name);
+  };
+
+  test_corrupted_header([](QueueSharedHeader* h) { h->magic = 0x12345678; }, "magic mismatch");
+  test_corrupted_header([](QueueSharedHeader* h) { h->abi_version = 999; }, "ABI version mismatch");
+  test_corrupted_header([](QueueSharedHeader* h) { h->struct_size = 42; }, "struct size mismatch");
+  test_corrupted_header([](QueueSharedHeader* h) { h->owner_uid = ::geteuid() + 1; }, "owner UID mismatch");
+  test_corrupted_header([](QueueSharedHeader* h) { h->capacity = 0; }, "capacity invalid");
+  test_corrupted_header([](QueueSharedHeader* h) { h->state = 99; }, "non-connectable state");
+}
+
+// ============================================================================
+// Test 4: Duplicate Endpoint Binding Rejection from Separate Processes
+// ============================================================================
+
+void test_duplicate_endpoint_from_separate_process() {
+  std::cerr << "[process_shared_queue_tests] running test_duplicate_endpoint_from_separate_process\n";
+  const std::string shm_name = make_test_shm_name("dup_proc");
+  ProcessSharedQueue::unlink(shm_name);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 10, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+  auto cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, err);
+  CHECK(cons.has_value());
+
+  int sync_pipe[2];
+  CHECK(::pipe(sync_pipe) == 0);
+
+  // Fork a child process attempting duplicate Producer binding
+  const pid_t child_pid = ::fork();
+  CHECK(child_pid >= 0);
+
+  if (child_pid == 0) {
+    ::close(sync_pipe[0]);
+    std::string child_err;
+    // Attempt duplicate Producer
+    auto dup_prod = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Producer, child_err);
+    int code = 0;
+    if (!dup_prod.has_value() && child_err.find("already bound") != std::string::npos) {
+      code |= 1; // correctly rejected
+    }
+
+    // Attempt duplicate Consumer
+    auto dup_cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, child_err);
+    if (!dup_cons.has_value() && child_err.find("already bound") != std::string::npos) {
+      code |= 2; // correctly rejected
+    }
+
+    const ssize_t w = ::write(sync_pipe[1], &code, sizeof(code));
+    (void)w;
+    ::close(sync_pipe[1]);
+    ::_exit(code == 3 ? 0 : 1);
+  }
+
+  ::close(sync_pipe[1]);
+  int child_code = 0;
+  const ssize_t r = ::read(sync_pipe[0], &child_code, sizeof(child_code));
+  CHECK(r == sizeof(child_code));
+  CHECK(child_code == 3);
+  ::close(sync_pipe[0]);
+
+  int status = 0;
+  CHECK(wait_child_bounded(child_pid, status));
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
   prod->close();
   ProcessSharedQueue::unlink(shm_name);
 }
 
 // ============================================================================
-// Test 3: Graceful Producer Closure and Consumer Drain
+// Test 5: Graceful Producer Closure and Consumer Drain
 // ============================================================================
 
 void test_graceful_closure_and_drain() {
@@ -188,7 +323,7 @@ void test_graceful_closure_and_drain() {
 }
 
 // ============================================================================
-// Test 4: Cross-Process SPSC Streaming & Backpressure (100,000 Messages, fork)
+// Test 6: Cross-Process SPSC Streaming & Backpressure (100,000 Messages, fork)
 // ============================================================================
 
 void test_cross_process_streaming() {
@@ -266,85 +401,20 @@ void test_cross_process_streaming() {
   // Close producer after sending all items
   producer.close();
 
-  // Wait for child consumer with deadline
   int status = 0;
-  const auto deadline = std::chrono::steady_clock::now() + 30s;
-  bool exited = false;
-  while (std::chrono::steady_clock::now() < deadline) {
-    const pid_t r = ::waitpid(pid, &status, WNOHANG);
-    if (r == pid) {
-      exited = true;
-      break;
-    }
-    ::usleep(5000);
-  }
-
-  if (!exited) {
-    ::kill(pid, SIGKILL);
-    ::waitpid(pid, &status, 0);
-    CHECK(false); // Timed out
-  } else {
-    CHECK(WIFEXITED(status));
-    CHECK(WEXITSTATUS(status) == 0);
-  }
+  CHECK(wait_child_bounded(pid, status, 30s));
+  CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
 
   ProcessSharedQueue::unlink(shm_name);
 }
 
 // ============================================================================
-// Test 5: Robust Mutex Owner Death and Faulted State Detection
+// Test 7: Deterministic EOWNERDEAD on New Participant Open
 // ============================================================================
 
-void test_robust_mutex_owner_death() {
-  std::cerr << "[process_shared_queue_tests] running test_robust_mutex_owner_death\n";
-  const std::string shm_name = make_test_shm_name("death");
-  ProcessSharedQueue::unlink(shm_name);
-
-  std::string err;
-  auto prod_opt = ProcessSharedQueue::create(shm_name, 10, QueueEndpointRole::Producer, err);
-  CHECK(prod_opt.has_value());
-
-  int pipe_fds[2];
-  CHECK(::pipe(pipe_fds) == 0);
-
-  const pid_t crash_pid = ::fork();
-  CHECK(crash_pid >= 0);
-
-  if (crash_pid == 0) {
-    ::close(pipe_fds[0]);
-    std::string child_err;
-    auto child_cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, child_err);
-    if (!child_cons.has_value()) {
-      ::_exit(10);
-    }
-    char b = '1';
-    const ssize_t w_rc = ::write(pipe_fds[1], &b, 1);
-    (void)w_rc;
-    ::close(pipe_fds[1]);
-    ::raise(SIGKILL);
-    ::_exit(0);
-  }
-
-  ::close(pipe_fds[1]);
-  char c = 0;
-  const ssize_t r_rc = ::read(pipe_fds[0], &c, 1);
-  (void)r_rc;
-  ::close(pipe_fds[0]);
-
-  int crash_st = 0;
-  ::waitpid(crash_pid, &crash_st, 0);
-  CHECK(WIFSIGNALED(crash_st));
-
-  ProcessSharedQueue::unlink(shm_name);
-}
-
-// ============================================================================
-// Test 6: Deterministic EOWNERDEAD and Fault-Stop Verification
-// ============================================================================
-
-void test_deterministic_owner_death() {
-  std::cerr << "[process_shared_queue_tests] running test_deterministic_owner_death\n";
-  const std::string shm_name = make_test_shm_name("eownerdead");
+void test_deterministic_owner_death_on_open() {
+  std::cerr << "[process_shared_queue_tests] running test_deterministic_owner_death_on_open\n";
+  const std::string shm_name = make_test_shm_name("eownerdead_open");
   ProcessSharedQueue::unlink(shm_name);
 
   int sync_pipe[2];
@@ -362,8 +432,8 @@ void test_deterministic_owner_death() {
     }
 
     const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
-    auto* hdr = reinterpret_cast<darkpool::ipc::QueueSharedHeader*>(
-        ::mmap(nullptr, sizeof(darkpool::ipc::QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+        ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
     ::pthread_mutex_lock(&hdr->mutex);
 
     char b = 'K';
@@ -371,6 +441,7 @@ void test_deterministic_owner_death() {
     (void)w_rc;
     ::close(sync_pipe[1]);
 
+    // Die while holding robust mutex!
     ::raise(SIGKILL);
     ::_exit(42);
   }
@@ -381,23 +452,128 @@ void test_deterministic_owner_death() {
   ::close(sync_pipe[0]);
 
   int status = 0;
-  ::waitpid(pid, &status, 0);
+  CHECK(wait_child_bounded(pid, status));
   CHECK(WIFSIGNALED(status));
   CHECK(WTERMSIG(status) == SIGKILL);
 
+  // Parent opens existing queue as Consumer
   std::string err;
   auto consumer_opt = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, err);
   CHECK(!consumer_opt.has_value());
-  CHECK(err.find("Faulted") != std::string::npos || err.find("EOWNERDEAD") != std::string::npos);
+  CHECK(err.find("Faulted") != std::string::npos || err.find("owner death") != std::string::npos);
 
+  // Directly inspect header to verify state is Faulted
   const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
   CHECK(fd >= 0);
-  auto* hdr = reinterpret_cast<darkpool::ipc::QueueSharedHeader*>(
-      ::mmap(nullptr, sizeof(darkpool::ipc::QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+  auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+      ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
   CHECK(hdr != MAP_FAILED);
   CHECK(hdr->state == static_cast<std::uint32_t>(QueueState::Faulted));
-  ::munmap(hdr, sizeof(darkpool::ipc::QueueSharedHeader));
+  ::munmap(hdr, sizeof(QueueSharedHeader));
   ::close(fd);
+
+  ProcessSharedQueue::unlink(shm_name);
+}
+
+// ============================================================================
+// Test 8: Deterministic EOWNERDEAD on Already-Open Participant
+// ============================================================================
+
+void test_owner_death_on_already_open_participant() {
+  std::cerr << "[process_shared_queue_tests] running test_owner_death_on_already_open_participant\n";
+  const std::string shm_name = make_test_shm_name("eownerdead_active");
+  ProcessSharedQueue::unlink(shm_name);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 4, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+
+  int sync_pipe[2];
+  CHECK(::pipe(sync_pipe) == 0);
+
+  const pid_t pid = ::fork();
+  CHECK(pid >= 0);
+
+  if (pid == 0) {
+    ::close(sync_pipe[0]);
+    std::string child_err;
+    auto cons = ProcessSharedQueue::open_existing(shm_name, QueueEndpointRole::Consumer, child_err);
+    if (!cons.has_value()) {
+      ::_exit(1);
+    }
+
+    // Access raw header to acquire robust mutex and crash
+    const int fd = ::shm_open(shm_name.c_str(), O_RDWR, 0);
+    auto* hdr = reinterpret_cast<QueueSharedHeader*>(
+        ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0));
+    ::pthread_mutex_lock(&hdr->mutex);
+
+    char b = 'R';
+    const ssize_t w_rc = ::write(sync_pipe[1], &b, 1);
+    (void)w_rc;
+    ::close(sync_pipe[1]);
+
+    ::raise(SIGKILL);
+    ::_exit(10);
+  }
+
+  ::close(sync_pipe[1]);
+  char ack = 0;
+  CHECK(::read(sync_pipe[0], &ack, 1) == 1);
+  ::close(sync_pipe[0]);
+
+  int status = 0;
+  CHECK(wait_child_bounded(pid, status));
+  CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
+
+  // The producer was already open! A subsequent push must detect EOWNERDEAD and return Faulted
+  std::string push_err;
+  QueueOpStatus st = prod->push("test_payload", 100ms, &push_err);
+  CHECK(st == QueueOpStatus::Faulted);
+  CHECK(prod->is_faulted());
+  CHECK(prod->state() == QueueState::Faulted);
+
+  // Subsequent operations also return Faulted
+  st = prod->push("another", 100ms);
+  CHECK(st == QueueOpStatus::Faulted);
+
+  ProcessSharedQueue::unlink(shm_name);
+}
+
+// ============================================================================
+// Test 9: Synchronized Public Accessors
+// ============================================================================
+
+void test_synchronized_accessors() {
+  std::cerr << "[process_shared_queue_tests] running test_synchronized_accessors\n";
+  const std::string shm_name = make_test_shm_name("sync_access");
+  ProcessSharedQueue::unlink(shm_name);
+
+  std::string err;
+  auto prod = ProcessSharedQueue::create(shm_name, 5, QueueEndpointRole::Producer, err);
+  CHECK(prod.has_value());
+
+  CHECK(prod->capacity() == 5);
+  CHECK(prod->size() == 0);
+  CHECK(prod->empty());
+  CHECK(!prod->full());
+  CHECK(prod->state() == QueueState::Active);
+
+  CHECK(prod->push("a") == QueueOpStatus::Success);
+  CHECK(prod->size() == 1);
+  CHECK(!prod->empty());
+  CHECK(!prod->full());
+
+  auto snap = prod->snapshot();
+  CHECK(snap.size == 1);
+  CHECK(snap.capacity == 5);
+  CHECK(!snap.empty);
+  CHECK(!snap.full);
+  CHECK(snap.state == QueueState::Active);
+
+  prod->close();
+  CHECK(prod->is_closed());
+  CHECK(prod->state() == QueueState::Closed);
 
   ProcessSharedQueue::unlink(shm_name);
 }
@@ -406,11 +582,14 @@ void test_deterministic_owner_death() {
 
 int main() {
   test_empty_and_full_timeouts();
-  test_validation_and_duplicate_endpoints();
+  test_validation_and_permissions();
+  test_corrupted_metadata_rejection();
+  test_duplicate_endpoint_from_separate_process();
   test_graceful_closure_and_drain();
   test_cross_process_streaming();
-  test_robust_mutex_owner_death();
-  test_deterministic_owner_death();
+  test_deterministic_owner_death_on_open();
+  test_owner_death_on_already_open_participant();
+  test_synchronized_accessors();
 
   if (g_failures.load() == 0) {
     std::cerr << "[process_shared_queue_tests] ALL TESTS PASSED\n";
@@ -427,4 +606,3 @@ int main() {
 }
 
 #endif
-

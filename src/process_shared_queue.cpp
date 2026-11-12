@@ -7,6 +7,7 @@
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
+#include <limits>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -25,6 +26,21 @@ void make_monotonic_abs_timespec(std::chrono::milliseconds timeout, struct times
     ts.tv_sec += 1;
     ts.tv_nsec -= 1'000'000'000L;
   }
+}
+
+// Checked arithmetic for shared memory size
+bool compute_total_mapped_size(std::size_t capacity, std::size_t& out_size) noexcept {
+  if (capacity == 0 || capacity > 1'000'000) {
+    return false;
+  }
+  constexpr std::size_t kSlotSize = sizeof(QueueMessageSlot);
+  constexpr std::size_t kHdrSize = sizeof(QueueSharedHeader);
+
+  if (capacity > (std::numeric_limits<std::size_t>::max() - kHdrSize) / kSlotSize) {
+    return false;
+  }
+  out_size = kHdrSize + capacity * kSlotSize;
+  return true;
 }
 
 }  // namespace
@@ -54,12 +70,14 @@ ProcessSharedQueue::ProcessSharedQueue(std::string shm_name,
                                        int fd,
                                        std::size_t total_mapped_size,
                                        void* mapped_base,
+                                       std::size_t capacity,
                                        QueueEndpointRole role,
                                        bool is_creator)
     : shm_name_(std::move(shm_name)),
       fd_(fd),
       total_mapped_size_(total_mapped_size),
       mapped_base_(mapped_base),
+      capacity_(capacity),
       role_(role),
       is_creator_(is_creator) {
   if (mapped_base_) {
@@ -80,6 +98,7 @@ ProcessSharedQueue::ProcessSharedQueue(ProcessSharedQueue&& other) noexcept
       mapped_base_(other.mapped_base_),
       header_(other.header_),
       slots_(other.slots_),
+      capacity_(other.capacity_),
       role_(other.role_),
       is_creator_(other.is_creator_) {
   other.fd_ = -1;
@@ -87,6 +106,7 @@ ProcessSharedQueue::ProcessSharedQueue(ProcessSharedQueue&& other) noexcept
   other.mapped_base_ = nullptr;
   other.header_ = nullptr;
   other.slots_ = nullptr;
+  other.capacity_ = 0;
   other.is_creator_ = false;
 }
 
@@ -99,6 +119,7 @@ ProcessSharedQueue& ProcessSharedQueue::operator=(ProcessSharedQueue&& other) no
     mapped_base_ = other.mapped_base_;
     header_ = other.header_;
     slots_ = other.slots_;
+    capacity_ = other.capacity_;
     role_ = other.role_;
     is_creator_ = other.is_creator_;
 
@@ -107,6 +128,7 @@ ProcessSharedQueue& ProcessSharedQueue::operator=(ProcessSharedQueue&& other) no
     other.mapped_base_ = nullptr;
     other.header_ = nullptr;
     other.slots_ = nullptr;
+    other.capacity_ = 0;
     other.is_creator_ = false;
   }
   return *this;
@@ -114,7 +136,6 @@ ProcessSharedQueue& ProcessSharedQueue::operator=(ProcessSharedQueue&& other) no
 
 void ProcessSharedQueue::cleanup() noexcept {
   if (header_) {
-    // Unbind PID if matching
     const pid_t my_pid = ::getpid();
     int lock_rc = acquire_mutex(nullptr);
     if (lock_rc == 0 || lock_rc == EOWNERDEAD) {
@@ -154,15 +175,16 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     error_msg = "Invalid shared memory name: " + std::string(shm_name);
     return std::nullopt;
   }
-  if (capacity == 0 || capacity > 1'000'000) {
+
+  std::size_t total_size = 0;
+  if (!compute_total_mapped_size(capacity, total_size)) {
     error_msg = "Invalid capacity: " + std::to_string(capacity) + " (must be between 1 and 1000000)";
     return std::nullopt;
   }
 
-  const std::size_t total_size = sizeof(QueueSharedHeader) + capacity * sizeof(QueueMessageSlot);
   std::string name(shm_name);
 
-  // Exclusive creation
+  // Exclusive creation with 0600 permissions
   const int fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
   if (fd < 0) {
     const int err = errno;
@@ -190,52 +212,70 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
   std::memset(addr, 0, total_size);
   auto* hdr = reinterpret_cast<QueueSharedHeader*>(addr);
 
+  // Helper lambda for partial initialization abort cleanup
+  auto abort_creation = [&](const std::string& msg, bool destroy_mutex, bool destroy_not_empty) {
+    error_msg = msg;
+    if (destroy_not_empty) {
+      ::pthread_cond_destroy(&hdr->not_empty_cond);
+    }
+    if (destroy_mutex) {
+      ::pthread_mutex_destroy(&hdr->mutex);
+    }
+    ::munmap(addr, total_size);
+    ::close(fd);
+    ::shm_unlink(name.c_str());
+    return std::nullopt;
+  };
+
   // 1. Initialize process-shared robust mutex
   pthread_mutexattr_t mattr;
   int rc = ::pthread_mutexattr_init(&mattr);
   if (rc != 0) {
-    error_msg = "pthread_mutexattr_init failed: " + std::string(std::strerror(rc));
-    ::munmap(addr, total_size);
-    ::close(fd);
-    ::shm_unlink(name.c_str());
-    return std::nullopt;
+    return abort_creation("pthread_mutexattr_init failed: " + std::string(std::strerror(rc)), false, false);
   }
-  ::pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
-  ::pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
+  rc = ::pthread_mutexattr_setpshared(&mattr, PTHREAD_PROCESS_SHARED);
+  if (rc != 0) {
+    ::pthread_mutexattr_destroy(&mattr);
+    return abort_creation("pthread_mutexattr_setpshared failed: " + std::string(std::strerror(rc)), false, false);
+  }
+  rc = ::pthread_mutexattr_setrobust(&mattr, PTHREAD_MUTEX_ROBUST);
+  if (rc != 0) {
+    ::pthread_mutexattr_destroy(&mattr);
+    return abort_creation("pthread_mutexattr_setrobust failed: " + std::string(std::strerror(rc)), false, false);
+  }
   rc = ::pthread_mutex_init(&hdr->mutex, &mattr);
   ::pthread_mutexattr_destroy(&mattr);
   if (rc != 0) {
-    error_msg = "pthread_mutex_init failed: " + std::string(std::strerror(rc));
-    ::munmap(addr, total_size);
-    ::close(fd);
-    ::shm_unlink(name.c_str());
-    return std::nullopt;
+    return abort_creation("pthread_mutex_init failed: " + std::string(std::strerror(rc)), false, false);
   }
 
   // 2. Initialize condition variables with CLOCK_MONOTONIC
   pthread_condattr_t cattr;
   rc = ::pthread_condattr_init(&cattr);
   if (rc != 0) {
-    error_msg = "pthread_condattr_init failed: " + std::string(std::strerror(rc));
-    ::munmap(addr, total_size);
-    ::close(fd);
-    ::shm_unlink(name.c_str());
-    return std::nullopt;
+    return abort_creation("pthread_condattr_init failed: " + std::string(std::strerror(rc)), true, false);
   }
-  ::pthread_condattr_setpshared(&cattr, PTHREAD_PROCESS_SHARED);
-  ::pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+  rc = ::pthread_condattr_setpshared(&cattr, PTHREAD_PROCESS_SHARED);
+  if (rc != 0) {
+    ::pthread_condattr_destroy(&cattr);
+    return abort_creation("pthread_condattr_setpshared failed: " + std::string(std::strerror(rc)), true, false);
+  }
+  rc = ::pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC);
+  if (rc != 0) {
+    ::pthread_condattr_destroy(&cattr);
+    return abort_creation("pthread_condattr_setclock failed: " + std::string(std::strerror(rc)), true, false);
+  }
 
   rc = ::pthread_cond_init(&hdr->not_empty_cond, &cattr);
-  if (rc == 0) {
-    rc = ::pthread_cond_init(&hdr->not_full_cond, &cattr);
+  if (rc != 0) {
+    ::pthread_condattr_destroy(&cattr);
+    return abort_creation("pthread_cond_init(not_empty_cond) failed: " + std::string(std::strerror(rc)), true, false);
   }
+
+  rc = ::pthread_cond_init(&hdr->not_full_cond, &cattr);
   ::pthread_condattr_destroy(&cattr);
   if (rc != 0) {
-    error_msg = "pthread_cond_init failed: " + std::string(std::strerror(rc));
-    ::munmap(addr, total_size);
-    ::close(fd);
-    ::shm_unlink(name.c_str());
-    return std::nullopt;
+    return abort_creation("pthread_cond_init(not_full_cond) failed: " + std::string(std::strerror(rc)), true, true);
   }
 
   // 3. Populate header
@@ -255,7 +295,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
     hdr->consumer_pid = hdr->creator_pid;
   }
 
-  return ProcessSharedQueue(std::move(name), fd, total_size, addr, role, true);
+  return ProcessSharedQueue(std::move(name), fd, total_size, addr, capacity, role, true);
 }
 
 std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
@@ -283,28 +323,46 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
     return std::nullopt;
   }
 
+  // 1. Validate file owner UID against effective UID
+  const uid_t expected_uid = ::geteuid();
+  if (sb.st_uid != expected_uid) {
+    error_msg = "Shared memory owner UID mismatch: expected " + std::to_string(expected_uid) +
+                ", got " + std::to_string(sb.st_uid);
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  // 2. Validate file permissions: must not grant group or other permissions (0600 boundary)
+  if ((sb.st_mode & 0077) != 0) {
+    error_msg = "Shared memory permissions insecure: permissions contain group/other access (mode: 0" +
+                std::to_string(sb.st_mode & 0777) + ")";
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  // 3. Minimum size check before mapping header
   if (static_cast<std::size_t>(sb.st_size) < sizeof(QueueSharedHeader)) {
     error_msg = "Shared memory size too small for QueueSharedHeader: " + std::to_string(sb.st_size);
     ::close(fd);
     return std::nullopt;
   }
 
-  const std::size_t total_size = static_cast<std::size_t>(sb.st_size);
-  void* addr = ::mmap(nullptr, total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-  if (addr == MAP_FAILED) {
+  // Map header first to validate capacity and metadata without arbitrarily large initial mapping
+  void* hdr_map = ::mmap(nullptr, sizeof(QueueSharedHeader), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (hdr_map == MAP_FAILED) {
     const int err = errno;
-    error_msg = "mmap failed: " + std::string(std::strerror(err));
+    error_msg = "mmap header failed: " + std::string(std::strerror(err));
     ::close(fd);
     return std::nullopt;
   }
 
-  auto* hdr = reinterpret_cast<QueueSharedHeader*>(addr);
+  auto* hdr = reinterpret_cast<QueueSharedHeader*>(hdr_map);
 
-  // Validate ABI and metadata
+  // 4. Validate magic, ABI version, struct size, owner UID
   if (hdr->magic != kQueueMagic) {
     error_msg = "Shared memory magic mismatch: expected 0x" +
                 std::to_string(kQueueMagic) + ", got 0x" + std::to_string(hdr->magic);
-    ::munmap(addr, total_size);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
   }
@@ -312,7 +370,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
   if (hdr->abi_version != kQueueAbiVersion) {
     error_msg = "Shared memory ABI version mismatch: expected " +
                 std::to_string(kQueueAbiVersion) + ", got " + std::to_string(hdr->abi_version);
-    ::munmap(addr, total_size);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
   }
@@ -320,54 +378,100 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
   if (hdr->struct_size != sizeof(QueueSharedHeader)) {
     error_msg = "QueueSharedHeader struct size mismatch: expected " +
                 std::to_string(sizeof(QueueSharedHeader)) + ", got " + std::to_string(hdr->struct_size);
-    ::munmap(addr, total_size);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
   }
 
-  const std::size_t expected_size = sizeof(QueueSharedHeader) + hdr->capacity * sizeof(QueueMessageSlot);
-  if (total_size != expected_size) {
-    error_msg = "Shared memory size mismatch: expected " + std::to_string(expected_size) +
-                ", got " + std::to_string(total_size);
-    ::munmap(addr, total_size);
+  if (hdr->owner_uid != static_cast<std::uint32_t>(expected_uid)) {
+    error_msg = "Header owner UID mismatch: expected " + std::to_string(expected_uid) +
+                ", got " + std::to_string(hdr->owner_uid);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
     ::close(fd);
     return std::nullopt;
   }
 
-  ProcessSharedQueue queue(std::move(name), fd, total_size, addr, role, false);
+  // 5. Validate declared capacity and compute expected size with checked arithmetic
+  std::size_t expected_total_size = 0;
+  if (!compute_total_mapped_size(hdr->capacity, expected_total_size)) {
+    error_msg = "Header declared capacity invalid or out of range: " + std::to_string(hdr->capacity);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
+    ::close(fd);
+    return std::nullopt;
+  }
 
-  // Bind role PID atomically
+  if (static_cast<std::size_t>(sb.st_size) != expected_total_size) {
+    error_msg = "Shared memory size mismatch: expected " + std::to_string(expected_total_size) +
+                ", got " + std::to_string(sb.st_size);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  // 6. Validate lifecycle state
+  if (hdr->state != static_cast<std::uint32_t>(QueueState::Active) &&
+      hdr->state != static_cast<std::uint32_t>(QueueState::Closed)) {
+    error_msg = "Queue is in non-connectable state: " + std::to_string(hdr->state);
+    ::munmap(hdr_map, sizeof(QueueSharedHeader));
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  const std::size_t capacity = hdr->capacity;
+
+  // Unmap preliminary header mapping and map the exact full region
+  ::munmap(hdr_map, sizeof(QueueSharedHeader));
+
+  void* addr = ::mmap(nullptr, expected_total_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (addr == MAP_FAILED) {
+    const int err = errno;
+    error_msg = "mmap full region failed: " + std::string(std::strerror(err));
+    ::close(fd);
+    return std::nullopt;
+  }
+
+  ProcessSharedQueue queue(std::move(name), fd, expected_total_size, addr, capacity, role, false);
+
+  // 7. Atomic role binding under robust lock
   const pid_t my_pid = ::getpid();
   const int lock_rc = queue.acquire_mutex(&error_msg);
-  if (lock_rc != 0 && lock_rc != EOWNERDEAD) {
+  if (lock_rc == EOWNERDEAD) {
+    // acquire_mutex handled fail-stop transition and left lock held
+    queue.release_mutex();
+    error_msg = "Queue encountered owner death during open and transitioned to Faulted";
+    return std::nullopt;
+  }
+  if (lock_rc != 0) {
+    // ENOTRECOVERABLE or lock failure (mutex NOT held)
+    error_msg = "Failed to acquire queue mutex during open: " + error_msg;
     return std::nullopt;
   }
 
-  if (hdr->state == static_cast<std::uint32_t>(QueueState::Faulted)) {
+  // Double check state under lock
+  if (queue.header_->state == static_cast<std::uint32_t>(QueueState::Faulted)) {
     queue.release_mutex();
     error_msg = "Queue is in Faulted state";
     return std::nullopt;
   }
 
   if (role == QueueEndpointRole::Producer) {
-    if (hdr->producer_pid != 0 && hdr->producer_pid != my_pid) {
-      // Check if existing producer PID is still alive
-      if (::kill(static_cast<pid_t>(hdr->producer_pid), 0) == 0 || errno == EPERM) {
+    if (queue.header_->producer_pid != 0 && queue.header_->producer_pid != my_pid) {
+      if (::kill(static_cast<pid_t>(queue.header_->producer_pid), 0) == 0 || errno == EPERM) {
         queue.release_mutex();
-        error_msg = "Producer endpoint already bound to active PID " + std::to_string(hdr->producer_pid);
+        error_msg = "Producer endpoint already bound to active PID " + std::to_string(queue.header_->producer_pid);
         return std::nullopt;
       }
     }
-    hdr->producer_pid = my_pid;
+    queue.header_->producer_pid = my_pid;
   } else {
-    if (hdr->consumer_pid != 0 && hdr->consumer_pid != my_pid) {
-      if (::kill(static_cast<pid_t>(hdr->consumer_pid), 0) == 0 || errno == EPERM) {
+    if (queue.header_->consumer_pid != 0 && queue.header_->consumer_pid != my_pid) {
+      if (::kill(static_cast<pid_t>(queue.header_->consumer_pid), 0) == 0 || errno == EPERM) {
         queue.release_mutex();
-        error_msg = "Consumer endpoint already bound to active PID " + std::to_string(hdr->consumer_pid);
+        error_msg = "Consumer endpoint already bound to active PID " + std::to_string(queue.header_->consumer_pid);
         return std::nullopt;
       }
     }
-    hdr->consumer_pid = my_pid;
+    queue.header_->consumer_pid = my_pid;
   }
 
   queue.release_mutex();
@@ -386,23 +490,26 @@ int ProcessSharedQueue::acquire_mutex(std::string* error_msg) noexcept {
   }
 
   if (rc == EOWNERDEAD) {
-    // Robust mutex owner-death detected!
-    // Fail-stop policy: mark state as Faulted, make consistent, wake blocked threads.
+    // Mutex ownership IS acquired!
+    // Fail-stop policy: transition state to Faulted, wake all waiting threads, make mutex consistent.
     header_->state = static_cast<std::uint32_t>(QueueState::Faulted);
     ::pthread_cond_broadcast(&header_->not_empty_cond);
     ::pthread_cond_broadcast(&header_->not_full_cond);
 
     const int cons_rc = ::pthread_mutex_consistent(&header_->mutex);
     if (cons_rc != 0) {
+      // pthread_mutex_consistent failed; unlock since we own it, and return ENOTRECOVERABLE
+      ::pthread_mutex_unlock(&header_->mutex);
       if (error_msg) *error_msg = "pthread_mutex_consistent failed: " + std::string(std::strerror(cons_rc));
       return ENOTRECOVERABLE;
     }
     if (error_msg) *error_msg = "Mutex owner died; queue marked permanently Faulted (EOWNERDEAD)";
-    return EOWNERDEAD;
+    return EOWNERDEAD; // Mutex IS held!
   }
 
   if (rc == ENOTRECOVERABLE) {
-    if (error_msg) *error_msg = "Mutex is ENOTRECOVERABLE";
+    // Mutex was NOT acquired!
+    if (error_msg) *error_msg = "Mutex is in ENOTRECOVERABLE state";
     return ENOTRECOVERABLE;
   }
 
@@ -434,8 +541,13 @@ QueueOpStatus ProcessSharedQueue::push(
   }
 
   const int lock_rc = acquire_mutex(error_msg);
-  if (lock_rc == EOWNERDEAD || lock_rc == ENOTRECOVERABLE) {
+  if (lock_rc == EOWNERDEAD) {
+    // Lock held, state marked Faulted by acquire_mutex
     release_mutex();
+    return QueueOpStatus::Faulted;
+  }
+  if (lock_rc == ENOTRECOVERABLE) {
+    // Lock not held
     return QueueOpStatus::Faulted;
   }
   if (lock_rc != 0) {
@@ -485,12 +597,22 @@ QueueOpStatus ProcessSharedQueue::push(
       return QueueOpStatus::Timeout;
     }
     if (wait_rc == EOWNERDEAD) {
+      // Mutex ownership re-acquired upon return from condition wait!
       header_->state = static_cast<std::uint32_t>(QueueState::Faulted);
       ::pthread_cond_broadcast(&header_->not_empty_cond);
       ::pthread_cond_broadcast(&header_->not_full_cond);
-      (void)::pthread_mutex_consistent(&header_->mutex);
+      const int cons_rc = ::pthread_mutex_consistent(&header_->mutex);
       release_mutex();
-      if (error_msg) *error_msg = "Owner died during condition wait";
+      if (cons_rc != 0) {
+        if (error_msg) *error_msg = "Owner died during wait; pthread_mutex_consistent failed: " + std::string(std::strerror(cons_rc));
+      } else {
+        if (error_msg) *error_msg = "Owner died during condition wait; queue marked Faulted";
+      }
+      return QueueOpStatus::Faulted;
+    }
+    if (wait_rc == ENOTRECOVERABLE) {
+      // Mutex is not held
+      if (error_msg) *error_msg = "Mutex became ENOTRECOVERABLE during condition wait";
       return QueueOpStatus::Faulted;
     }
     if (wait_rc != 0) {
@@ -519,8 +641,11 @@ QueueOpStatus ProcessSharedQueue::pop(
   }
 
   const int lock_rc = acquire_mutex(error_msg);
-  if (lock_rc == EOWNERDEAD || lock_rc == ENOTRECOVERABLE) {
+  if (lock_rc == EOWNERDEAD) {
     release_mutex();
+    return QueueOpStatus::Faulted;
+  }
+  if (lock_rc == ENOTRECOVERABLE) {
     return QueueOpStatus::Faulted;
   }
   if (lock_rc != 0) {
@@ -585,9 +710,17 @@ QueueOpStatus ProcessSharedQueue::pop(
       header_->state = static_cast<std::uint32_t>(QueueState::Faulted);
       ::pthread_cond_broadcast(&header_->not_empty_cond);
       ::pthread_cond_broadcast(&header_->not_full_cond);
-      (void)::pthread_mutex_consistent(&header_->mutex);
+      const int cons_rc = ::pthread_mutex_consistent(&header_->mutex);
       release_mutex();
-      if (error_msg) *error_msg = "Owner died during condition wait";
+      if (cons_rc != 0) {
+        if (error_msg) *error_msg = "Owner died during wait; pthread_mutex_consistent failed: " + std::string(std::strerror(cons_rc));
+      } else {
+        if (error_msg) *error_msg = "Owner died during condition wait; queue marked Faulted";
+      }
+      return QueueOpStatus::Faulted;
+    }
+    if (wait_rc == ENOTRECOVERABLE) {
+      if (error_msg) *error_msg = "Mutex became ENOTRECOVERABLE during condition wait";
       return QueueOpStatus::Faulted;
     }
     if (wait_rc != 0) {
@@ -615,18 +748,22 @@ QueueOpStatus ProcessSharedQueue::pop(
 }
 
 bool ProcessSharedQueue::close(std::string* error_msg) {
+  if (role_ != QueueEndpointRole::Producer) {
+    if (error_msg) *error_msg = "Only the Producer endpoint may close the queue";
+    return false;
+  }
+
   const int lock_rc = acquire_mutex(error_msg);
-  if (lock_rc == EOWNERDEAD || lock_rc == ENOTRECOVERABLE) {
+  if (lock_rc == EOWNERDEAD) {
     release_mutex();
     return false;
   }
-  if (lock_rc != 0) {
+  if (lock_rc == ENOTRECOVERABLE || lock_rc != 0) {
     return false;
   }
 
   if (header_->state == static_cast<std::uint32_t>(QueueState::Active)) {
     header_->state = static_cast<std::uint32_t>(QueueState::Closed);
-    // Wake any producers waiting for space and consumers waiting for items
     ::pthread_cond_broadcast(&header_->not_empty_cond);
     ::pthread_cond_broadcast(&header_->not_full_cond);
   }
@@ -635,28 +772,48 @@ bool ProcessSharedQueue::close(std::string* error_msg) {
   return true;
 }
 
-std::size_t ProcessSharedQueue::capacity() const noexcept {
-  return header_ ? header_->capacity : 0;
+QueueSnapshot ProcessSharedQueue::snapshot() const noexcept {
+  QueueSnapshot snap{};
+  snap.capacity = capacity_;
+
+  if (!header_) {
+    return snap;
+  }
+
+  auto* mutable_this = const_cast<ProcessSharedQueue*>(this);
+  const int lock_rc = mutable_this->acquire_mutex(nullptr);
+  if (lock_rc == 0 || lock_rc == EOWNERDEAD) {
+    snap.size = header_->count;
+    snap.empty = (header_->count == 0);
+    snap.full = (header_->count >= header_->capacity);
+    snap.state = static_cast<QueueState>(header_->state);
+    snap.is_faulted = (snap.state == QueueState::Faulted);
+    snap.is_closed = (snap.state == QueueState::Closed);
+    mutable_this->release_mutex();
+  } else {
+    // ENOTRECOVERABLE or lock failure -> report Faulted
+    snap.state = QueueState::Faulted;
+    snap.is_faulted = true;
+  }
+  return snap;
 }
 
 std::size_t ProcessSharedQueue::size() const noexcept {
-  return header_ ? header_->count : 0;
+  return snapshot().size;
 }
 
 bool ProcessSharedQueue::empty() const noexcept {
-  return size() == 0;
+  return snapshot().empty;
 }
 
 bool ProcessSharedQueue::full() const noexcept {
-  return size() >= capacity();
+  return snapshot().full;
 }
 
 QueueState ProcessSharedQueue::state() const noexcept {
-  if (!header_) return QueueState::Uninitialized;
-  return static_cast<QueueState>(header_->state);
+  return snapshot().state;
 }
 
 }  // namespace darkpool::ipc
 
 #endif
-
