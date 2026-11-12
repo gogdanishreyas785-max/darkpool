@@ -72,6 +72,12 @@ The Linux-only EventNotifier epoll integration prototype suite can be run indepe
 ctest --test-dir build --output-on-failure -R '^darkpool_ipc_epoll_tests$'
 ~~~
 
+The Linux-only process-shared bounded SPSC work queue prototype suite (IPC-9) can be run independently with:
+
+~~~bash
+ctest --test-dir build --output-on-failure -R '^darkpool_process_shared_queue_tests$'
+~~~
+
 ### Microbenchmarks: Asynchronous IPC primitives (IPC-6)
 
 The standalone executable `darkpool_ipc_benchmark` benchmarks `BoundedMpmcQueue` and `EventNotifier` against canonical baseline implementations (`BoundedMutexQueue` using a circular `std::vector` and nonblocking `pipe`). It is deliberately excluded from `CTest` so standard regression testing remains non-intrusive and fast.
