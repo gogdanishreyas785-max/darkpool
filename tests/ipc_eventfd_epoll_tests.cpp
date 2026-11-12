@@ -4,8 +4,11 @@
 
 #if defined(__linux__)
 
+#include <sys/epoll.h>
+
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <iostream>
 #include <mutex>
@@ -128,42 +131,46 @@ void test_registration_and_lifetime() {
 }
 
 // ============================================================================
-// Test 2: End-to-End Producer -> Queue -> EventNotifier -> epoll -> Reactor
+// Test 2: Deterministic Two-Stage Wakeup and Coalescing Integration
 // ============================================================================
 
 void test_eventfd_epoll_queue_integration() {
   std::cerr << "[ipc_eventfd_epoll_tests] running test_eventfd_epoll_queue_integration\n";
 
   constexpr std::size_t kItemCount = 512;
-  constexpr std::size_t kQueueCapacity = 1024; // Capacity >= workload ensures no queue overflow
+  constexpr std::size_t kQueueCapacity = 1024; // Power-of-two compile-time capacity >= 512
 
-  // 1. Instantiate primitives
+  // 1. Instantiate primitives with compile-time queue capacity
   EventNotifier notifier;
   CHECK(notifier.valid());
 
-  BoundedMpmcQueue<std::uint64_t> queue(kQueueCapacity);
+  BoundedMpmcQueue<std::uint64_t, kQueueCapacity> queue;
 
   ServerRuntimeConfig config{};
   config.enable_tcp = false;
   config.enable_tls = false;
   config.enable_unix = false;
   config.handle_signals = false;
-  config.epoll_timeout_ms = 50;
+  config.epoll_timeout_ms = 200;
 
   ServerRuntime runtime(config);
   std::string start_err;
   CHECK(runtime.start(start_err));
   CHECK(runtime.is_running());
 
-  // 2. Tracking state
-  std::atomic<bool> producer_done{false};
-  std::atomic<bool> producer_error{false};
+  // 2. Deterministic coordination primitives
+  std::mutex sync_mutex;
+  std::condition_variable sync_cv;
+  bool stage1_ack = false;
+  bool stage2_burst_done = false;
+  bool producer_finished = false;
+  bool producer_failed = false;
   std::string producer_error_msg;
 
   std::vector<std::uint64_t> consumed_items;
   consumed_items.reserve(kItemCount);
 
-  std::uint64_t total_notifications_accumulated = 0;
+  std::vector<std::uint64_t> callback_counter_values;
   std::size_t callback_executions = 0;
   std::size_t spurious_empty_consumes = 0;
   std::size_t unexpected_errors = 0;
@@ -181,7 +188,7 @@ void test_eventfd_epoll_queue_integration() {
         int c_err = 0;
         const auto c_status = notifier.consume(counter_val, &c_err);
         if (c_status == ConsumeStatus::Success) {
-          total_notifications_accumulated += counter_val;
+          callback_counter_values.push_back(counter_val);
         } else if (c_status == ConsumeStatus::Empty) {
           ++spurious_empty_consumes;
         } else {
@@ -198,111 +205,148 @@ void test_eventfd_epoll_queue_integration() {
             break;
           }
         }
+
+        // c. If stage 1 just processed item 0, acknowledge to producer
+        if (callback_executions == 1) {
+          std::lock_guard<std::mutex> lock(sync_mutex);
+          stage1_ack = true;
+          sync_cv.notify_all();
+        }
       },
       reg_err);
   CHECK(reg_ok);
   CHECK(reg_err.empty());
 
-  // 4. Launch producer thread
+  // 4. Producer thread executing controlled two-stage sequence
   std::thread producer([&]() {
-    for (std::uint64_t i = 0; i < kItemCount; ++i) {
-      // Small intermittent sleep every 32 items to test both immediate wakeups
-      // and accumulated/coalesced burst notifications while reactor steps
-      if (i % 32 == 0) {
-        std::this_thread::sleep_for(1ms);
-      }
+    auto fail_producer = [&](const std::string& msg) {
+      std::lock_guard<std::mutex> lock(sync_mutex);
+      producer_failed = true;
+      producer_error_msg = msg;
+      producer_finished = true;
+      sync_cv.notify_all();
+    };
 
-      // Step 1: Push item to queue
+    // Stage 1: Wait briefly so reactor enters bounded step(), then enqueue item 0
+    std::this_thread::sleep_for(20ms);
+
+    if (!queue.try_push(0)) {
+      fail_producer("Queue push failed for item 0");
+      return;
+    }
+    int err = 0;
+    if (notifier.notify(1, &err) != NotifyStatus::Success) {
+      fail_producer("EventNotifier notify failed for item 0: errno=" + std::to_string(err));
+      return;
+    }
+
+    // Wait for reactor to acknowledge processing item 0 via stage1_ack
+    {
+      std::unique_lock<std::mutex> lock(sync_mutex);
+      const auto stage1_deadline = std::chrono::steady_clock::now() + 5s;
+      if (!sync_cv.wait_until(lock, stage1_deadline, [&] { return stage1_ack || producer_failed; })) {
+        fail_producer("Timed out waiting for reactor stage 1 acknowledgement");
+        return;
+      }
+      if (producer_failed) return;
+    }
+
+    // Stage 2: Push remaining items 1..511 in a continuous burst while reactor is not calling step()
+    for (std::uint64_t i = 1; i < kItemCount; ++i) {
       if (!queue.try_push(i)) {
-        producer_error.store(true, std::memory_order_relaxed);
-        producer_error_msg = "Queue push failed at item " + std::to_string(i);
-        break;
+        fail_producer("Queue push failed during burst at item " + std::to_string(i));
+        return;
       }
-
-      // Step 2: Notify eventfd
       int n_err = 0;
-      const auto n_status = notifier.notify(1, &n_err);
-      if (n_status != NotifyStatus::Success) {
-        producer_error.store(true, std::memory_order_relaxed);
-        producer_error_msg = "EventNotifier notify failed with error: " + std::to_string(n_err);
-        break;
+      if (notifier.notify(1, &n_err) != NotifyStatus::Success) {
+        fail_producer("EventNotifier notify failed during burst at item " + std::to_string(i) +
+                      ": errno=" + std::to_string(n_err));
+        return;
       }
     }
-    producer_done.store(true, std::memory_order_release);
+
+    // Signal burst completion to reactor
+    {
+      std::lock_guard<std::mutex> lock(sync_mutex);
+      stage2_burst_done = true;
+      producer_finished = true;
+      sync_cv.notify_all();
+    }
   });
 
-  // 5. Main test thread acts as reactor driving ServerRuntime::step() with monotonic deadline
-  const auto deadline = std::chrono::steady_clock::now() + 10s;
-  while (consumed_items.size() < kItemCount) {
-    if (std::chrono::steady_clock::now() > deadline) {
+  // 5. Reactor Thread (Main thread) executing controlled two-stage steps
+  // Step A: Drive reactor for stage 1 (wake on item 0)
+  CHECK(runtime.step(500));
+  CHECK(callback_executions == 1);
+  CHECK(consumed_items.size() == 1);
+  CHECK(consumed_items[0] == 0);
+
+  // Wait for producer to finish Stage 2 burst before reactor calls step() again
+  {
+    std::unique_lock<std::mutex> lock(sync_mutex);
+    const auto burst_deadline = std::chrono::steady_clock::now() + 5s;
+    if (!sync_cv.wait_until(lock, burst_deadline, [&] { return stage2_burst_done || producer_failed; })) {
       CHECK(false);
-      std::cerr << "Test timed out waiting for work items to be processed! Consumed: "
-                << consumed_items.size() << " / " << kItemCount << '\n';
-      break;
+      std::cerr << "Timed out waiting for producer stage 2 burst completion\n";
     }
-    // Bounded step wait (up to 100ms)
-    CHECK(runtime.step(100));
   }
 
+  // Verify producer did not fail
+  {
+    std::lock_guard<std::mutex> lock(sync_mutex);
+    if (producer_failed) {
+      CHECK(!producer_failed);
+      std::cerr << "Producer failed: " << producer_error_msg << '\n';
+    }
+  }
+
+  // Step B: Drive reactor for stage 2 (wake on coalesced burst of 511 items)
+  CHECK(runtime.step(500));
+  CHECK(callback_executions == 2);
+
+  // Join producer thread cleanly before validating results or tearing down
   producer.join();
 
-  // Verify producer completed without error
-  CHECK(!producer_error.load());
-  if (producer_error.load()) {
-    std::cerr << "Producer error: " << producer_error_msg << '\n';
-  }
-
-  // Drain any remaining items in queue just in case
-  while (true) {
-    std::uint64_t item = 0;
-    if (queue.try_pop(item)) {
-      consumed_items.push_back(item);
-    } else {
-      break;
-    }
-  }
-
-  // 6. Assert all 512 items consumed exactly once in order
+  // 6. Validate deterministic two-stage execution results
   CHECK(consumed_items.size() == kItemCount);
-  std::vector<bool> seen(kItemCount, false);
-  bool all_unique_and_ordered = true;
-  for (std::size_t i = 0; i < consumed_items.size(); ++i) {
-    const auto val = consumed_items[i];
-    if (val >= kItemCount) {
-      all_unique_and_ordered = false;
-      CHECK(false);
-      break;
-    }
-    if (seen[val]) {
-      all_unique_and_ordered = false;
-      CHECK(false);
-      break;
-    }
-    seen[val] = true;
-    if (val != i) {
-      all_unique_and_ordered = false;
-    }
+  CHECK(callback_executions == 2);
+  CHECK(callback_counter_values.size() == 2);
+  if (callback_counter_values.size() == 2) {
+    CHECK(callback_counter_values[0] == 1);
+    CHECK(callback_counter_values[1] == 511);
   }
-  CHECK(all_unique_and_ordered);
 
-  // 7. Assert notification accounting & coalescing evidence
-  // Every single one of the 512 notify(1) calls must be reflected in the counter sum
-  CHECK(total_notifications_accumulated == kItemCount);
+  std::uint64_t total_counter_sum = 0;
+  for (std::uint64_t val : callback_counter_values) {
+    total_counter_sum += val;
+  }
+  CHECK(total_counter_sum == kItemCount);
   CHECK(spurious_empty_consumes == 0);
   CHECK(unexpected_errors == 0);
 
-  // Because the producer sleeps every 32 items and pushes in bursts,
-  // multiple notifications coalesce into single eventfd counter increments.
-  // Therefore, callback_executions must be less than kItemCount.
-  std::cerr << "  Work items: " << kItemCount << '\n';
-  std::cerr << "  Total counter notifications accumulated: " << total_notifications_accumulated << '\n';
-  std::cerr << "  Total epoll callback executions: " << callback_executions << '\n';
-  CHECK(callback_executions > 0);
-  CHECK(callback_executions < kItemCount);
+  // Verify exact-once FIFO ordering
+  bool ordered = true;
+  for (std::size_t i = 0; i < consumed_items.size(); ++i) {
+    if (consumed_items[i] != i) {
+      ordered = false;
+      CHECK(false);
+      std::cerr << "Ordering mismatch at index " << i << ": expected " << i
+                << ", got " << consumed_items[i] << '\n';
+      break;
+    }
+  }
+  CHECK(ordered);
 
-  // 8. Nonblocking step when queue and eventfd are empty: must not invoke callback or spin
+  std::cerr << "  Work items delivered: " << consumed_items.size() << '\n';
+  std::cerr << "  Callback executions: " << callback_executions << '\n';
+  if (callback_counter_values.size() == 2) {
+    std::cerr << "  Callback 1 counter: " << callback_counter_values[0] << '\n';
+    std::cerr << "  Callback 2 counter: " << callback_counter_values[1] << '\n';
+  }
+
+  // 7. Nonblocking step when queue and eventfd are empty: must not invoke callback
   const std::size_t callbacks_before = callback_executions;
-  CHECK(runtime.step(0)); // 0ms timeout nonblocking check
+  CHECK(runtime.step(0)); // Nonblocking step
   CHECK(callback_executions == callbacks_before);
 
   runtime.stop();
@@ -331,4 +375,3 @@ int main() {
 }
 
 #endif
-
