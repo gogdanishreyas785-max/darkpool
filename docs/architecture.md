@@ -474,3 +474,28 @@ IPC-7 demonstrates that `EventNotifier` and `BoundedMpmcQueue` can integrate as 
 - **Integration Boundary:**
   The IPC-7 prototype (`darkpool_ipc_epoll_tests`) demonstrates that these primitives cooperate correctly with `ServerRuntime`. It does **not** integrate asynchronous worker threads or eventfd descriptors into the production `darkpool_server` daemon. Production gameplay dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` remain single-threaded within the reactor loop.
 
+### 9.9 End-to-end epoll reactor work-delivery benchmark (IPC-8)
+
+IPC-8 implements a standalone, end-to-end Linux performance benchmark (`darkpool_ipc_reactor_benchmark`) measuring the complete producer-to-reactor work-delivery path:
+
+```text
+Producer → BoundedMpmcQueue → notification primitive → epoll_wait → ServerRuntime callback → queue drain
+```
+
+- **Target and Isolation:**
+  Built as an independent Linux-only executable (`benchmarks/ipc_reactor_benchmark.cpp`). It is compiled as part of the default CMake all-target build, ensuring clean builds in CI, but it is not registered as a CTest test and is not executed automatically during CI regression runs.
+- **Architectural Comparisons:**
+  Evaluates two notification primitives driving the identical `ServerRuntime` epoll event loop and draining the identical `BoundedMpmcQueue<WorkItem, 4096>`:
+  1. `EventNotifier`: Linux `eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)` with nonblocking counter increments (`notify(1)`) and 64-bit scalar counter consumption.
+  2. `PipeNotifier`: Nonblocking POSIX `pipe2(O_NONBLOCK | O_CLOEXEC)` baseline writing 1-byte control tokens and draining tokens in batches with `EINTR` and `EAGAIN` handling.
+- **Evaluated Configurations:**
+  - 1 producer, 1 reactor (1P/1C): Evaluates uncontended work streaming, baseline wakeup overhead, and strict global FIFO ordering.
+  - 4 producers, 1 reactor (4P/1C): Evaluates concurrent enqueue contention on `BoundedMpmcQueue`, multi-producer notification signaling, and per-producer FIFO preservation without duplicates or omissions.
+- **Latency Boundary Definition:**
+  Delivery latency measures the elapsed time from publication until the reactor callback dequeues the work item (`now - item.published_at`). To isolate delivery latency from queue-full backoff time, `published_at` is timestamped with `std::chrono::steady_clock` immediately before each successful `queue.try_push()` invocation. The suite reports p50, p95, p99, and maximum delivery latencies in nanoseconds.
+- **Throughput & Coalescing Accounting:**
+  The benchmark measures transferred items per second, total callback invocations, notifications signaled, and notifications consumed. Coalescing ratio is tracked as `notifications_signaled / callback_invocations`, serving as a batching indicator that quantifies the average number of signaled notifications processed per reactor callback invocation. It is not an independent score of runtime quality or efficiency. To eliminate fixed execution order bias and cache warming artifacts, primitive execution order alternates across repetitions.
+- **Observed Characteristics & Environmental Context:**
+  In our WSL2 evaluation environment, the measured `EventNotifier` p50 delivery latency is sub-microsecond in the 1-producer scenario (753 ns median p50) and low-microsecond in the 4-producer scenario (1,620 ns median p50). In contrast, the pipe baseline exhibits substantially higher measured latency (27,346 ns median p50 for 1P; 312,644 ns median p50 for 4P) alongside a higher notifications-per-callback ratio (median batching ratio of 10.22 for 1P and 372.09 for 4P, compared to 3.18 for 1P and 8.02 for 4P with `EventNotifier`). A higher batching ratio is not inherently better: while pipe tokens accumulate more deeply between drains under heavy multi-producer contention, this corresponds directly to increased queuing delay and elevated latency. `EventNotifier` achieves both lower delivery latency and slightly higher throughput by waking the reactor promptly with smaller, tighter notification batches. Both primitives reliably achieve full work delivery and adhere to strict FIFO invariants. These measurements reflect the specific virtualized WSL2 benchmarking environment and serve as comparative evidence between the primitives, rather than an extrapolation of production server capacity.
+
+

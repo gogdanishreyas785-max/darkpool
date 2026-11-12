@@ -92,6 +92,24 @@ To run the benchmark suite manually:
 
 The benchmark reports both successfully transferred items per second (`transferred_items_per_sec`) and total attempted queue operations per second (`total_ops_per_sec`), elapsed time, failed push/pop attempts (contention retries), read/write syscall counts where measurable, and average roundtrip latency (`avg_roundtrip_latency_ns`) along with estimated half-RTT (`estimated_half_rtt_latency_ns`). Every queue run explicitly validates that 100% of generated items are consumed without loss or duplication. Machine-readable JSON captures system and compiler metadata alongside workload metrics. Note that recorded benchmark runs reflect the specific execution environment (e.g. WSL2) and do not represent production server capacity or general production network guarantees.
 
+### End-to-End epoll Reactor Performance Benchmark (IPC-8)
+
+The standalone executable `darkpool_ipc_reactor_benchmark` evaluates the end-to-end work-delivery path (`Producer → BoundedMpmcQueue → notification primitive → epoll_wait → ServerRuntime callback → queue drain`) comparing `EventNotifier` (Linux `eventfd`) against `PipeNotifier` (nonblocking `pipe2`).
+
+The benchmark executable is built as part of the normal CMake all-target build (`cmake --build build --parallel`), which ensures it compiles cleanly in CI alongside all other binaries. However, it is not registered as a CTest test and is not executed automatically by CI. Running the benchmark workload and generating its evidence artifact remain explicit manual operations.
+
+To run the reactor benchmark manually:
+
+~~~bash
+# Run full benchmark with default workload (100000 items/producer, 3 repetitions)
+./build/darkpool_ipc_reactor_benchmark
+
+# Run custom workload and export JSON evidence artifact
+./build/darkpool_ipc_reactor_benchmark --items-per-producer=50000 --repetitions=3 --json-out=docs/ipc_reactor_benchmark_results.json
+~~~
+
+The benchmark alternates primitive execution order across repetitions to mitigate warmup bias. It records p50, p95, p99, and max end-to-end delivery latencies in nanoseconds (measured from queue publication timestamp `published_at` immediately preceding successful push to callback pop), throughput (items/sec), callback invocations, callbacks with zero work, coalescing ratio (batching indicator), and validates strict global FIFO (1P/1C) and per-producer FIFO ordering (4P/1C) along with all work-item identity fields (`producer_id`, `sequence`, `item_id`) with zero item loss or duplication. All work-item delivery and notification accounting occur strictly inside the registered `ServerRuntime` epoll callback. Bounded CLI limits enforce maximums of 500,000 items per producer, 20 repetitions, and 2,000,000 total items per scenario.
+
 It launches the real server and `darkpool_ctl`, as well as direct queue requests for malformed and boundary cases. It verifies orderly queue/socket cleanup and partial-startup cleanup. POSIX MQ descriptor polling through `epoll` is specific to the supported Linux runtime; the non-Linux build does not include this control target.
 
 ## Benchmark evidence
