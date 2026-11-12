@@ -157,6 +157,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(darkpool_ipc_benchmark PUBLIC cxx_std_20)
   target_link_libraries(darkpool_ipc_benchmark PRIVATE darkpool_ipc_async Threads::Threads nlohmann_json::nlohmann_json)
   darkpool_enable_warnings(darkpool_ipc_benchmark)
+  execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    OUTPUT_VARIABLE DARKPOOL_IPC_BENCH_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+  )
+  if(DARKPOOL_IPC_BENCH_GIT_COMMIT)
+    target_compile_definitions(darkpool_ipc_benchmark PRIVATE DARKPOOL_SOURCE_COMMIT="${DARKPOOL_IPC_BENCH_GIT_COMMIT}")
+  endif()
 
   add_executable(darkpool_client src/client_main.cpp)
   target_link_libraries(darkpool_client PRIVATE darkpool_cli darkpool_communications)

@@ -67,7 +67,7 @@ ctest --test-dir build --output-on-failure -R '^darkpool_ipc_async_tests$'
 
 ### Microbenchmarks: Asynchronous IPC primitives (IPC-6)
 
-The standalone executable `darkpool_ipc_benchmark` benchmarks `BoundedMpmcQueue` and `EventNotifier` against canonical baseline implementations (`BoundedMutexQueue` and nonblocking `pipe`). It is deliberately excluded from `CTest` so standard regression testing remains non-intrusive and fast.
+The standalone executable `darkpool_ipc_benchmark` benchmarks `BoundedMpmcQueue` and `EventNotifier` against canonical baseline implementations (`BoundedMutexQueue` using a circular `std::vector` and nonblocking `pipe`). It is deliberately excluded from `CTest` so standard regression testing remains non-intrusive and fast.
 
 To run the benchmark suite manually:
 
@@ -83,7 +83,7 @@ To run the benchmark suite manually:
 ./build/darkpool_ipc_benchmark --json-out=docs/ipc_benchmark_results.json
 ~~~
 
-The benchmark reports throughput (`ops/sec`), elapsed time, failed push/pop attempts (contention retries), and roundtrip latency (`ns`). Every queue run explicitly validates that 100% of generated items are consumed without loss or duplication. Machine-readable JSON captures system and compiler metadata alongside workload metrics.
+The benchmark reports both successfully transferred items per second (`transferred_items_per_sec`) and total attempted queue operations per second (`total_ops_per_sec`), elapsed time, failed push/pop attempts (contention retries), read/write syscall counts where measurable, and average roundtrip latency (`avg_roundtrip_latency_ns`) along with estimated half-RTT (`estimated_half_rtt_latency_ns`). Every queue run explicitly validates that 100% of generated items are consumed without loss or duplication. Machine-readable JSON captures system and compiler metadata alongside workload metrics. Note that recorded benchmark runs reflect the specific execution environment (e.g. WSL2) and do not represent production server capacity or general production network guarantees.
 
 It launches the real server and `darkpool_ctl`, as well as direct queue requests for malformed and boundary cases. It verifies orderly queue/socket cleanup and partial-startup cleanup. POSIX MQ descriptor polling through `epoll` is specific to the supported Linux runtime; the non-Linux build does not include this control target.
 

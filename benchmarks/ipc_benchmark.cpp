@@ -13,10 +13,12 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <poll.h>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
@@ -44,8 +46,8 @@ using json = nlohmann::ordered_json;
 /**
  * @brief Bounded mutex-protected queue baseline.
  *
- * Implements equivalent nonblocking try_push / try_pop semantics using
- * std::mutex and a circular buffer without heap allocations during operations.
+ * Implements nonblocking try_push / try_pop semantics using
+ * std::mutex and a circular std::vector without heap allocations during operations.
  */
 template <typename T>
 class BoundedMutexQueue {
@@ -254,12 +256,13 @@ class PipeNotifier {
     }
   }
 
-  std::size_t drain(int* error_code = nullptr) noexcept {
+  std::size_t drain(std::uint64_t* out_read_syscalls = nullptr, int* error_code = nullptr) noexcept {
     if (error_code) *error_code = 0;
     if (read_fd_ < 0) return 0;
     std::size_t total_bytes = 0;
     char buf[4096];
     while (true) {
+      if (out_read_syscalls) (*out_read_syscalls)++;
       const ssize_t rc = ::read(read_fd_, buf, sizeof(buf));
       if (rc > 0) {
         total_bytes += static_cast<std::size_t>(rc);
@@ -291,13 +294,17 @@ struct BenchmarkResult {
   std::size_t capacity{0};
   std::size_t target_items{0};
   std::size_t transferred_items{0};
+  std::uint64_t attempted_operations{0};
+  std::uint64_t successful_operations{0};
   std::uint64_t push_failures{0};
   std::uint64_t pop_failures{0};
-  std::uint64_t write_syscalls{0};
-  std::uint64_t read_syscalls{0};
+  std::optional<std::uint64_t> write_syscalls;
+  std::optional<std::uint64_t> read_syscalls;
   double elapsed_ms{0.0};
-  double throughput_ops_per_sec{0.0};
-  double avg_latency_ns{0.0};
+  double transferred_items_per_sec{0.0};
+  double total_ops_per_sec{0.0};
+  std::optional<double> avg_roundtrip_latency_ns;
+  std::optional<double> estimated_half_rtt_latency_ns;
   bool correctness_passed{false};
   std::string correctness_error;
 
@@ -314,16 +321,32 @@ struct BenchmarkResult {
     }
     j["target_items"] = target_items;
     j["transferred_items"] = transferred_items;
+    j["attempted_operations"] = attempted_operations;
+    j["successful_operations"] = successful_operations;
     j["push_failures"] = push_failures;
     j["pop_failures"] = pop_failures;
-    j["write_syscalls"] = write_syscalls;
-    j["read_syscalls"] = read_syscalls;
-    j["elapsed_ms"] = elapsed_ms;
-    j["throughput_ops_per_sec"] = throughput_ops_per_sec;
-    if (avg_latency_ns > 0.0) {
-      j["avg_latency_ns"] = avg_latency_ns;
+    if (write_syscalls.has_value()) {
+      j["write_syscalls"] = *write_syscalls;
     } else {
-      j["avg_latency_ns"] = nullptr;
+      j["write_syscalls"] = nullptr;
+    }
+    if (read_syscalls.has_value()) {
+      j["read_syscalls"] = *read_syscalls;
+    } else {
+      j["read_syscalls"] = nullptr;
+    }
+    j["elapsed_ms"] = elapsed_ms;
+    j["transferred_items_per_sec"] = transferred_items_per_sec;
+    j["total_ops_per_sec"] = total_ops_per_sec;
+    if (avg_roundtrip_latency_ns.has_value()) {
+      j["avg_roundtrip_latency_ns"] = *avg_roundtrip_latency_ns;
+    } else {
+      j["avg_roundtrip_latency_ns"] = nullptr;
+    }
+    if (estimated_half_rtt_latency_ns.has_value()) {
+      j["estimated_half_rtt_latency_ns"] = *estimated_half_rtt_latency_ns;
+    } else {
+      j["estimated_half_rtt_latency_ns"] = nullptr;
     }
     j["correctness_passed"] = correctness_passed;
     j["correctness_error"] = correctness_error;
@@ -403,9 +426,13 @@ BenchmarkResult run_queue_spsc(const std::string& impl_name, std::size_t capacit
   res.transferred_items = consumed_items.size();
   res.push_failures = push_failures.load();
   res.pop_failures = pop_failures.load();
+  res.successful_operations = res.transferred_items * 2; // 1 push + 1 pop per item
+  res.attempted_operations = res.successful_operations + res.push_failures + res.pop_failures;
 
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
 
   // Verification: exact count, sequential ordering
@@ -498,7 +525,7 @@ BenchmarkResult run_queue_mpmc(const std::string& impl_name, std::size_t capacit
       const auto deadline = std::chrono::steady_clock::now() + 45s;
       for (std::uint64_t i = 0; i < items_per_producer; ++i) {
         if (abort_test.load(std::memory_order_relaxed)) break;
-        const std::uint64_t item = (static_cast<std::uint64_t>(p) << 32) | i;
+        const std::uint64_t item = (static_cast<std::uint64_t>(p) << 32) | (i & 0xFFFFFFFFULL);
         while (!queue.try_push(item)) {
           push_failures.fetch_add(1, std::memory_order_relaxed);
           if (std::chrono::steady_clock::now() > deadline) {
@@ -520,9 +547,13 @@ BenchmarkResult run_queue_mpmc(const std::string& impl_name, std::size_t capacit
   res.transferred_items = total_consumed.load();
   res.push_failures = push_failures.load();
   res.pop_failures = pop_failures.load();
+  res.successful_operations = res.transferred_items * 2;
+  res.attempted_operations = res.successful_operations + res.push_failures + res.pop_failures;
 
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
 
   // Verification: every producer ID and sequence consumed exactly once
@@ -590,15 +621,30 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
   EventNotifier notifier;
   if (!notifier.valid()) {
     res.correctness_passed = false;
-    res.correctness_error = "Failed to create EventNotifier";
+    res.correctness_error = "Failed to create EventNotifier: errno=" + std::to_string(notifier.creation_errno());
     return res;
   }
 
   std::atomic<bool> producer_done{false};
   std::atomic<bool> abort_test{false};
+  std::atomic<bool> operation_error{false};
+  std::string error_desc;
+  std::mutex error_mutex;
+
   std::atomic<std::uint64_t> total_consumed_count{0};
   std::atomic<std::uint64_t> read_syscalls{0};
   std::atomic<std::uint64_t> write_syscalls{0};
+  std::atomic<std::uint64_t> write_retries{0};
+  std::atomic<std::uint64_t> empty_consumes{0};
+
+  auto report_error = [&](const std::string& err) {
+    std::lock_guard<std::mutex> lk(error_mutex);
+    if (!operation_error.load()) {
+      error_desc = err;
+      operation_error.store(true, std::memory_order_relaxed);
+      abort_test.store(true, std::memory_order_relaxed);
+    }
+  };
 
   const auto start_time = std::chrono::steady_clock::now();
 
@@ -609,10 +655,17 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
       std::uint64_t val = 0;
       int err = 0;
       read_syscalls.fetch_add(1, std::memory_order_relaxed);
-      if (notifier.consume(val, &err) == ConsumeStatus::Success) {
+      const auto status = notifier.consume(val, &err);
+      if (status == ConsumeStatus::Success) {
+        if (val == 0) {
+          report_error("Unexpected zero counter received on Success consume");
+          return;
+        }
         total_consumed_count.fetch_add(val, std::memory_order_relaxed);
-      } else {
+      } else if (status == ConsumeStatus::Empty) {
+        empty_consumes.fetch_add(1, std::memory_order_relaxed);
         if (producer_done.load(std::memory_order_acquire)) {
+          read_syscalls.fetch_add(1, std::memory_order_relaxed);
           if (notifier.consume(val, &err) == ConsumeStatus::Success) {
             total_consumed_count.fetch_add(val, std::memory_order_relaxed);
           }
@@ -623,6 +676,9 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
           break;
         }
         std::this_thread::yield();
+      } else {
+        report_error("EventNotifier consume failed with errno=" + std::to_string(err));
+        return;
       }
     }
   });
@@ -633,13 +689,22 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
       if (abort_test.load(std::memory_order_relaxed)) break;
       while (true) {
         write_syscalls.fetch_add(1, std::memory_order_relaxed);
-        auto st = notifier.notify(1);
-        if (st == NotifyStatus::Success) break;
-        if (std::chrono::steady_clock::now() > deadline) {
-          abort_test.store(true, std::memory_order_relaxed);
+        int err = 0;
+        const auto st = notifier.notify(1, &err);
+        if (st == NotifyStatus::Success) {
           break;
         }
-        std::this_thread::yield();
+        if (st == NotifyStatus::Saturated) {
+          write_retries.fetch_add(1, std::memory_order_relaxed);
+          if (std::chrono::steady_clock::now() > deadline) {
+            abort_test.store(true, std::memory_order_relaxed);
+            break;
+          }
+          std::this_thread::yield();
+          continue;
+        }
+        report_error("EventNotifier notify failed with errno=" + std::to_string(err));
+        return;
       }
     }
     producer_done.store(true, std::memory_order_release);
@@ -653,12 +718,21 @@ BenchmarkResult run_notify_spsc_eventfd(std::size_t num_notifications) {
   res.transferred_items = total_consumed_count.load();
   res.write_syscalls = write_syscalls.load();
   res.read_syscalls = read_syscalls.load();
+  res.push_failures = write_retries.load();
+  res.pop_failures = empty_consumes.load();
+  res.successful_operations = num_notifications;
+  res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
 
-  if (abort_test.load()) {
+  if (operation_error.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = error_desc;
+  } else if (abort_test.load()) {
     res.correctness_passed = false;
     res.correctness_error = "Notification benchmark timed out";
   } else if (res.transferred_items != num_notifications) {
@@ -683,15 +757,30 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
   PipeNotifier notifier;
   if (!notifier.valid()) {
     res.correctness_passed = false;
-    res.correctness_error = "Failed to create PipeNotifier";
+    res.correctness_error = "Failed to create PipeNotifier: errno=" + std::to_string(notifier.creation_errno());
     return res;
   }
 
   std::atomic<bool> producer_done{false};
   std::atomic<bool> abort_test{false};
+  std::atomic<bool> operation_error{false};
+  std::string error_desc;
+  std::mutex error_mutex;
+
   std::atomic<std::uint64_t> total_consumed_count{0};
   std::atomic<std::uint64_t> write_syscalls{0};
   std::atomic<std::uint64_t> read_syscalls{0};
+  std::atomic<std::uint64_t> write_retries{0};
+  std::atomic<std::uint64_t> empty_consumes{0};
+
+  auto report_error = [&](const std::string& err) {
+    std::lock_guard<std::mutex> lk(error_mutex);
+    if (!operation_error.load()) {
+      error_desc = err;
+      operation_error.store(true, std::memory_order_relaxed);
+      abort_test.store(true, std::memory_order_relaxed);
+    }
+  };
 
   const auto start_time = std::chrono::steady_clock::now();
 
@@ -702,10 +791,13 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
       std::uint8_t token = 0;
       int err = 0;
       read_syscalls.fetch_add(1, std::memory_order_relaxed);
-      if (notifier.consume(token, &err) == ConsumeStatus::Success) {
+      const auto status = notifier.consume(token, &err);
+      if (status == ConsumeStatus::Success) {
         total_consumed_count.fetch_add(1, std::memory_order_relaxed);
-      } else {
+      } else if (status == ConsumeStatus::Empty) {
+        empty_consumes.fetch_add(1, std::memory_order_relaxed);
         if (producer_done.load(std::memory_order_acquire)) {
+          read_syscalls.fetch_add(1, std::memory_order_relaxed);
           if (notifier.consume(token, &err) == ConsumeStatus::Success) {
             total_consumed_count.fetch_add(1, std::memory_order_relaxed);
           }
@@ -716,6 +808,9 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
           break;
         }
         std::this_thread::yield();
+      } else {
+        report_error("PipeNotifier consume failed with errno=" + std::to_string(err));
+        return;
       }
     }
   });
@@ -726,13 +821,22 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
       if (abort_test.load(std::memory_order_relaxed)) break;
       while (true) {
         write_syscalls.fetch_add(1, std::memory_order_relaxed);
-        auto st = notifier.notify(1);
-        if (st == NotifyStatus::Success) break;
-        if (std::chrono::steady_clock::now() > deadline) {
-          abort_test.store(true, std::memory_order_relaxed);
+        int err = 0;
+        const auto st = notifier.notify(1, &err);
+        if (st == NotifyStatus::Success) {
           break;
         }
-        std::this_thread::yield();
+        if (st == NotifyStatus::Saturated) {
+          write_retries.fetch_add(1, std::memory_order_relaxed);
+          if (std::chrono::steady_clock::now() > deadline) {
+            abort_test.store(true, std::memory_order_relaxed);
+            break;
+          }
+          std::this_thread::yield();
+          continue;
+        }
+        report_error("PipeNotifier notify failed with errno=" + std::to_string(err));
+        return;
       }
     }
     producer_done.store(true, std::memory_order_release);
@@ -746,12 +850,21 @@ BenchmarkResult run_notify_spsc_pipe(std::size_t num_notifications) {
   res.transferred_items = total_consumed_count.load();
   res.write_syscalls = write_syscalls.load();
   res.read_syscalls = read_syscalls.load();
+  res.push_failures = write_retries.load();
+  res.pop_failures = empty_consumes.load();
+  res.successful_operations = num_notifications;
+  res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
 
-  if (abort_test.load()) {
+  if (operation_error.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = error_desc;
+  } else if (abort_test.load()) {
     res.correctness_passed = false;
     res.correctness_error = "Pipe notification benchmark timed out";
   } else if (res.transferred_items != num_notifications) {
@@ -777,7 +890,7 @@ BenchmarkResult run_notify_batched_eventfd(std::size_t batches, std::size_t batc
   EventNotifier notifier;
   if (!notifier.valid()) {
     res.correctness_passed = false;
-    res.correctness_error = "Failed to create EventNotifier";
+    res.correctness_error = "Failed to create EventNotifier: errno=" + std::to_string(notifier.creation_errno());
     return res;
   }
 
@@ -789,17 +902,25 @@ BenchmarkResult run_notify_batched_eventfd(std::size_t batches, std::size_t batc
   for (std::size_t b = 0; b < batches; ++b) {
     for (std::size_t k = 0; k < batch_size; ++k) {
       ++writes;
-      if (notifier.notify(1) != NotifyStatus::Success) {
+      int err = 0;
+      if (notifier.notify(1, &err) != NotifyStatus::Success) {
         res.correctness_passed = false;
-        res.correctness_error = "EventNotifier notify failed";
+        res.correctness_error = "EventNotifier notify failed with errno=" + std::to_string(err);
         return res;
       }
     }
     // Single read consumes the accumulated counter from the entire batch
     ++reads;
     std::uint64_t val = 0;
-    if (notifier.consume(val) == ConsumeStatus::Success) {
+    int err = 0;
+    const auto st = notifier.consume(val, &err);
+    if (st == ConsumeStatus::Success) {
       total_consumed += val;
+    } else {
+      res.correctness_passed = false;
+      res.correctness_error = "EventNotifier consume failed with status=" +
+                              std::to_string(static_cast<int>(st)) + " errno=" + std::to_string(err);
+      return res;
     }
   }
   const auto end_time = std::chrono::steady_clock::now();
@@ -808,8 +929,13 @@ BenchmarkResult run_notify_batched_eventfd(std::size_t batches, std::size_t batc
   res.transferred_items = total_consumed;
   res.write_syscalls = writes;
   res.read_syscalls = reads;
+  res.successful_operations = writes + reads;
+  res.attempted_operations = writes + reads;
+
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
   res.correctness_passed = (total_consumed == total_items);
   if (!res.correctness_passed) {
@@ -831,7 +957,7 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
   PipeNotifier notifier;
   if (!notifier.valid()) {
     res.correctness_passed = false;
-    res.correctness_error = "Failed to create PipeNotifier";
+    res.correctness_error = "Failed to create PipeNotifier: errno=" + std::to_string(notifier.creation_errno());
     return res;
   }
 
@@ -843,15 +969,22 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
   for (std::size_t b = 0; b < batches; ++b) {
     for (std::size_t k = 0; k < batch_size; ++k) {
       ++writes;
-      if (notifier.notify(1) != NotifyStatus::Success) {
+      int err = 0;
+      if (notifier.notify(1, &err) != NotifyStatus::Success) {
         res.correctness_passed = false;
-        res.correctness_error = "PipeNotifier notify failed";
+        res.correctness_error = "PipeNotifier notify failed with errno=" + std::to_string(err);
         return res;
       }
     }
-    // Drains the buffered bytes in batch
-    ++reads;
-    total_consumed += notifier.drain();
+    // Drains the buffered bytes in batch, accurately counting read syscalls
+    int err = 0;
+    const std::size_t drained = notifier.drain(&reads, &err);
+    if (err != 0) {
+      res.correctness_passed = false;
+      res.correctness_error = "PipeNotifier drain failed with errno=" + std::to_string(err);
+      return res;
+    }
+    total_consumed += drained;
   }
   const auto end_time = std::chrono::steady_clock::now();
 
@@ -859,8 +992,13 @@ BenchmarkResult run_notify_batched_pipe(std::size_t batches, std::size_t batch_s
   res.transferred_items = total_consumed;
   res.write_syscalls = writes;
   res.read_syscalls = reads;
+  res.successful_operations = writes + (reads > 0 ? reads - batches : 0); // read calls returning data
+  res.attempted_operations = writes + reads;
+
   if (res.elapsed_ms > 0.0) {
-    res.throughput_ops_per_sec = (static_cast<double>(res.transferred_items) / (res.elapsed_ms / 1000.0));
+    const double elapsed_sec = res.elapsed_ms / 1000.0;
+    res.transferred_items_per_sec = static_cast<double>(res.transferred_items) / elapsed_sec;
+    res.total_ops_per_sec = static_cast<double>(res.attempted_operations) / elapsed_sec;
   }
   res.correctness_passed = (total_consumed == total_items);
   if (!res.correctness_passed) {
@@ -887,6 +1025,22 @@ BenchmarkResult run_notify_latency_eventfd(std::size_t roundtrips) {
   }
 
   std::atomic<bool> abort_test{false};
+  std::atomic<bool> operation_error{false};
+  std::string error_desc;
+  std::mutex error_mutex;
+
+  std::atomic<std::uint64_t> write_syscalls{0};
+  std::atomic<std::uint64_t> read_syscalls{0};
+
+  auto report_error = [&](const std::string& err) {
+    std::lock_guard<std::mutex> lk(error_mutex);
+    if (!operation_error.load()) {
+      error_desc = err;
+      operation_error.store(true, std::memory_order_relaxed);
+      abort_test.store(true, std::memory_order_relaxed);
+    }
+  };
+
   const auto start_time = std::chrono::steady_clock::now();
 
   std::thread worker([&]() {
@@ -899,16 +1053,28 @@ BenchmarkResult run_notify_latency_eventfd(std::size_t roundtrips) {
         pfd.revents = 0;
         int p_rc = ::poll(&pfd, 1, 100);
         if (p_rc > 0 && (pfd.revents & POLLIN) != 0) {
-          (void)n1.try_consume();
+          std::uint64_t val = 0;
+          int err = 0;
+          read_syscalls.fetch_add(1, std::memory_order_relaxed);
+          if (n1.consume(val, &err) != ConsumeStatus::Success) {
+            report_error("Worker n1 consume failed with errno=" + std::to_string(err));
+            return;
+          }
           break;
         }
+        if (p_rc < 0 && errno == EINTR) continue;
         if (std::chrono::steady_clock::now() > deadline) {
           abort_test.store(true, std::memory_order_relaxed);
           return;
         }
       }
       // Signal main thread back
-      (void)n2.notify(1);
+      write_syscalls.fetch_add(1, std::memory_order_relaxed);
+      int err = 0;
+      if (n2.notify(1, &err) != NotifyStatus::Success) {
+        report_error("Worker n2 notify failed with errno=" + std::to_string(err));
+        return;
+      }
     }
   });
 
@@ -919,16 +1085,28 @@ BenchmarkResult run_notify_latency_eventfd(std::size_t roundtrips) {
   for (std::size_t i = 0; i < roundtrips; ++i) {
     if (abort_test.load(std::memory_order_relaxed)) break;
     // Signal worker
-    (void)n1.notify(1);
+    write_syscalls.fetch_add(1, std::memory_order_relaxed);
+    int err = 0;
+    if (n1.notify(1, &err) != NotifyStatus::Success) {
+      report_error("Main thread n1 notify failed with errno=" + std::to_string(err));
+      break;
+    }
     // Wait for worker reply
     while (true) {
       pfd.revents = 0;
       int p_rc = ::poll(&pfd, 1, 100);
       if (p_rc > 0 && (pfd.revents & POLLIN) != 0) {
-        (void)n2.try_consume();
+        std::uint64_t val = 0;
+        int c_err = 0;
+        read_syscalls.fetch_add(1, std::memory_order_relaxed);
+        if (n2.consume(val, &c_err) != ConsumeStatus::Success) {
+          report_error("Main thread n2 consume failed with errno=" + std::to_string(c_err));
+          break;
+        }
         ++completed;
         break;
       }
+      if (p_rc < 0 && errno == EINTR) continue;
       if (std::chrono::steady_clock::now() > deadline) {
         abort_test.store(true, std::memory_order_relaxed);
         break;
@@ -941,16 +1119,32 @@ BenchmarkResult run_notify_latency_eventfd(std::size_t roundtrips) {
 
   res.elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
   res.transferred_items = completed;
+  res.write_syscalls = write_syscalls.load();
+  res.read_syscalls = read_syscalls.load();
+  res.successful_operations = completed * 2; // full roundtrips
+  res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (completed > 0) {
     const double total_ns = std::chrono::duration<double, std::nano>(end_time - start_time).count();
-    res.avg_latency_ns = (total_ns / static_cast<double>(completed)) / 2.0;  // One-way latency
-    res.throughput_ops_per_sec = (static_cast<double>(completed) / (res.elapsed_ms / 1000.0));
+    const double avg_rtt = total_ns / static_cast<double>(completed);
+    res.avg_roundtrip_latency_ns = avg_rtt;
+    res.estimated_half_rtt_latency_ns = avg_rtt / 2.0;
+    res.transferred_items_per_sec = (static_cast<double>(completed) / (res.elapsed_ms / 1000.0));
+    res.total_ops_per_sec = (static_cast<double>(res.attempted_operations) / (res.elapsed_ms / 1000.0));
   }
 
-  res.correctness_passed = (!abort_test.load() && completed == roundtrips);
-  if (!res.correctness_passed) {
-    res.correctness_error = "Ping-pong latency test timed out or incomplete";
+  if (operation_error.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = error_desc;
+  } else if (abort_test.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = "Ping-pong latency test timed out";
+  } else if (completed != roundtrips) {
+    res.correctness_passed = false;
+    res.correctness_error = "Ping-pong roundtrip count mismatch: expected " + std::to_string(roundtrips) +
+                            ", got " + std::to_string(completed);
+  } else {
+    res.correctness_passed = true;
   }
   return res;
 }
@@ -972,6 +1166,22 @@ BenchmarkResult run_notify_latency_pipe(std::size_t roundtrips) {
   }
 
   std::atomic<bool> abort_test{false};
+  std::atomic<bool> operation_error{false};
+  std::string error_desc;
+  std::mutex error_mutex;
+
+  std::atomic<std::uint64_t> write_syscalls{0};
+  std::atomic<std::uint64_t> read_syscalls{0};
+
+  auto report_error = [&](const std::string& err) {
+    std::lock_guard<std::mutex> lk(error_mutex);
+    if (!operation_error.load()) {
+      error_desc = err;
+      operation_error.store(true, std::memory_order_relaxed);
+      abort_test.store(true, std::memory_order_relaxed);
+    }
+  };
+
   const auto start_time = std::chrono::steady_clock::now();
 
   std::thread worker([&]() {
@@ -984,15 +1194,26 @@ BenchmarkResult run_notify_latency_pipe(std::size_t roundtrips) {
         int p_rc = ::poll(&pfd, 1, 100);
         if (p_rc > 0 && (pfd.revents & POLLIN) != 0) {
           std::uint8_t tok = 0;
-          p1.consume(tok);
+          int err = 0;
+          read_syscalls.fetch_add(1, std::memory_order_relaxed);
+          if (p1.consume(tok, &err) != ConsumeStatus::Success) {
+            report_error("Worker p1 consume failed with errno=" + std::to_string(err));
+            return;
+          }
           break;
         }
+        if (p_rc < 0 && errno == EINTR) continue;
         if (std::chrono::steady_clock::now() > deadline) {
           abort_test.store(true, std::memory_order_relaxed);
           return;
         }
       }
-      p2.notify(1);
+      write_syscalls.fetch_add(1, std::memory_order_relaxed);
+      int err = 0;
+      if (p2.notify(1, &err) != NotifyStatus::Success) {
+        report_error("Worker p2 notify failed with errno=" + std::to_string(err));
+        return;
+      }
     }
   });
 
@@ -1002,16 +1223,27 @@ BenchmarkResult run_notify_latency_pipe(std::size_t roundtrips) {
 
   for (std::size_t i = 0; i < roundtrips; ++i) {
     if (abort_test.load(std::memory_order_relaxed)) break;
-    p1.notify(1);
+    write_syscalls.fetch_add(1, std::memory_order_relaxed);
+    int err = 0;
+    if (p1.notify(1, &err) != NotifyStatus::Success) {
+      report_error("Main thread p1 notify failed with errno=" + std::to_string(err));
+      break;
+    }
     while (true) {
       pfd.revents = 0;
       int p_rc = ::poll(&pfd, 1, 100);
       if (p_rc > 0 && (pfd.revents & POLLIN) != 0) {
         std::uint8_t tok = 0;
-        p2.consume(tok);
+        int c_err = 0;
+        read_syscalls.fetch_add(1, std::memory_order_relaxed);
+        if (p2.consume(tok, &c_err) != ConsumeStatus::Success) {
+          report_error("Main thread p2 consume failed with errno=" + std::to_string(c_err));
+          break;
+        }
         ++completed;
         break;
       }
+      if (p_rc < 0 && errno == EINTR) continue;
       if (std::chrono::steady_clock::now() > deadline) {
         abort_test.store(true, std::memory_order_relaxed);
         break;
@@ -1024,16 +1256,32 @@ BenchmarkResult run_notify_latency_pipe(std::size_t roundtrips) {
 
   res.elapsed_ms = std::chrono::duration<double, std::milli>(end_time - start_time).count();
   res.transferred_items = completed;
+  res.write_syscalls = write_syscalls.load();
+  res.read_syscalls = read_syscalls.load();
+  res.successful_operations = completed * 2;
+  res.attempted_operations = *res.write_syscalls + *res.read_syscalls;
 
   if (completed > 0) {
     const double total_ns = std::chrono::duration<double, std::nano>(end_time - start_time).count();
-    res.avg_latency_ns = (total_ns / static_cast<double>(completed)) / 2.0;  // One-way latency
-    res.throughput_ops_per_sec = (static_cast<double>(completed) / (res.elapsed_ms / 1000.0));
+    const double avg_rtt = total_ns / static_cast<double>(completed);
+    res.avg_roundtrip_latency_ns = avg_rtt;
+    res.estimated_half_rtt_latency_ns = avg_rtt / 2.0;
+    res.transferred_items_per_sec = (static_cast<double>(completed) / (res.elapsed_ms / 1000.0));
+    res.total_ops_per_sec = (static_cast<double>(res.attempted_operations) / (res.elapsed_ms / 1000.0));
   }
 
-  res.correctness_passed = (!abort_test.load() && completed == roundtrips);
-  if (!res.correctness_passed) {
-    res.correctness_error = "Pipe latency test timed out or incomplete";
+  if (operation_error.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = error_desc;
+  } else if (abort_test.load()) {
+    res.correctness_passed = false;
+    res.correctness_error = "Pipe latency test timed out";
+  } else if (completed != roundtrips) {
+    res.correctness_passed = false;
+    res.correctness_error = "Pipe roundtrip count mismatch: expected " + std::to_string(roundtrips) +
+                            ", got " + std::to_string(completed);
+  } else {
+    res.correctness_passed = true;
   }
   return res;
 }
@@ -1096,13 +1344,14 @@ void print_human_readable(const std::vector<BenchmarkResult>& results) {
             << std::setw(8) << "P/C"
             << std::right << std::setw(10) << "Items"
             << std::setw(12) << "Elapsed(ms)"
-            << std::setw(16) << "Throughput(op/s)"
-            << std::setw(14) << "Latency(ns)"
-            << std::setw(12) << "PushFail"
-            << std::setw(12) << "PopFail"
+            << std::setw(16) << "Throughput(it/s)"
+            << std::setw(14) << "AvgRTT(ns)"
+            << std::setw(14) << "HalfRTT(ns)"
+            << std::setw(10) << "PushFail"
+            << std::setw(10) << "PopFail"
             << "  Result\n";
 
-  std::cout << std::string(132, '-') << "\n";
+  std::cout << std::string(148, '-') << "\n";
 
   for (const auto& r : results) {
     std::string pc_str = std::to_string(r.producers) + "/" + std::to_string(r.consumers);
@@ -1111,20 +1360,26 @@ void print_human_readable(const std::vector<BenchmarkResult>& results) {
               << std::setw(8) << pc_str
               << std::right << std::setw(10) << r.transferred_items
               << std::fixed << std::setprecision(2) << std::setw(12) << r.elapsed_ms
-              << std::fixed << std::setprecision(1) << std::setw(16) << r.throughput_ops_per_sec;
+              << std::fixed << std::setprecision(1) << std::setw(16) << r.transferred_items_per_sec;
 
-    if (r.avg_latency_ns > 0.0) {
-      std::cout << std::fixed << std::setprecision(1) << std::setw(14) << r.avg_latency_ns;
+    if (r.avg_roundtrip_latency_ns.has_value()) {
+      std::cout << std::fixed << std::setprecision(1) << std::setw(14) << *r.avg_roundtrip_latency_ns;
     } else {
       std::cout << std::setw(14) << "-";
     }
 
-    std::cout << std::setw(12) << r.push_failures
-              << std::setw(12) << r.pop_failures
+    if (r.estimated_half_rtt_latency_ns.has_value()) {
+      std::cout << std::fixed << std::setprecision(1) << std::setw(14) << *r.estimated_half_rtt_latency_ns;
+    } else {
+      std::cout << std::setw(14) << "-";
+    }
+
+    std::cout << std::setw(10) << r.push_failures
+              << std::setw(10) << r.pop_failures
               << "  " << (r.correctness_passed ? "PASS" : ("FAIL: " + r.correctness_error))
               << "\n";
   }
-  std::cout << std::string(132, '-') << "\n\n";
+  std::cout << std::string(148, '-') << "\n\n";
 }
 
 void print_help(const char* prog_name) {
@@ -1139,12 +1394,32 @@ void print_help(const char* prog_name) {
             << "  -h, --help              Show this help message\n";
 }
 
+// Helper to safely parse positive unsigned 64-bit integer
+bool parse_positive_uint64(std::string_view str, std::uint64_t& out_val) {
+  if (str.empty()) return false;
+  // Disallow leading +/- signs or non-digits
+  for (char ch : str) {
+    if (ch < '0' || ch > '9') return false;
+  }
+  try {
+    std::size_t idx = 0;
+    std::string s(str);
+    unsigned long long v = std::stoull(s, &idx);
+    if (idx != s.size()) return false;
+    if (v == 0) return false;
+    out_val = static_cast<std::uint64_t>(v);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 }  // namespace
 
 int main(int argc, char* argv[]) {
   std::string benchmark_filter = "all";
-  std::size_t base_items = 500000;
-  std::size_t queue_capacity = 1024;
+  std::uint64_t base_items = 500000;
+  std::uint64_t queue_capacity = 1024;
   bool json_stdout = false;
   std::string json_out_path;
 
@@ -1157,19 +1432,35 @@ int main(int argc, char* argv[]) {
     } else if (arg == "--json") {
       json_stdout = true;
     } else if (arg.starts_with("--json-out=")) {
-      json_out_path = arg.substr(11);
+      json_out_path = std::string(arg.substr(11));
+      if (json_out_path.empty()) {
+        std::cerr << "Error: --json-out path cannot be empty\n";
+        return 1;
+      }
     } else if (arg.starts_with("--benchmark=")) {
-      benchmark_filter = arg.substr(12);
+      benchmark_filter = std::string(arg.substr(12));
     } else if (arg == "-b" && i + 1 < argc) {
       benchmark_filter = argv[++i];
     } else if (arg.starts_with("--items=")) {
-      base_items = static_cast<std::size_t>(std::stoull(std::string(arg.substr(8))));
+      if (!parse_positive_uint64(arg.substr(8), base_items)) {
+        std::cerr << "Error: Invalid or non-positive value for --items: " << arg.substr(8) << "\n";
+        return 1;
+      }
     } else if (arg == "-n" && i + 1 < argc) {
-      base_items = static_cast<std::size_t>(std::stoull(argv[++i]));
+      if (!parse_positive_uint64(argv[++i], base_items)) {
+        std::cerr << "Error: Invalid or non-positive value for -n: " << argv[i] << "\n";
+        return 1;
+      }
     } else if (arg.starts_with("--capacity=")) {
-      queue_capacity = static_cast<std::size_t>(std::stoull(std::string(arg.substr(11))));
+      if (!parse_positive_uint64(arg.substr(11), queue_capacity)) {
+        std::cerr << "Error: Invalid or non-positive value for --capacity: " << arg.substr(11) << "\n";
+        return 1;
+      }
     } else if (arg == "-c" && i + 1 < argc) {
-      queue_capacity = static_cast<std::size_t>(std::stoull(argv[++i]));
+      if (!parse_positive_uint64(argv[++i], queue_capacity)) {
+        std::cerr << "Error: Invalid or non-positive value for -c: " << argv[i] << "\n";
+        return 1;
+      }
     } else {
       std::cerr << "Unknown or invalid argument: " << arg << "\n";
       print_help(argv[0]);
@@ -1177,14 +1468,26 @@ int main(int argc, char* argv[]) {
     }
   }
 
-  // Validate queue capacity (power of two >= 2)
-  if (queue_capacity < 2 || (queue_capacity & (queue_capacity - 1)) != 0) {
-    std::cerr << "Error: Queue capacity must be a power of two >= 2, got " << queue_capacity << "\n";
+  // Validate benchmark name
+  const std::vector<std::string> valid_benchmarks = {
+      "all", "queue", "notify", "queue_spsc", "queue_mpmc",
+      "notify_spsc", "notify_batched", "notify_latency"
+  };
+  if (std::find(valid_benchmarks.begin(), valid_benchmarks.end(), benchmark_filter) == valid_benchmarks.end()) {
+    std::cerr << "Error: Unknown benchmark name: '" << benchmark_filter << "'\n";
+    print_help(argv[0]);
     return 1;
   }
 
-  if (base_items == 0) {
-    std::cerr << "Error: Item count must be greater than 0\n";
+  // Validate queue capacity (power of two >= 2 and <= 2^30)
+  if (queue_capacity < 2 || queue_capacity > (1ULL << 30) || (queue_capacity & (queue_capacity - 1)) != 0) {
+    std::cerr << "Error: Queue capacity must be a power of two between 2 and 1073741824, got " << queue_capacity << "\n";
+    return 1;
+  }
+
+  // Validate items bound (prevent overflow in calculations)
+  if (base_items > 100000000ULL) {
+    std::cerr << "Error: Item count exceeds maximum allowed limit (100,000,000), got " << base_items << "\n";
     return 1;
   }
 
@@ -1204,12 +1507,12 @@ int main(int argc, char* argv[]) {
   // 1. Queue SPSC: BoundedMpmcQueue vs BoundedMutexQueue
   if (should_run("queue_spsc")) {
     std::cerr << "[run] queue_spsc (BoundedMpmcQueue)...\n";
-    auto r1 = run_queue_spsc<BoundedMpmcQueue<std::uint64_t>>("BoundedMpmcQueue", queue_capacity, base_items);
+    auto r1 = run_queue_spsc<BoundedMpmcQueue<std::uint64_t>>("BoundedMpmcQueue", static_cast<std::size_t>(queue_capacity), static_cast<std::size_t>(base_items));
     if (!r1.correctness_passed) all_pass = false;
     results.push_back(r1);
 
     std::cerr << "[run] queue_spsc (BoundedMutexQueue)...\n";
-    auto r2 = run_queue_spsc<BoundedMutexQueue<std::uint64_t>>("BoundedMutexQueue", queue_capacity, base_items);
+    auto r2 = run_queue_spsc<BoundedMutexQueue<std::uint64_t>>("BoundedMutexQueue", static_cast<std::size_t>(queue_capacity), static_cast<std::size_t>(base_items));
     if (!r2.correctness_passed) all_pass = false;
     results.push_back(r2);
   }
@@ -1218,16 +1521,22 @@ int main(int argc, char* argv[]) {
   if (should_run("queue_mpmc")) {
     constexpr std::size_t kProducers = 4;
     constexpr std::size_t kConsumers = 4;
-    const std::size_t items_per_prod = std::max<std::size_t>(1000, base_items / kProducers);
+    const std::size_t items_per_prod = std::max<std::size_t>(1000, static_cast<std::size_t>(base_items / kProducers));
+
+    // Ensure items_per_prod fits into lower 32-bits without truncation
+    if (items_per_prod > 0xFFFFFFFFULL) {
+      std::cerr << "Error: items_per_producer exceeds 32-bit integer limit: " << items_per_prod << "\n";
+      return 1;
+    }
 
     std::cerr << "[run] queue_mpmc (BoundedMpmcQueue 4P/4C)...\n";
-    auto r1 = run_queue_mpmc<BoundedMpmcQueue<std::uint64_t>>("BoundedMpmcQueue", queue_capacity,
+    auto r1 = run_queue_mpmc<BoundedMpmcQueue<std::uint64_t>>("BoundedMpmcQueue", static_cast<std::size_t>(queue_capacity),
                                                               kProducers, kConsumers, items_per_prod);
     if (!r1.correctness_passed) all_pass = false;
     results.push_back(r1);
 
     std::cerr << "[run] queue_mpmc (BoundedMutexQueue 4P/4C)...\n";
-    auto r2 = run_queue_mpmc<BoundedMutexQueue<std::uint64_t>>("BoundedMutexQueue", queue_capacity,
+    auto r2 = run_queue_mpmc<BoundedMutexQueue<std::uint64_t>>("BoundedMutexQueue", static_cast<std::size_t>(queue_capacity),
                                                               kProducers, kConsumers, items_per_prod);
     if (!r2.correctness_passed) all_pass = false;
     results.push_back(r2);
@@ -1235,7 +1544,7 @@ int main(int argc, char* argv[]) {
 
   // 3. Notification SPSC Throughput: EventNotifier vs PipeNotifier
   if (should_run("notify_spsc")) {
-    const std::size_t notify_count = std::max<std::size_t>(1000, base_items / 2);
+    const std::size_t notify_count = std::max<std::size_t>(1000, static_cast<std::size_t>(base_items / 2));
 
     std::cerr << "[run] notify_spsc (EventNotifier)...\n";
     auto r1 = run_notify_spsc_eventfd(notify_count);
@@ -1251,7 +1560,13 @@ int main(int argc, char* argv[]) {
   // 4. Notification Batched / Coalesced Throughput
   if (should_run("notify_batched")) {
     constexpr std::size_t kBatchSize = 64;
-    const std::size_t batches = std::max<std::size_t>(100, base_items / (kBatchSize * 4));
+    const std::size_t batches = std::max<std::size_t>(100, static_cast<std::size_t>(base_items / (kBatchSize * 4)));
+
+    // Check multiplication overflow
+    if (batches > std::numeric_limits<std::size_t>::max() / kBatchSize) {
+      std::cerr << "Error: batches * batch_size causes arithmetic overflow\n";
+      return 1;
+    }
 
     std::cerr << "[run] notify_batched (EventNotifier coalesced)...\n";
     auto r1 = run_notify_batched_eventfd(batches, kBatchSize);
@@ -1266,7 +1581,7 @@ int main(int argc, char* argv[]) {
 
   // 5. Notification Ping-Pong Round-Trip Latency
   if (should_run("notify_latency")) {
-    const std::size_t latency_roundtrips = std::min<std::size_t>(50000, std::max<std::size_t>(1000, base_items / 20));
+    const std::size_t latency_roundtrips = std::min<std::size_t>(50000, std::max<std::size_t>(1000, static_cast<std::size_t>(base_items / 20)));
 
     std::cerr << "[run] notify_latency (EventNotifier ping-pong)...\n";
     auto r1 = run_notify_latency_eventfd(latency_roundtrips);

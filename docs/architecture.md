@@ -419,15 +419,15 @@ IPC-6 provides an explicit, standalone microbenchmark suite (`darkpool_ipc_bench
 
 - **Target and isolation:** Built as an independent Linux-only executable (`benchmarks/ipc_benchmark.cpp`). It is deliberately excluded from `CTest` so that standard test runs remain rapid and deterministic.
 - **Baselines:**
-  - `BoundedMpmcQueue` is compared against `BoundedMutexQueue`, a mutex-and-`std::deque`-based bounded queue protected by a single `std::mutex`.
+  - `BoundedMpmcQueue` is compared against `BoundedMutexQueue`, a mutex-protected circular `std::vector` bounded queue protected by a single `std::mutex` without allocations during operations.
   - `EventNotifier` (Linux `eventfd`) is compared against `PipeNotifier`, a nonblocking POSIX `pipe2(O_NONBLOCK | O_CLOEXEC)` carrying 1-byte control tokens.
 - **Workload configurations:**
-  - `queue_spsc`: Single-producer, single-consumer streaming measuring raw throughput and push/pop retry overheads.
-  - `queue_mpmc`: High-contention multi-producer, multi-consumer (4 producers, 4 consumers) verifying atomics scalability versus lock serialization.
-  - `notify_spsc`: Unbatched notification streaming measuring per-event signaling overhead.
-  - `notify_batched`: Coalesced notification throughput comparing eventfd counter accumulation against batched byte reads across a pipe stream.
-  - `notify_latency`: Strict ping-pong request/reply between two threads measuring median roundtrip notification latency.
+  - `queue_spsc`: Single-producer, single-consumer streaming measuring item transfer throughput (`transferred_items_per_sec`) and total attempted queue operations per second (`total_ops_per_sec`).
+  - `queue_mpmc`: High-contention multi-producer, multi-consumer (4 producers, 4 consumers) evaluating atomic sequence progress versus mutex serialization.
+  - `notify_spsc`: Unbatched notification streaming measuring per-event signaling throughput, checking every notify/consume status code and distinguishing empty attempts from errors.
+  - `notify_batched`: Coalesced notification throughput comparing eventfd counter accumulation against batched byte reads across a pipe stream, tracking actual read and write syscall counts.
+  - `notify_latency`: Strict ping-pong request/reply between two threads measuring average roundtrip latency (`avg_roundtrip_latency_ns`) derived from completed roundtrips and reporting an estimated half-RTT (`estimated_half_rtt_latency_ns`).
 - **Semantic differences:** Benchmarking highlights key architectural tradeoffs:
   - `EventNotifier` maintains an in-kernel 64-bit scalar counter rather than a byte buffer. It coalesces bursts naturally, never blocks or drops notifications unless saturated at `UINT64_MAX - 1`, and consumes with a single 8-byte read. In contrast, pipes require buffering individual byte tokens (subject to `PIPE_BUF` limits and stream framing).
-  - `BoundedMpmcQueue` avoids thread descheduling and OS synchronization primitives under contention, providing order-of-magnitude higher throughput in multi-threaded workloads, though ticket progression at the FIFO head is obstruction-sensitive.
+  - In our measured microbenchmark environment (WSL2), `BoundedMpmcQueue` observed higher item transfer rates than the mutex-protected circular vector under synthetic producer/consumer contention. Note that these microbenchmarks isolate low-level primitive behavior in a WSL2 VM environment; they do not simulate broader system scheduling or measure server context switches, and are not evidence of production server capacity.
 
