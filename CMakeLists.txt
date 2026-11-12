@@ -112,6 +112,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(darkpool_ipc_async PUBLIC Threads::Threads)
   darkpool_enable_warnings(darkpool_ipc_async)
 
+  add_library(darkpool_ipc_shm_queue src/process_shared_queue.cpp)
+  target_include_directories(darkpool_ipc_shm_queue PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+  target_compile_features(darkpool_ipc_shm_queue PUBLIC cxx_std_20)
+  target_link_libraries(darkpool_ipc_shm_queue PUBLIC Threads::Threads)
+  if(DARKPOOL_RT_LIBRARY)
+    target_link_libraries(darkpool_ipc_shm_queue PUBLIC ${DARKPOOL_RT_LIBRARY})
+  endif()
+  darkpool_enable_warnings(darkpool_ipc_shm_queue)
+
   target_sources(darkpool_communications PRIVATE
     src/tls_transport.cpp
     src/socket_primitives.cpp
@@ -157,6 +166,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   darkpool_enable_warnings(darkpool_ipc_epoll_tests)
   add_test(NAME darkpool_ipc_epoll_tests COMMAND darkpool_ipc_epoll_tests)
   set_tests_properties(darkpool_ipc_epoll_tests PROPERTIES TIMEOUT 30)
+
+  add_executable(darkpool_process_shared_queue_tests tests/process_shared_queue_tests.cpp)
+  target_link_libraries(darkpool_process_shared_queue_tests PRIVATE darkpool_ipc_shm_queue Threads::Threads)
+  if(DARKPOOL_RT_LIBRARY)
+    target_link_libraries(darkpool_process_shared_queue_tests PRIVATE ${DARKPOOL_RT_LIBRARY})
+  endif()
+  darkpool_enable_warnings(darkpool_process_shared_queue_tests)
+  add_test(NAME darkpool_process_shared_queue_tests COMMAND darkpool_process_shared_queue_tests)
+  set_tests_properties(darkpool_process_shared_queue_tests PROPERTIES TIMEOUT 60)
 
   add_executable(darkpool_ipc_benchmark benchmarks/ipc_benchmark.cpp)
   target_include_directories(darkpool_ipc_benchmark PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

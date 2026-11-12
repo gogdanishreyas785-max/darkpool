@@ -498,4 +498,30 @@ Producer → BoundedMpmcQueue → notification primitive → epoll_wait → Serv
 - **Observed Characteristics & Environmental Context:**
   In our WSL2 evaluation environment, the measured `EventNotifier` p50 delivery latency is sub-microsecond in the 1-producer scenario (753 ns median p50) and low-microsecond in the 4-producer scenario (1,620 ns median p50). In contrast, the pipe baseline exhibits substantially higher measured latency (27,346 ns median p50 for 1P; 312,644 ns median p50 for 4P) alongside a higher notifications-per-callback ratio (median batching ratio of 10.22 for 1P and 372.09 for 4P, compared to 3.18 for 1P and 8.02 for 4P with `EventNotifier`). A higher batching ratio is not inherently better: while pipe tokens accumulate more deeply between drains under heavy multi-producer contention, this corresponds directly to increased queuing delay and elevated latency. `EventNotifier` achieves both lower delivery latency and slightly higher throughput by waking the reactor promptly with smaller, tighter notification batches. Both primitives reliably achieve full work delivery and adhere to strict FIFO invariants. These measurements reflect the specific virtualized WSL2 benchmarking environment and serve as comparative evidence between the primitives, rather than an extrapolation of production server capacity.
 
+### 9.10 Process-shared bounded SPSC work queue prototype (IPC-9)
+
+IPC-9 introduces a bounded single-producer/single-consumer (SPSC) work queue prototype (`darkpool::ipc::ProcessSharedQueue`) transferring fixed-layout work items between two independent processes using POSIX shared memory and process-shared synchronization.
+
+- **Fundamental Distinction from IPC-5:**
+  `BoundedMpmcQueue` (IPC-5) is an in-process, heap-backed, thread-safe lock-free data structure designed for concurrent worker threads within the same memory address space. It cannot be mapped across processes due to virtual address pointer assumptions and lack of inter-process synchronization. In contrast, `ProcessSharedQueue` (IPC-9) uses fixed-layout POSIX shared memory (`shm_open`, `mmap(MAP_SHARED)`), contains zero process-local pointers or heap references, and coordinates synchronization between independent processes via kernel-shared robust synchronization objects.
+- **Shared Memory Layout & Alignment:**
+  The shared memory region consists of:
+  1. `QueueSharedHeader`: Fixed-layout, versioned header containing magic (`0x44505155` / `'DPQU'`), ABI version, struct size, owner UID, creator/producer/consumer PIDs, capacity, state (`Active`, `Closed`, `Faulted`), head/tail indices, count, total pushed/popped counters, a process-shared robust mutex (`pthread_mutex_t`), and two condition variables (`not_empty_cond`, `not_full_cond`).
+  2. Fixed-size message slots (`QueueMessageSlot`): Contiguous array of `capacity` slots, each containing a 64-bit sequence number, 32-bit payload size, reserved padding, and a fixed 256-byte payload buffer (`data[256]`).
+- **Process-Shared Synchronization Semantics:**
+  - The shared mutex is initialized with `PTHREAD_PROCESS_SHARED` and `PTHREAD_MUTEX_ROBUST`.
+  - Condition variables are initialized with `PTHREAD_PROCESS_SHARED` and configured with `pthread_condattr_setclock(&cattr, CLOCK_MONOTONIC)` to ensure timed waits (`pthread_cond_timedwait`) are immune to wall-clock step adjustments.
+  - SPSC Semantics: The queue binds exactly one Producer PID and one Consumer PID. Attempts by a secondary process to bind as the same endpoint while the existing process is alive are rejected with an explicit error.
+- **Backpressure & Graceful Teardown:**
+  - Bounded waiting: `push()` blocks on `not_full_cond` when the ring buffer is full; `pop()` blocks on `not_empty_cond` when the ring buffer is empty. Timed operations return `QueueOpStatus::Timeout` if the monotonic deadline expires.
+  - Graceful closure: Calling `close()` transitions the queue to `QueueState::Closed` and broadcasts to all condition variables. The consumer can drain all remaining queued items (returning `Success`) until the queue is empty, at which point subsequent pops return `QueueOpStatus::Closed`. Pushes on a closed queue immediately return `QueueOpStatus::Closed`.
+- **Robust Owner-Death & Fail-Stop Semantics:**
+  - If either participant dies while holding the shared mutex, subsequent `pthread_mutex_lock()` or `pthread_cond_timedwait()` calls return `EOWNERDEAD`.
+  - Fail-stop policy: The detecting process does **not** attempt partial or heuristic queue repair. It immediately marks the queue as permanently `QueueState::Faulted`, broadcasts to both condition variables to unblock any pending participants, and calls `pthread_mutex_consistent()` to leave the lock in a defined state before unlocking.
+  - Subsequent queue operations immediately return `QueueOpStatus::Faulted`. Recovery requires external intervention: terminating remaining participants, unlinking the shared memory object (`shm_unlink`), and re-instantiating a fresh queue.
+- **Synchronization Object Lifetime Precautions (IPC-4):**
+  Teardown does not destroy mutexes or condition variables while peer processes may retain active mappings. Detaching endpoints unmap the region (`munmap`) and close descriptors (`close`). The shared memory object is explicitly unlinked (`shm_unlink`) by the controlling harness or operator.
+- **Isolation Boundary:**
+  `ProcessSharedQueue` is a standalone IPC prototype (`darkpool_ipc_shm_queue`). It is not linked into `darkpool_server`, and production server dispatch, `MatchCoordinator`, and `GameEngine` do not use process-shared queues.
+
 
