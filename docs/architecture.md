@@ -397,3 +397,19 @@ DARKPOOL applies several distinct controls:
 
 Current limitations remain: the application does not provide durable crash recovery, and this is not a hardened public-Internet deployment design. Keep the service on trusted/private networks and follow the TLS setup instructions in the [User Guide](user-guide.md#3-option-b-multiple-computers-over-a-private-lan).
 
+### 9.6 Asynchronous concurrency primitives foundation (IPC-5)
+
+To prepare for future off-thread worker integration, IPC-5 introduces two reusable concurrency primitives in `darkpool::ipc`:
+
+1. **`EventNotifier` (`include/darkpool/event_notifier.hpp`):** A move-only RAII wrapper around Linux `eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`. It provides nonblocking counter-based notifications with standard coalescing semantics. Writes increment the 64-bit kernel counter, while nonblocking reads consume the accumulated counter and atomically reset it to zero.
+   - **Counter limits:** Valid write increments range from `1` to `UINT64_MAX - 1` (`0xFFFFFFFFFFFFFFFEULL`). Zero and `UINT64_MAX` are rejected as invalid increments. If an increment would cause the counter to exceed `UINT64_MAX - 1`, the nonblocking write fails with `EAGAIN` (`NotifyStatus::Saturated`).
+   - **Consumption:** `try_consume()` returns `std::nullopt` both when the counter is empty and if a read error occurs; callers requiring explicit error distinction use `consume()`.
+   - **Epoll integration:** The underlying file descriptor is exposed for future integration into Linux `epoll` loops.
+2. **`BoundedMpmcQueue` (`include/darkpool/bounded_mpmc_queue.hpp`):** A fixed-capacity multi-producer, multi-consumer queue implementing Dmitry Vyukov's bounded MPMC algorithm using per-slot atomic sequence counters with acquire/release memory ordering. Capacities must be a power of two.
+   - **Nonblocking & Zero Allocation:** The queue is nonblocking (no mutexes, condition variables, futexes, or system calls) and performs no heap allocations during queue operations.
+   - **Exception Safety:** All queue operations are constrained to nothrow types and operations (`try_emplace` requires `nothrow` construction from arguments, `try_push` requires `nothrow` copy/move construction, `try_pop` requires `nothrow` move assignment/construction, and `T` requires a `nothrow` destructor). This ensures no user exception can occur after a slot ticket is claimed and before its sequence state is published.
+   - **Progress & Availability Semantics:** Slot ticket allocation is always lock-free (via `compare_exchange_weak` on `std::atomic<std::size_t>`, verified at compile time by `static_assert(std::atomic<std::size_t>::is_always_lock_free)`). However, end-to-end progress is obstruction-tolerant rather than strictly lock-free: a producer can reserve an earlier slot and be suspended before publishing it, while later producers complete their enqueue operations. Consumers inspecting the queue will receive `false` from `try_pop()` because the FIFO head slot is not yet published. Thus, `try_pop() == false` does not necessarily mean no producer has enqueued an item anywhere in the queue; a stalled producer temporarily delays progress at the FIFO head.
+   - **Approximate Metrics & Quiescence:** `size()`, `empty()`, and `full()` provide approximate observations during concurrent operations and must not be used as synchronization conditions. Destruction and `clear()` require all concurrent queue operations to have stopped (quiescence precondition).
+
+**Integration boundary:** These primitives represent a standalone concurrency foundation. Production server dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` do not use them yet. No worker threads or eventfd descriptors are registered in the production `epoll` loop in this milestone.
+
