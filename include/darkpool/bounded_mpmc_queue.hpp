@@ -57,6 +57,9 @@ class BoundedMpmcQueue {
   static_assert(StaticCapacity == 0 ||
                     (StaticCapacity >= 2 && (StaticCapacity & (StaticCapacity - 1)) == 0),
                 "StaticCapacity must be a power of two and >= 2");
+  static_assert(
+      std::atomic<std::size_t>::is_always_lock_free,
+      "BoundedMpmcQueue requires always-lock-free size_t atomics");
 
  public:
   using value_type = T;
@@ -130,7 +133,7 @@ class BoundedMpmcQueue {
       const auto diff = static_cast<std::ptrdiff_t>(seq - (pos + 1));
       if (diff == 0) {
         if (dequeue_pos_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
-          auto* ptr = reinterpret_cast<T*>(slot.storage);
+          auto* ptr = std::launder(reinterpret_cast<T*>(slot.storage));
           item = std::move(*ptr);
           ptr->~T();
           slot.sequence.store(pos + buffer_mask_ + 1, std::memory_order_release);
@@ -154,7 +157,7 @@ class BoundedMpmcQueue {
       const auto diff = static_cast<std::ptrdiff_t>(seq - (pos + 1));
       if (diff == 0) {
         if (dequeue_pos_.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
-          auto* ptr = reinterpret_cast<T*>(slot.storage);
+          auto* ptr = std::launder(reinterpret_cast<T*>(slot.storage));
           std::optional<T> result(std::move(*ptr));
           ptr->~T();
           slot.sequence.store(pos + buffer_mask_ + 1, std::memory_order_release);
@@ -202,7 +205,7 @@ class BoundedMpmcQueue {
       const std::size_t seq = slot.sequence.load(std::memory_order_relaxed);
       const auto diff = static_cast<std::ptrdiff_t>(seq - (pos + 1));
       if (diff == 0) {
-        auto* ptr = reinterpret_cast<T*>(slot.storage);
+        auto* ptr = std::launder(reinterpret_cast<T*>(slot.storage));
         ptr->~T();
         slot.sequence.store(pos + buffer_mask_ + 1, std::memory_order_relaxed);
         ++pos;

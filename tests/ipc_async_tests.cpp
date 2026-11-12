@@ -565,6 +565,77 @@ void test_queue_destruction_with_queued_items() {
   CHECK(LifetimeTracker::destructions.load() == 3);
 }
 
+// Test type with a const data member to verify std::launder and object lifetime correctness
+struct ConstMemberItem {
+  const int id;
+  int payload{0};
+
+  explicit ConstMemberItem(int id_val, int payload_val = 0) noexcept
+      : id(id_val), payload(payload_val) {}
+
+  ConstMemberItem(ConstMemberItem&& other) noexcept
+      : id(other.id), payload(other.payload) {}
+
+  ConstMemberItem(const ConstMemberItem& other) noexcept
+      : id(other.id), payload(other.payload) {}
+
+  // ConstMemberItem is not move-assignable due to const member 'id',
+  // which verifies that try_emplace, try_push, and try_pop() (returning std::optional)
+  // correctly handle types with const data members using std::launder.
+  ConstMemberItem& operator=(ConstMemberItem&&) = delete;
+  ConstMemberItem& operator=(const ConstMemberItem&) = delete;
+
+  ~ConstMemberItem() noexcept = default;
+};
+
+static_assert(std::is_nothrow_constructible_v<ConstMemberItem, int, int>);
+static_assert(std::is_nothrow_move_constructible_v<ConstMemberItem>);
+static_assert(std::is_nothrow_destructible_v<ConstMemberItem>);
+static_assert(!std::is_move_assignable_v<ConstMemberItem>);
+
+void test_queue_const_member_item() {
+  std::cerr << "[ipc_async_tests] running test_queue_const_member_item\n";
+  BoundedMpmcQueue<ConstMemberItem> queue(4);
+
+  // Enqueue using try_emplace
+  CHECK(queue.try_emplace(101, 1));
+  CHECK(queue.try_emplace(102, 2));
+
+  // Enqueue using try_push (move construction)
+  CHECK(queue.try_push(ConstMemberItem(103, 3)));
+  CHECK(queue.try_push(ConstMemberItem(104, 4)));
+
+  CHECK(queue.full());
+  CHECK(!queue.try_emplace(105, 5));
+
+  // Dequeue using try_pop() returning std::optional<ConstMemberItem>
+  auto pop1 = queue.try_pop();
+  CHECK(pop1.has_value());
+  CHECK(pop1->id == 101 && pop1->payload == 1);
+
+  auto pop2 = queue.try_pop();
+  CHECK(pop2.has_value());
+  CHECK(pop2->id == 102 && pop2->payload == 2);
+
+  auto pop3 = queue.try_pop();
+  CHECK(pop3.has_value());
+  CHECK(pop3->id == 103 && pop3->payload == 3);
+
+  auto pop4 = queue.try_pop();
+  CHECK(pop4.has_value());
+  CHECK(pop4->id == 104 && pop4->payload == 4);
+
+  CHECK(queue.empty());
+  CHECK(!queue.try_pop().has_value());
+
+  // Enqueue again into reused slots (exercising std::launder on storage reuse)
+  CHECK(queue.try_emplace(201, 10));
+  auto pop_reused = queue.try_pop();
+  CHECK(pop_reused.has_value());
+  CHECK(pop_reused->id == 201 && pop_reused->payload == 10);
+  CHECK(queue.empty());
+}
+
 // ============================================================================
 // Combined Queue + EventNotifier Test
 // ============================================================================
@@ -708,6 +779,7 @@ int main() {
   test_queue_pending_head_behavior();
   test_queue_mpmc_concurrent();
   test_queue_destruction_with_queued_items();
+  test_queue_const_member_item();
 
   // Combined test
   test_queue_with_event_notifier();
