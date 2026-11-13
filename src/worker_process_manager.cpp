@@ -2,6 +2,7 @@
 
 #include "darkpool/worker_process_manager.hpp"
 
+#include <array>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
@@ -59,6 +60,29 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
   const int w_efd = channel->worker_notify_fd();
   const int s_efd = channel->server_notify_fd();
 
+  // Prepare argv and a deliberately minimal environment before fork(). The
+  // worker needs only its IPC endpoints; it must not inherit server secrets
+  // such as moderator, admission, or enrollment credentials.
+  const std::string worker_event_fd = std::to_string(w_efd);
+  const std::string server_event_fd = std::to_string(s_efd);
+  std::array<char*, 10> worker_argv{
+      config.worker_binary_path.data(),
+      const_cast<char*>("--request-shm"),
+      config.request_shm_name.data(),
+      const_cast<char*>("--response-shm"),
+      config.response_shm_name.data(),
+      const_cast<char*>("--worker-eventfd"),
+      worker_event_fd.data(),
+      const_cast<char*>("--server-eventfd"),
+      server_event_fd.data(),
+      nullptr
+  };
+  char child_path_env[] = "PATH=/usr/bin:/bin";
+  char child_lang_env[] = "LANG=C";
+  std::array<char*, 3> child_environment{
+      child_path_env, child_lang_env, nullptr
+  };
+
   // Pipe for child exec status reporting
   int exec_pipe[2] = {-1, -1};
   if (::pipe2(exec_pipe, O_CLOEXEC) != 0) {
@@ -85,16 +109,9 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
     flags = ::fcntl(s_efd, F_GETFD);
     if (flags >= 0) ::fcntl(s_efd, F_SETFD, flags & ~FD_CLOEXEC);
 
-    const std::string w_efd_str = std::to_string(w_efd);
-    const std::string s_efd_str = std::to_string(s_efd);
-
-    ::execl(config.worker_binary_path.c_str(),
-            config.worker_binary_path.c_str(),
-            "--request-shm", config.request_shm_name.c_str(),
-            "--response-shm", config.response_shm_name.c_str(),
-            "--worker-eventfd", w_efd_str.c_str(),
-            "--server-eventfd", s_efd_str.c_str(),
-            static_cast<char*>(nullptr));
+    ::execve(config.worker_binary_path.c_str(),
+             worker_argv.data(),
+             child_environment.data());
 
     // If exec failed:
     const int err = errno;
