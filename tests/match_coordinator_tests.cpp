@@ -358,7 +358,9 @@ void test_match_lifecycle_cleanup_and_isolation() {
   // Player 11 joins Match C (leaving seats open)
   CHECK(join(coordinator, 11, match_c)["type"] == "joined_match");
 
-  // Player 2 disconnects from Match A in Lobby
+  // Player 2 disconnects from Match A in Lobby; reserve its seat for reconnect.
+  const auto disconnect_time = std::chrono::steady_clock::now();
+  coordinator.set_simulated_time(disconnect_time);
   coordinator.unregister_session(2);
   // Repeated unregister is safe
   coordinator.unregister_session(2);
@@ -368,14 +370,19 @@ void test_match_lifecycle_cleanup_and_isolation() {
   const auto unreg_act = coordinator.handle(2, json{{"type", "match_status"}, {"match_id", match_a}});
   CHECK(unreg_act && (*unreg_act)["type"] == "error");
 
-  // Player 5 joins Match A in the seat previously held or empty seat
+  // A new player cannot steal the reserved seat, so they take the genuinely empty seat 5.
   const auto p5_join = join(coordinator, 5, match_a);
   CHECK(p5_join["type"] == "joined_match");
+  CHECK(p5_join["seat"] == 5U);
 
-  // Register a new player session 12 and let them fill the remaining seat in Match A
   coordinator.register_session(12, SessionRole::Player);
+  const auto blocked_join = join(coordinator, 12, match_a);
+  CHECK(blocked_join["type"] == "error" && blocked_join["error"] == "match is full");
+
+  coordinator.set_simulated_time(disconnect_time + std::chrono::minutes(5) + std::chrono::seconds(1));
   const auto p12_join = join(coordinator, 12, match_a);
   CHECK(p12_join["type"] == "joined_match");
+  CHECK(p12_join["seat"] == 2U);
 
   // All 5 seats in Match A filled; Match A starts
   CHECK((*coordinator.handle(100, json{{"type", "start_match"}, {"match_id", match_a}}))["ok"]);
@@ -1692,6 +1699,48 @@ void test_player_admission_security_and_identity() {
   CHECK(open_join && (*open_join)["type"] == "joined_match");
 }
 
+void test_player_reconnect_restores_original_seat() {
+  MatchCoordinator coordinator;
+  coordinator.register_session(100, SessionRole::Moderator);
+  for (std::uint64_t session = 1; session <= 3; ++session) coordinator.register_session(session, SessionRole::Player);
+  const auto created = create(coordinator, 100, 3);
+  CHECK(created["type"] == "match_created");
+  const auto match_id = created["match_id"].get<std::uint64_t>();
+  const auto first_join = join(coordinator, 1, match_id);
+  const auto second_join = join(coordinator, 2, match_id);
+  const auto third_join = join(coordinator, 3, match_id);
+  CHECK(first_join["type"] == "joined_match");
+  CHECK(second_join["type"] == "joined_match");
+  CHECK(third_join["type"] == "joined_match");
+  CHECK(first_join.contains("resume_token"));
+  const auto original_resume_token = first_join["resume_token"].get<std::string>();
+  CHECK(original_resume_token.size() == 32U);
+  CHECK((*coordinator.handle(100, json{{"type", "start_match"}, {"match_id", match_id}}))["ok"]);
+
+  coordinator.unregister_session(1);
+  coordinator.register_session(11, SessionRole::Player);
+  const auto no_resume = coordinator.handle(11, json{{"type", "join_match"}, {"match_id", match_id}});
+  CHECK(no_resume && (*no_resume)["type"] == "error");
+  CHECK((*no_resume)["error"] == "match is not joinable");
+
+  const auto resumed = coordinator.handle(11, json{
+      {"type", "join_match"}, {"match_id", match_id}, {"resume_token", original_resume_token}});
+  CHECK(resumed && (*resumed)["type"] == "joined_match");
+  CHECK((*resumed)["reconnected"] == true);
+  CHECK((*resumed)["player_id"] == first_join["player_id"]);
+  CHECK((*resumed)["seat"] == first_join["seat"]);
+  CHECK((*resumed)["private_role"] == first_join["private_role"]);
+  CHECK((*resumed)["resume_token"] != original_resume_token);
+
+  coordinator.register_session(12, SessionRole::Player);
+  const auto replay = coordinator.handle(12, json{
+      {"type", "join_match"}, {"match_id", match_id}, {"resume_token", original_resume_token}});
+  CHECK(replay && (*replay)["type"] == "error");
+  CHECK((*replay)["error"] == "invalid or expired player resume token");
+  const auto status = coordinator.handle(11, json{{"type", "match_status"}, {"match_id", match_id}});
+  CHECK(status && (*status)["type"] == "match_status" && (*status)["phase"] == "AwaitingEvent");
+}
+
 void test_list_matches_and_enrollment_token_authorization() {
   MatchCoordinator coord;
   coord.register_session(10, SessionRole::Moderator);
@@ -1775,6 +1824,7 @@ int main() {
   test_stage4_coordinator_quantity_and_research();
   test_player_admission_security_and_identity();
   test_list_matches_and_enrollment_token_authorization();
+  test_player_reconnect_restores_original_seat();
   if (failures != 0) return EXIT_FAILURE;
   std::cout << "Match coordinator isolation tests passed.\n";
   return EXIT_SUCCESS;

@@ -19,6 +19,7 @@ namespace darkpool::server {
 namespace {
 
 constexpr std::size_t kMaxMatches = 4;
+constexpr auto kPlayerReconnectGracePeriod = std::chrono::minutes(5);
 
 std::optional<std::uint64_t> role_shuffle_seed() noexcept {
 #if defined(__linux__)
@@ -307,7 +308,9 @@ void MatchCoordinator::unregister_session(std::uint64_t session) noexcept {
     const auto match = matches_.find(*found->second.player_match);
     if (match != matches_.end() && found->second.player_id &&
         *found->second.player_id > 0U && *found->second.player_id <= match->second.player_sessions.size()) {
-      match->second.player_sessions[static_cast<std::size_t>(*found->second.player_id - 1U)].reset();
+      const auto seat = static_cast<std::size_t>(*found->second.player_id - 1U);
+      match->second.player_sessions[seat].reset();
+      match->second.player_disconnected_at[seat] = now_();
     }
   }
   for (const auto match_id : found->second.moderator_matches) {
@@ -740,7 +743,10 @@ std::optional<network::json> MatchCoordinator::handle(
       }
 
       MatchRecord record{std::move(match), session,
-          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt, 1U, false, {}, join_token};
+          std::vector<std::optional<std::uint64_t>>(*player_count), std::nullopt, std::nullopt,
+          1U, false, {}, join_token,
+          std::vector<std::optional<std::string>>(*player_count),
+          std::vector<std::optional<std::chrono::steady_clock::time_point>>(*player_count)};
       matches_.emplace(match_id, std::move(record));
       connection->second.moderator_matches.push_back(match_id);
       network::json resp{{"type", "match_created"}, {"match_id", match_id},
@@ -790,8 +796,48 @@ std::optional<network::json> MatchCoordinator::handle(
     if (has_client_identity(command)) return error("client identity fields are not accepted");
     if (connection->second.player_match) return error("connection already belongs to a match");
     if (match->second.is_aborted) return error("match has been aborted");
-    if (match->second.match->state().phase != Phase::Lobby) return error("match is not joinable");
+    if (match->second.match->state().phase == Phase::Finished) {
+      return error("match is not joinable");
+    }
 
+    if (command.contains("resume_token")) {
+      if (!command["resume_token"].is_string() ||
+          command["resume_token"].get_ref<const std::string&>().empty()) {
+        return error("invalid or expired player resume token");
+      }
+      const auto& provided_resume_token = command["resume_token"].get_ref<const std::string&>();
+      const auto current_time = now_();
+      for (std::size_t seat = 0; seat < match->second.player_resume_tokens.size(); ++seat) {
+        const auto& stored_token = match->second.player_resume_tokens[seat];
+        if (!stored_token || !secure_compare(provided_resume_token, *stored_token)) continue;
+        if (match->second.player_sessions[seat]) return error("player seat is already connected");
+        const auto disconnected_at = match->second.player_disconnected_at[seat];
+        if (!disconnected_at || current_time - *disconnected_at > kPlayerReconnectGracePeriod) {
+          match->second.player_resume_tokens[seat].reset();
+          match->second.player_disconnected_at[seat].reset();
+          return error("player resume token has expired");
+        }
+        const auto rotated_resume_token = generate_secure_join_token();
+        const auto player_id = static_cast<PlayerId>(seat + 1U);
+        match->second.player_sessions[seat] = session;
+        match->second.player_disconnected_at[seat].reset();
+        match->second.player_resume_tokens[seat] = rotated_resume_token;
+        connection->second.player_match = match_id;
+        connection->second.player_id = player_id;
+        const auto role = match->second.match->state().players[seat].role;
+        pending_notifications_.push_back(OutgoingNotification{
+            {session}, make_market_snapshot(match_id, match->second.state_version,
+                match->second.match->state(), match->second.last_market,
+                match->second.timer, current_time, match->second.is_aborted)});
+        return network::json{{"type", "joined_match"}, {"match_id", match_id},
+            {"player_id", player_id}, {"seat", seat + 1U},
+            {"private_role", Match::to_string(role)},
+            {"resume_token", rotated_resume_token}, {"reconnected", true}};
+      }
+      return error("invalid or expired player resume token");
+    }
+
+    if (match->second.match->state().phase != Phase::Lobby) return error("match is not joinable");
     if (match->second.join_token.has_value()) {
       std::string provided_token;
       if (command.contains("join_token") && command["join_token"].is_string()) {
@@ -803,28 +849,36 @@ std::optional<network::json> MatchCoordinator::handle(
       } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
         provided_token = std::string(env_j_token);
       }
-
-      if (provided_token.empty() || provided_token != *match->second.join_token) {
+      if (provided_token.empty() || !secure_compare(provided_token, *match->second.join_token)) {
         return error("invalid or missing match join token");
       }
     }
 
+    const auto current_time = now_();
     for (std::size_t seat = 0; seat < match->second.player_sessions.size(); ++seat) {
-      if (!match->second.player_sessions[seat]) {
-        const auto player_id = static_cast<PlayerId>(seat + 1U);
-        match->second.player_sessions[seat] = session;
-        connection->second.player_match = match_id;
-        connection->second.player_id = player_id;
-        const auto role = match->second.match->state().players[seat].role;
-        pending_notifications_.push_back(OutgoingNotification{
-            {session},
-            make_market_snapshot(match_id, match->second.state_version,
-                                 match->second.match->state(), match->second.last_market,
-                                 match->second.timer, now_(), match->second.is_aborted)});
-        return network::json{{"type", "joined_match"}, {"match_id", match_id},
-                             {"player_id", player_id}, {"seat", seat + 1U},
-                             {"private_role", Match::to_string(role)}};
+      if (match->second.player_sessions[seat]) continue;
+      if (match->second.player_resume_tokens[seat]) {
+        const auto disconnected_at = match->second.player_disconnected_at[seat];
+        if (!disconnected_at || current_time - *disconnected_at <= kPlayerReconnectGracePeriod) continue;
+        match->second.player_resume_tokens[seat].reset();
+        match->second.player_disconnected_at[seat].reset();
       }
+      const auto resume_token = generate_secure_join_token();
+      const auto player_id = static_cast<PlayerId>(seat + 1U);
+      match->second.player_sessions[seat] = session;
+      match->second.player_resume_tokens[seat] = resume_token;
+      match->second.player_disconnected_at[seat].reset();
+      connection->second.player_match = match_id;
+      connection->second.player_id = player_id;
+      const auto role = match->second.match->state().players[seat].role;
+      pending_notifications_.push_back(OutgoingNotification{
+          {session}, make_market_snapshot(match_id, match->second.state_version,
+              match->second.match->state(), match->second.last_market,
+              match->second.timer, current_time, match->second.is_aborted)});
+      return network::json{{"type", "joined_match"}, {"match_id", match_id},
+          {"player_id", player_id}, {"seat", seat + 1U},
+          {"private_role", Match::to_string(role)},
+          {"resume_token", resume_token}, {"reconnected", false}};
     }
     return error("match is full");
   }

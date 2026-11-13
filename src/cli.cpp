@@ -101,7 +101,7 @@ std::string ClientState::help_text(ClientRole role) {
   } else {
     oss << "============================================================\n"
         << "DARKPOOL PLAYER COMMANDS:\n"
-        << "  join [match_id] [token]   Join match (default: active/latest) and receive private role\n"
+        << "  join [match_id] [token] [resume]  Join or reclaim your reserved player seat\n"
         << "  enroll [match_id] [sec]   Securely obtain and store match admission token\n"
         << "  matches / list            List active and waiting matches on server\n"
         << "  status                    View public company health, stock price, and round phase\n"
@@ -351,6 +351,9 @@ CommandResult ClientState::handle_player_command(std::string_view command,
   }
 
   if (command == "JOIN") {
+    if (args.size() > 3U) {
+      return CommandResult{.local_message = "[ERROR] Use 'join [match_id] [join_token] [resume_token]'."};
+    }
     std::uint64_t target_match = active_match;
     bool auto_requested = false;
     if (!args.empty()) {
@@ -374,6 +377,13 @@ CommandResult ClientState::handle_player_command(std::string_view command,
         token = args[1];
       }
     }
+    std::string resume_token;
+    if (args.size() >= 3U) resume_token = args[2];
+    if (resume_token.empty()) {
+      if (const char* env_resume = std::getenv("DARKPOOL_PLAYER_RESUME_TOKEN")) {
+        resume_token = std::string(env_resume);
+      }
+    }
     if (token.empty()) {
       if (const char* env_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
         token = std::string(env_token);
@@ -389,6 +399,7 @@ CommandResult ClientState::handle_player_command(std::string_view command,
     match_id_ = target_match;
     network::json payload{{"type", "join_match"}, {"match_id", target_match}};
     if (!token.empty()) payload["join_token"] = token;
+    if (!resume_token.empty()) payload["resume_token"] = resume_token;
     return CommandResult{.send_frame = true, .payload = std::move(payload)};
   }
 
@@ -788,6 +799,12 @@ std::string ClientState::format_response(const network::json& response) {
         << "  Seat        : " << response.value("seat", 0U) << "\n"
         << "  Private Role: " << (private_role_ ? *private_role_ : "Unknown") << "\n"
         << "------------------------------------------------------------\n";
+    if (response.contains("resume_token") && response["resume_token"].is_string()) {
+      oss << "  Seat Resume Token: " << response["resume_token"].get<std::string>() << "\n"
+          << "  Reconnect: set DARKPOOL_PLAYER_RESUME_TOKEN to this value, then run 'join "
+          << (match_id_ ? std::to_string(*match_id_) : std::string("1")) << "'.\n"
+          << "  Keep this token private; it restores this exact player seat.\n";
+    }
     if (private_role_ && *private_role_ == "Insider") {
       oss << "CONFIDENTIAL INSIDER INTEL:\n"
           << "  You are the INSIDER.\n"
