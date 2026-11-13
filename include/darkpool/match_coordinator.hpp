@@ -80,6 +80,8 @@ class MatchCoordinator {
     bool is_aborted{false};
     MatchTimer timer{};
     std::optional<std::string> join_token;
+    std::vector<std::optional<std::string>> player_resume_tokens;
+    std::vector<std::optional<std::chrono::steady_clock::time_point>> player_disconnected_at;
   };
 
   OperationResult apply_open_trading(std::uint64_t match_id, MatchRecord& record,

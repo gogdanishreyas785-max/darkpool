@@ -82,6 +82,35 @@ def find_free_port():
         return s.getsockname()[1]
 
 
+def assert_tls_alert_or_close(sock):
+    """Accept a TLS alert record or a peer close/reset, never arbitrary plaintext."""
+    def recv_exact_or_eof(size):
+        chunks = bytearray()
+        while len(chunks) < size:
+            chunk = sock.recv(size - len(chunks))
+            if not chunk:
+                return None
+            chunks.extend(chunk)
+        return bytes(chunks)
+    try:
+        header = recv_exact_or_eof(5)
+        if header is None:
+            return "EOF"
+        assert header[0] == 0x15, f"Expected TLS alert record, got content type {header[0]:#x}"
+        assert header[1] == 0x03 and header[2] in (0x01, 0x02, 0x03, 0x04), (
+            f"Unexpected TLS record version: {header[1:3].hex()}"
+        )
+        payload_length = int.from_bytes(header[3:5], "big")
+        assert 2 <= payload_length <= 256, f"Invalid TLS alert length: {payload_length}"
+        payload = recv_exact_or_eof(payload_length)
+        if payload is None:
+            return "closed during alert"
+        assert payload[0] in (0x01, 0x02), f"Invalid TLS alert level: {payload[0]:#x}"
+        return f"TLS alert (level={payload[0]}, description={payload[1]})"
+    except (ConnectionResetError, BrokenPipeError):
+        return "connection reset"
+
+
 def generate_cert(cert_dir, ip_san="127.0.0.1"):
     key_path = os.path.join(cert_dir, f"server_{ip_san}.key")
     cert_path = os.path.join(cert_dir, f"server_{ip_san}.crt")
@@ -628,10 +657,8 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
             raw_sock.sendall(b'{"type":"connect","role":"player"}\n')
             raw_sock.settimeout(2.0)
             try:
-                data = raw_sock.recv(1024)
-                assert len(data) == 0, f"Expected immediate disconnect/EOF on plaintext, got {data}"
-            except (socket.timeout, ConnectionResetError, BrokenPipeError):
-                pass
+                result = assert_tls_alert_or_close(raw_sock)
+                log(f"  -> [PASS] Plaintext rejected with {result}.")
         # Verify server is still alive
         c_check = ClientProcess("C_Check", client_bin, ["--tls", "--server-fingerprint", fingerprint, "127.0.0.1", str(port), "player"])
         c_check.wait_for_pattern(r"\[CONNECTED\] Session established as player")

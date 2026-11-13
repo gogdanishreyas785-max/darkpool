@@ -245,3 +245,10 @@ When the worker returns the calculation via the process-shared queue, `ServerRun
 ```
 If the worker process is absent, terminated, or the queue is saturated, the server returns an error response (`status: "failed"`, `error: "worker unavailable"`) without delaying or affecting authoritative match coordination. All calculations use widened safe 64-bit integer arithmetic to prevent signed integer overflow.
 
+
+
+### Player Seat Reconnection
+
+Every successful `join_match` response includes a private, per-seat `resume_token`. Keep it secret. If the client disconnects, the server reserves that seat for five minutes. Reconnect by sending `join_match` with the same `match_id` and `resume_token`; the server restores the original player ID, role, and seat, including during an active match. A successful reconnect rotates the token, invalidating the previous value.
+
+The CLI prints the token after joining. Set `DARKPOOL_PLAYER_RESUME_TOKEN` to that value before starting a replacement client, then run `join <match_id>`. A reconnect token is sufficient to reclaim an existing seat and does not require the match-wide admission token. Once the five-minute reservation expires, the seat may be assigned to a new player and the old token is invalid.
