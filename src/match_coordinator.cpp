@@ -781,7 +781,7 @@ std::optional<network::json> MatchCoordinator::handle(
 
     if (command.contains("resume_token")) {
       if (!command["resume_token"].is_string() ||
-          command["resume_token"].get_ref<const std::string&>().empty()) {
+          command["resume_token"].get_ref<const std::string&>().size() != 32U) {
         return error("invalid or expired player resume token");
       }
       const auto& provided_resume_token = command["resume_token"].get_ref<const std::string&>();
@@ -831,7 +831,8 @@ std::optional<network::json> MatchCoordinator::handle(
       } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
         provided_token = std::string(env_j_token);
       }
-      if (provided_token.empty() || !secure_compare(provided_token, *match->second.join_token)) {
+      if (!security::has_valid_credential_length(provided_token) ||
+          !secure_compare(provided_token, *match->second.join_token)) {
         return error("invalid or missing match join token");
       }
     }
