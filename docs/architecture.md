@@ -528,7 +528,7 @@ IPC-9 introduces a bounded single-producer/single-consumer (SPSC) work queue pro
 
 ### 9.11 Server-Worker Process-Shared IPC Architecture (IPC-10)
 
-IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `EventNotifier`) into a production multi-process server–worker architecture:
+IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `EventNotifier`) into an optional production multi-process server–worker path. The server starts this child process when launched with `--worker`; the default server invocation does not enable it:
 
 ```text
  Client TCP/TLS               Server Process (darkpool_server)                      Worker Process (darkpool_worker)
