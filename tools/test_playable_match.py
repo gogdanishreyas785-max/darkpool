@@ -656,9 +656,8 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
             raw_sock.connect(("127.0.0.1", port))
             raw_sock.sendall(b'{"type":"connect","role":"player"}\n')
             raw_sock.settimeout(2.0)
-            try:
-                result = assert_tls_alert_or_close(raw_sock)
-                log(f"  -> [PASS] Plaintext rejected with {result}.")
+            result = assert_tls_alert_or_close(raw_sock)
+            log(f"  -> [PASS] Plaintext rejected with {result}.")
         # Verify server is still alive
         c_check = ClientProcess("C_Check", client_bin, ["--tls", "--server-fingerprint", fingerprint, "127.0.0.1", str(port), "player"])
         c_check.wait_for_pattern(r"\[CONNECTED\] Session established as player")
