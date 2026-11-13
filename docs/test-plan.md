@@ -296,8 +296,8 @@ Observed characteristics (WSL2 environment, 10,000 completed iterations):
 
 ### Test Suite Organization
 
-- **Total Registered CTest Targets:** 44 tests (listed via `ctest -N`).
-- **Local Comprehensive Suite:** Runs all 44 tests (`ctest --test-dir build`), including multi-process integration tests, TLS integration, network tests, coordinator tests, POSIX MQ/SHM, and playable match scenarios.
+- **Default CTest Configuration:** 44 tests are enabled in the standard configuration and listed by `ctest -N`. Four additional sustained-load tests are available when configuring with `-DDARKPOOL_ENABLE_SUSTAINED_TESTS=ON`, for 48 CTest tests in that configuration.
+- **Local Comprehensive Suite:** `ctest --test-dir build` runs all tests enabled in the selected build configuration. With the default configuration this is 44 tests; with sustained tests enabled it includes the four additional 10-minute/30-minute load tests. The suite includes multi-process integration, TLS, network, coordinator, POSIX MQ/shared-memory, and playable-match scenarios.
 - **CI Workflow Scope (`.github/workflows/s1-ubuntu.yml`):** Builds all configured targets on Ubuntu 24.04 in Release mode with warnings-as-errors, then runs this focused 11-test regression set: `darkpool_engine_tests`, `darkpool_network_tests`, `darkpool_coordinator_tests`, `darkpool_cli_tests`, `darkpool_posix_mq_tests`, `darkpool_posix_shm_tests`, `darkpool_ipc_async_tests`, `darkpool_ipc_epoll_tests`, `darkpool_process_shared_queue_tests`, `darkpool_worker_integration_tests`, and `darkpool_playable_match_e2e`. This is not the full local CTest suite. Multi-minute stress/benchmark runs and multi-host acceptance scripts remain separate targeted executions.
 
 
