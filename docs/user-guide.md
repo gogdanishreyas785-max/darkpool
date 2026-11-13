@@ -400,7 +400,13 @@ TLS protects network traffic and verifies server identity; it does not replace m
 
 ### Linux worker-process IPC (IPC-10)
 
-The Linux server manages a separate `darkpool_worker` child process for non-authoritative market-model computation. The server and worker exchange fixed-layout messages through two bounded POSIX shared-memory SPSC queues; one `eventfd` in each direction signals when work or a response is available. The server's response notification is handled by its existing `epoll` loop. The worker process is started, monitored, and shut down by `WorkerProcessManager`; operators do not start a second server or configure a separate network port for it.
+The Linux server can optionally manage a separate `darkpool_worker` child process for non-authoritative market-model computation. Enable this path by starting the server with `--worker`; it is disabled by default. For example, from the repository root:
+
+~~~bash
+./build/darkpool_server --worker --worker-binary ./build/darkpool_worker
+~~~
+
+The server and worker exchange fixed-layout messages through two bounded POSIX shared-memory SPSC queues; one `eventfd` in each direction signals when work or a response is available. The server's response notification is handled by its existing `epoll` loop. The worker process is started, monitored, and shut down by `WorkerProcessManager`; operators do not start a second server or configure a separate network port for it.
 
 The client-facing `eval_model` request is asynchronous. The server validates its inputs, correlates the response with the originating client request, and returns the worker's projection. The worker cannot modify matches, trades, player accounts, or other authoritative game state. If the worker is unavailable or fails, pending requests receive an error and the server can restart the worker; normal authoritative gameplay remains owned by the server. See [Architecture §9.11](architecture.md#911-server-worker-process-shared-ipc-architecture-ipc-10) and [Protocol: Server-Worker Internal IPC Wire Protocol](protocol.md#server-worker-internal-ipc-wire-protocol).
 
