@@ -10,6 +10,7 @@ int main() {
 #else
 
 #include "darkpool/match_coordinator.hpp"
+#include "darkpool/credential_policy.hpp"
 #include "darkpool/network.hpp"
 #include "darkpool/posix_mq_control.hpp"
 #include "darkpool/posix_shm_telemetry.hpp"
@@ -299,6 +300,14 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  const char* configured_moderator_token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
+  if (configured_moderator_token != nullptr && configured_moderator_token[0] != '\0' &&
+      !darkpool::security::has_valid_credential_length(configured_moderator_token)) {
+    std::cerr << "error: DARKPOOL_MODERATOR_TOKEN must be between 32 and 256 bytes; "
+                 "generate it with a cryptographically secure random source\n";
+    return 2;
+  }
+
   if (config.enable_tcp) {
     if (!darkpool::network::is_address_assigned_to_local_interface(config.bind_address)) {
       std::cerr << "error: requested bind address " << config.bind_address
@@ -578,7 +587,7 @@ int main(int argc, char** argv) {
         return runtime.send_message(session_id, Frame(json{{"type", "connect"}, {"role", "player"}}));
       } else if (role == "moderator") {
         const char* server_token = std::getenv("DARKPOOL_MODERATOR_TOKEN");
-        if (!server_token || server_token[0] == '\0') {
+        if (server_token == nullptr || !darkpool::security::has_valid_credential_length(server_token)) {
           return false;
         }
         if (!payload.contains("token") || !payload["token"].is_string()) {
