@@ -795,8 +795,9 @@ std::optional<network::json> MatchCoordinator::handle(
     if (connection->second.role != SessionRole::Player) return error("player permission required");
     if (has_client_identity(command)) return error("client identity fields are not accepted");
     if (connection->second.player_match) return error("connection already belongs to a match");
-    if (match->second.is_aborted || match->second.match->state().phase == Phase::Finished) {
-      return error("match has been aborted or finished");
+    if (match->second.is_aborted) return error("match has been aborted");
+    if (match->second.match->state().phase == Phase::Finished) {
+      return error("match is not joinable");
     }
 
     if (command.contains("resume_token")) {
