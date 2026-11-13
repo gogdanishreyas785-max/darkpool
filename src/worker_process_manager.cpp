@@ -64,8 +64,8 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
   // Prepare argv and a deliberately minimal environment before fork(). The
   // worker needs only its IPC endpoints; it must not inherit server secrets
   // such as moderator, admission, or enrollment credentials.
-  const std::string worker_event_fd = std::to_string(w_efd);
-  const std::string server_event_fd = std::to_string(s_efd);
+  std::string worker_event_fd = std::to_string(w_efd);
+  std::string server_event_fd = std::to_string(s_efd);
   std::array<char*, 10> worker_argv{
       config.worker_binary_path.data(),
       const_cast<char*>("--request-shm"),
@@ -120,7 +120,8 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
       child_setup_errno = errno;
     }
     if (child_setup_errno != 0) {
-      (void)::write(exec_pipe[1], &child_setup_errno, sizeof(child_setup_errno));
+      const ssize_t reported = ::write(exec_pipe[1], &child_setup_errno, sizeof(child_setup_errno));
+      (void)reported;
       ::close(exec_pipe[1]);
       ::_exit(127);
     }
