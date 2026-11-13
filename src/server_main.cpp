@@ -433,7 +433,7 @@ int main(int argc, char** argv) {
       // Register new worker notify eventfd in epoll
       if (worker_mgr->server_notify_fd() >= 0) {
         std::string epoll_err;
-        runtime.add_epoll_event_source(
+        const bool reg_ok = runtime.add_epoll_event_source(
             worker_mgr->server_notify_fd(),
             [&](std::uint32_t events) {
               if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
@@ -466,6 +466,20 @@ int main(int argc, char** argv) {
               }
             },
             epoll_err);
+
+        if (!reg_ok) {
+          std::cerr << "error: failed to register worker notify eventfd in epoll: " << epoll_err << '\n';
+          worker_mgr->shutdown(std::chrono::milliseconds{200});
+          worker_mgr.reset();
+          fail_all_pending_requests("worker epoll registration failed");
+          return false;
+        }
+      } else {
+        std::cerr << "error: worker has invalid notify fd\n";
+        worker_mgr->shutdown(std::chrono::milliseconds{200});
+        worker_mgr.reset();
+        fail_all_pending_requests("invalid worker notify descriptor");
+        return false;
       }
       return true;
     } else {

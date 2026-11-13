@@ -501,6 +501,93 @@ static void test_server_worker_crash_and_recovery_e2e(const std::string& server_
   std::cout << "[TEST] Mid-request worker crash and recovery e2e passed." << std::endl;
 }
 
+static void test_server_worker_true_inflight_crash(const std::string& server_bin, const std::string& worker_bin) {
+  std::cout << "[TEST] True in-flight crash test: SIGSTOP worker, send request, verify pending, SIGKILL..." << std::endl;
+  ServerProcessFixture server(server_bin, worker_bin, 49156);
+
+  int client_fd = connect_tcp(server.port);
+  require(client_fd >= 0, "client connected");
+
+  auto connect_resp = request_json(client_fd, json{{"type", "connect"}, {"role", "player"}});
+  require(connect_resp.has_value() && (*connect_resp)["type"] == "connect", "connected");
+
+  // Initial request to get active worker PID
+  json eval_req0{
+      {"type", "eval_model"},
+      {"request_id", "req-init-1"},
+      {"price", 50}
+  };
+  auto resp0 = request_json(client_fd, eval_req0);
+  require(resp0.has_value() && (*resp0)["status"] == "success", "init eval success");
+  pid_t worker_pid = (*resp0)["worker_pid"].get<pid_t>();
+  require(worker_pid > 0, "valid worker pid");
+
+  // 1. Freeze worker with SIGSTOP so it cannot pop or process incoming requests
+  std::cout << "Freezing worker (PID: " << worker_pid << ") with SIGSTOP..." << std::endl;
+  ::kill(worker_pid, SIGSTOP);
+
+  // 2. Submit in-flight request while worker is frozen
+  json inflight_req{
+      {"type", "eval_model"},
+      {"request_id", "req-inflight-99"},
+      {"price", 75}
+  };
+  const auto outgoing = Frame(inflight_req).serialize();
+  require(send_all(client_fd, outgoing.data(), outgoing.size()), "sent in-flight request");
+
+  // 3. Verify request remains pending and has not received an immediate response
+  // Set short timeout to verify no premature frame arrives
+  struct timeval tv{0, 200'000}; // 200ms
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  auto premature_resp = read_single_frame(client_fd);
+  require(!premature_resp.has_value(), "request correctly remained pending while worker was frozen");
+
+  // Restore 3-second read timeout
+  struct timeval tv_normal{3, 0};
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv_normal, sizeof(tv_normal));
+
+  // 4. Kill the frozen worker with SIGKILL while request is truly in-flight
+  std::cout << "Killing frozen worker with SIGKILL..." << std::endl;
+  ::kill(worker_pid, SIGKILL);
+
+  // 5. The server must detect worker termination and return failure for that exact in-flight request
+  auto inflight_resp = read_single_frame(client_fd);
+  require(inflight_resp.has_value(), "received failure response for in-flight request");
+  require((*inflight_resp)["type"] == "eval_model_response", "eval_model_response type");
+  require((*inflight_resp)["status"] == "failed", "status failed for in-flight request");
+  require((*inflight_resp)["request_id"] == "req-inflight-99", "correlation ID matched exact in-flight request");
+  std::cout << "In-flight failure verified: " << (*inflight_resp).dump() << std::endl;
+
+  // 6. Verify server recovers and successfully services subsequent request
+  json subsequent_req{
+      {"type", "eval_model"},
+      {"request_id", "req-subsequent-100"},
+      {"price", 80}
+  };
+
+  bool recovered = false;
+  for (int retry = 0; retry < 50; ++retry) {
+    auto sub_resp = request_json(client_fd, subsequent_req);
+    if (sub_resp.has_value() && (*sub_resp)["status"] == "success") {
+      require((*sub_resp)["request_id"] == "req-subsequent-100", "subsequent request_id correlated");
+      pid_t new_pid = (*sub_resp)["worker_pid"].get<pid_t>();
+      require(new_pid != worker_pid, "new worker process spawned with new PID");
+      recovered = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  require(recovered, "subsequent request processed successfully by recovered worker");
+
+  // 7. Verify no duplicate or trailing frames in socket buffer
+  setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  auto trailing_resp = read_single_frame(client_fd);
+  require(!trailing_resp.has_value(), "no trailing or duplicate frames in stream");
+
+  ::close(client_fd);
+  std::cout << "[TEST] True in-flight crash test passed." << std::endl;
+}
+
 static void test_server_worker_startup_failure(const std::string& server_bin) {
   std::cout << "[TEST] Server behavior when worker fails startup..." << std::endl;
   // Non-existent worker binary path
@@ -543,6 +630,7 @@ int main(int argc, char* argv[]) {
     darkpool::ipc::test::test_server_worker_eval_model_e2e(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_input_validation(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_crash_and_recovery_e2e(server_bin, worker_bin);
+    darkpool::ipc::test::test_server_worker_true_inflight_crash(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_startup_failure(server_bin);
   } catch (const std::exception& ex) {
     std::cerr << "Test failed with exception: " << ex.what() << std::endl;
