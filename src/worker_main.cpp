@@ -33,6 +33,27 @@ void print_usage(const char* prog) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // This worker has no need for server authentication material. Refuse to run
+  // if launched with credential-bearing environment variables rather than
+  // silently retaining secrets in its process environment.
+  static constexpr const char* kForbiddenEnvironment[] = {
+      "DARKPOOL_MODERATOR_TOKEN",
+      "DARKPOOL_MATCH_JOIN_TOKEN",
+      "DARKPOOL_PLAYER_TOKEN",
+      "DARKPOOL_JOIN_TOKEN",
+      "DARKPOOL_ENROLLMENT_TOKEN",
+      "DARKPOOL_PLAYER_SECRET",
+      "DARKPOOL_PLAYER_RESUME_TOKEN",
+      "DARKPOOL_TOKEN_DIR"
+  };
+  for (const char* name : kForbiddenEnvironment) {
+    const char* value = std::getenv(name);
+    if (value != nullptr && value[0] != '\0') {
+      std::cerr << "[darkpool_worker] refusing credential-bearing environment\n";
+      return 2;
+    }
+  }
+
   std::string req_shm;
   std::string resp_shm;
   int worker_efd = -1;
