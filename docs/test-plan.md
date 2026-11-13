@@ -298,13 +298,14 @@ Observed characteristics (WSL2 environment, 10,000 completed iterations):
 
 - **Total Registered CTest Targets:** 44 tests (listed via `ctest -N`).
 - **Local Comprehensive Suite:** Runs all 44 tests (`ctest --test-dir build`), including multi-process integration tests, TLS integration, network tests, coordinator tests, POSIX MQ/SHM, and playable match scenarios.
-- **CI Workflow Scope (`.github/workflows/s1-ubuntu.yml`):** Runs focused core and POSIX IPC tests (`-R "^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests|darkpool_ipc_async_tests|darkpool_ipc_epoll_tests|darkpool_process_shared_queue_tests|darkpool_worker_integration_tests)$"`). Multi-minute stress and multi-host acceptance scripts are reserved for targeted local execution.
+- **CI Workflow Scope (`.github/workflows/s1-ubuntu.yml`):** Builds all configured targets on Ubuntu 24.04 in Release mode with warnings-as-errors, then runs this focused 11-test regression set: `darkpool_engine_tests`, `darkpool_network_tests`, `darkpool_coordinator_tests`, `darkpool_cli_tests`, `darkpool_posix_mq_tests`, `darkpool_posix_shm_tests`, `darkpool_ipc_async_tests`, `darkpool_ipc_epoll_tests`, `darkpool_process_shared_queue_tests`, `darkpool_worker_integration_tests`, and `darkpool_playable_match_e2e`. This is not the full local CTest suite. Multi-minute stress/benchmark runs and multi-host acceptance scripts remain separate targeted executions.
 
 
 
 ### Player Reconnection and TLS Plaintext Rejection
 
 - The TLS plaintext probe accepts either a valid TLS alert record or a peer close/reset; it rejects arbitrary non-TLS response data and timeouts.
-- Coordinator reconnect regression disconnects a player after match start, reconnects with the per-seat resume token, and verifies the same player ID, seat, private role, and active match phase are restored.
+- The coordinator reconnect regression disconnects a player after match start, reconnects with the per-seat resume token, and verifies the same player ID, seat, private role, and active match phase are restored.
 - Resume tokens are single-use and rotated after successful reconnection; replay of the previous token is rejected.
 - Disconnected player seats are reserved for five minutes before becoming available to a new lobby entrant.
+- The playable-match end-to-end test is included in the focused CI selection and exercises a real match flow plus TLS plaintext-probe handling.
