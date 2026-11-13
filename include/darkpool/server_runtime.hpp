@@ -7,6 +7,7 @@
 #include "darkpool/reactor_dispatch.hpp"
 #include "darkpool/tls_transport.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <functional>
