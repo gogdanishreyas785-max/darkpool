@@ -2,10 +2,13 @@
 
 #include "darkpool/worker_process_manager.hpp"
 
+#include <array>
 #include <cerrno>
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <signal.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -59,12 +62,39 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
   const int w_efd = channel->worker_notify_fd();
   const int s_efd = channel->server_notify_fd();
 
+  // Prepare argv and a deliberately minimal environment before fork(). The
+  // worker needs only its IPC endpoints; it must not inherit server secrets
+  // such as moderator, admission, or enrollment credentials.
+  std::string worker_event_fd = std::to_string(w_efd);
+  std::string server_event_fd = std::to_string(s_efd);
+  std::array<char*, 10> worker_argv{
+      config.worker_binary_path.data(),
+      const_cast<char*>("--request-shm"),
+      config.request_shm_name.data(),
+      const_cast<char*>("--response-shm"),
+      config.response_shm_name.data(),
+      const_cast<char*>("--worker-eventfd"),
+      worker_event_fd.data(),
+      const_cast<char*>("--server-eventfd"),
+      server_event_fd.data(),
+      nullptr
+  };
+  char child_path_env[] = "PATH=/usr/bin:/bin";
+  char child_lang_env[] = "LANG=C";
+  std::array<char*, 3> child_environment{
+      child_path_env, child_lang_env, nullptr
+  };
+
   // Pipe for child exec status reporting
   int exec_pipe[2] = {-1, -1};
   if (::pipe2(exec_pipe, O_CLOEXEC) != 0) {
     error_msg = "pipe2 failed: " + std::string(std::strerror(errno));
     return std::nullopt;
   }
+
+  // Bind the worker lifetime to this server process. If the server crashes,
+  // the kernel sends SIGTERM to the worker rather than leaving an orphan.
+  const pid_t expected_parent_pid = ::getpid();
 
   // 2. Fork worker process
   const pid_t pid = ::fork();
@@ -79,22 +109,43 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
     // Child process
     ::close(exec_pipe[0]);
 
+    // Install parent-death handling before exec and close the fork/parent-exit
+    // race. Set no_new_privs before execve so even a misconfigured setuid
+    // worker binary cannot gain privilege during the exec transition.
+    int child_setup_errno = 0;
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) != 0) {
+      child_setup_errno = errno;
+    } else if (::getppid() != expected_parent_pid) {
+      child_setup_errno = ECHILD;
+    } else if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+      child_setup_errno = errno;
+    } else {
+      // ServerRuntime blocks SIGINT/SIGTERM for signalfd. Do not carry that
+      // mask into the worker: PR_SET_PDEATHSIG must be deliverable after exec.
+      sigset_t worker_signal_mask;
+      if (::sigemptyset(&worker_signal_mask) != 0 ||
+          ::sigaddset(&worker_signal_mask, SIGINT) != 0 ||
+          ::sigaddset(&worker_signal_mask, SIGTERM) != 0 ||
+          ::sigprocmask(SIG_UNBLOCK, &worker_signal_mask, nullptr) != 0) {
+        child_setup_errno = errno;
+      }
+    }
+    if (child_setup_errno != 0) {
+      const ssize_t reported = ::write(exec_pipe[1], &child_setup_errno, sizeof(child_setup_errno));
+      (void)reported;
+      ::close(exec_pipe[1]);
+      ::_exit(127);
+    }
+
     // Clear O_CLOEXEC on eventfd descriptors so they survive execv
     int flags = ::fcntl(w_efd, F_GETFD);
     if (flags >= 0) ::fcntl(w_efd, F_SETFD, flags & ~FD_CLOEXEC);
     flags = ::fcntl(s_efd, F_GETFD);
     if (flags >= 0) ::fcntl(s_efd, F_SETFD, flags & ~FD_CLOEXEC);
 
-    const std::string w_efd_str = std::to_string(w_efd);
-    const std::string s_efd_str = std::to_string(s_efd);
-
-    ::execl(config.worker_binary_path.c_str(),
-            config.worker_binary_path.c_str(),
-            "--request-shm", config.request_shm_name.c_str(),
-            "--response-shm", config.response_shm_name.c_str(),
-            "--worker-eventfd", w_efd_str.c_str(),
-            "--server-eventfd", s_efd_str.c_str(),
-            static_cast<char*>(nullptr));
+    ::execve(config.worker_binary_path.c_str(),
+             worker_argv.data(),
+             child_environment.data());
 
     // If exec failed:
     const int err = errno;

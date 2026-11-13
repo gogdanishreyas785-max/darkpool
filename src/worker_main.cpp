@@ -4,8 +4,12 @@
 #if defined(__linux__)
 
 #include <chrono>
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -33,6 +37,52 @@ void print_usage(const char* prog) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  // This worker has no need for server authentication material. Refuse to run
+  // if launched with credential-bearing environment variables rather than
+  // silently retaining secrets in its process environment.
+  static constexpr const char* kForbiddenEnvironment[] = {
+      "DARKPOOL_MODERATOR_TOKEN",
+      "DARKPOOL_MATCH_JOIN_TOKEN",
+      "DARKPOOL_PLAYER_TOKEN",
+      "DARKPOOL_JOIN_TOKEN",
+      "DARKPOOL_ENROLLMENT_TOKEN",
+      "DARKPOOL_PLAYER_SECRET",
+      "DARKPOOL_PLAYER_RESUME_TOKEN",
+      "DARKPOOL_TOKEN_DIR"
+  };
+  for (const char* name : kForbiddenEnvironment) {
+    const char* value = std::getenv(name);
+    if (value != nullptr && value[0] != '\0') {
+      std::cerr << "[darkpool_worker] refusing credential-bearing environment\n";
+      return 2;
+    }
+  }
+
+  // The worker is a managed child, not a standalone daemon. Refuse to run
+  // without the parent-death signal installed before execve by the manager.
+  int parent_death_signal = 0;
+  if (::prctl(PR_GET_PDEATHSIG, &parent_death_signal, 0, 0, 0) != 0 ||
+      parent_death_signal != SIGTERM) {
+    std::cerr << "[darkpool_worker] parent-death supervision is missing\n";
+    return 1;
+  }
+
+  // Defense in depth for the compute-only child: prevent later privilege-
+  // gaining exec transitions, deny ptrace/core-dump access to its address
+  // space, and disable core dumps. This is not a syscall sandbox.
+  if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+      ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+    std::cerr << "[darkpool_worker] required process hardening failed: "
+              << std::strerror(errno) << '\n';
+    return 1;
+  }
+  struct rlimit core_limit {0, 0};
+  if (::setrlimit(RLIMIT_CORE, &core_limit) != 0) {
+    std::cerr << "[darkpool_worker] failed to disable core dumps: "
+              << std::strerror(errno) << '\n';
+    return 1;
+  }
+
   std::string req_shm;
   std::string resp_shm;
   int worker_efd = -1;

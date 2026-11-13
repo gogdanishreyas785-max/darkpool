@@ -152,7 +152,7 @@ Return to epoll_wait()
 
 TLS adds an important detail: an OpenSSL read can need socket writability, and an OpenSSL write can need socket readability. The runtime resumes the operation according to the readiness direction requested by TLS, not merely according to whether the application intended to read or write. `include/darkpool/reactor_dispatch.hpp` provides a testable helper for these readiness decisions.
 
-The server runtime also manages connection lifecycle, per-session request rate limits, bounded outgoing queues, and broadcast/multicast delivery.
+The server runtime also manages connection lifecycle, a shared pre-authentication request budget (32 frames/second, burst 512) that cannot be reset by reconnecting, per-session authenticated request rate limits (20 requests/second, burst 40), bounded outgoing queues, and broadcast/multicast delivery. The pre-authentication budget accommodates the configured 260 player/moderator connections starting together; it is server-wide rather than per-source-IP protection.
 
 Implemented in `include/darkpool/server_runtime.hpp` and `src/server_runtime.cpp`.
 
@@ -584,6 +584,7 @@ IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `Event
     1. All pending client requests are immediately failed with an informative error frame, ensuring accepted client requests are never left hanging indefinitely.
     2. Pending requests for disconnected sessions are automatically pruned.
     3. The server cleanly recovers by shutting down the dead manager, unlinking resources, and restarting a fresh worker instance with its eventfd registered in epoll.
+  - **Process boundary hardening:** The parent launches the worker with an explicit minimal environment (`PATH` and `LANG` only), so moderator, match-join, enrollment, and resume credentials are not inherited. POSIX shared-memory descriptors use `O_CLOEXEC`; only the two eventfd descriptors intentionally passed to the worker have close-on-exec cleared for the exec handoff. The worker independently refuses to start if credential-bearing environment variables are present. Before exec, the manager sets `PR_SET_NO_NEW_PRIVS` and `PR_SET_PDEATHSIG(SIGTERM)`, then checks for a parent-exit race; the worker verifies that parent-death supervision is installed. At startup it also disables dumpability and core dumps. These controls reduce privilege-transition and memory-disclosure risks but do not sandbox syscalls or separate the worker's same-UID trust domain.
   - Escalated shutdown: Transmits `Shutdown` opcode via queue, waits boundedly for graceful worker exit, escalates to `SIGTERM` and `SIGKILL` if timeout expires, and cleans up POSIX shared memory.
 - **Notification Wakeup Semantics:**
   - One clearly defined notification mechanism per direction:

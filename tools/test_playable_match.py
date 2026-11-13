@@ -204,7 +204,7 @@ def run_scenario_insider_win(server_bin, client_bin, temp_dir):
     log("==================================================================")
     port = find_free_port()
     key_file, cert_file, fingerprint = generate_cert(temp_dir, "127.0.0.1")
-    mod_token = "mod-token-scenario-1"
+    mod_token = "mod-token-scenario-1-0123456789abcdef"
 
     server_env = os.environ.copy()
     server_env["DARKPOOL_MODERATOR_TOKEN"] = mod_token
@@ -320,7 +320,7 @@ def run_scenario_elimination_and_employees_win(server_bin, client_bin, temp_dir)
     log("==================================================================")
     port = find_free_port()
     key_file, cert_file, fingerprint = generate_cert(temp_dir, "127.0.0.1")
-    mod_token = "mod-token-scenario-2"
+    mod_token = "mod-token-scenario-2-0123456789abcdef"
 
     server_env = os.environ.copy()
     server_env["DARKPOOL_MODERATOR_TOKEN"] = mod_token
@@ -345,7 +345,7 @@ def run_scenario_elimination_and_employees_win(server_bin, client_bin, temp_dir)
         mod_env["DARKPOOL_MODERATOR_TOKEN"] = mod_token
         mod = ClientProcess("Mod", client_bin, ["--tls", "--server-fingerprint", fingerprint, "127.0.0.1", str(port), "moderator"], env=mod_env)
         mod.wait_for_pattern(r"\[CONNECTED\] Session established as moderator")
-        mod_token_s2 = "scenario2-token-77"
+        mod_token_s2 = "scenario2-token-77-0123456789abcdef"
         mod.send_line(f"create 5 {mod_token_s2}")
         mod.wait_for_pattern(r"\[MATCH CREATED\] Match #1 created successfully")
 
@@ -591,7 +591,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
     log("==================================================================")
     port = find_free_port()
     key_file, cert_file, fingerprint = generate_cert(temp_dir, "127.0.0.1")
-    mod_token = "secure-mod-token-xyz"
+    mod_token = "secure-mod-token-xyz-0123456789abcdef"
 
     server_env = os.environ.copy()
     server_env["DARKPOOL_MODERATOR_TOKEN"] = mod_token
@@ -737,7 +737,7 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
         log("Case 9: Testing player admission controls on protected match...")
         c_mod = ClientProcess("Mod_Auth", client_bin, ["--tls", "--server-fingerprint", fingerprint, "127.0.0.1", str(port), "moderator"], env=server_env)
         c_mod.wait_for_pattern(r"\[CONNECTED\] Session established as moderator")
-        c_mod.send_line("create 5 secret-match-token-42")
+        c_mod.send_line("create 5 secret-match-token-42-0123456789abcdef")
         c_mod.wait_for_pattern(r"\[MATCH CREATED\] Match #1 created successfully")
 
         # Player connects without token and attempts to join -> rejected
@@ -752,19 +752,19 @@ def run_scenario_security_negative_tests(server_bin, client_bin, temp_dir):
 
         # Case 10: Impersonation and Seat Spoofing Prevention
         log("Case 10: Testing seat spoofing and impersonation prevention...")
-        c_unauth.send_line('{"type":"join_match","match_id":1,"join_token":"secret-match-token-42","seat":3}')
+        c_unauth.send_line('{"type":"join_match","match_id":1,"join_token":"secret-match-token-42-0123456789abcdef","seat":3}')
         c_unauth.wait_for_pattern(r"(\[ERROR\] client identity fields are not accepted|client identity fields are not accepted)")
 
-        c_unauth.send_line('{"type":"join_match","match_id":1,"join_token":"secret-match-token-42","role":"Insider"}')
+        c_unauth.send_line('{"type":"join_match","match_id":1,"join_token":"secret-match-token-42-0123456789abcdef","role":"Insider"}')
         c_unauth.wait_for_pattern(r"(\[ERROR\] client identity fields are not accepted|client identity fields are not accepted)")
 
         # Authorized player joins with valid token
-        c_unauth.send_line("join 1 secret-match-token-42")
+        c_unauth.send_line("join 1 secret-match-token-42-0123456789abcdef")
         c_unauth.wait_for_pattern(r"\[MATCH JOINED\] Match #1")
         c_unauth.wait_for_pattern(r"Player ID\s*:\s*1")
 
         # Session cannot join again
-        c_unauth.send_line("join 1 secret-match-token-42")
+        c_unauth.send_line("join 1 secret-match-token-42-0123456789abcdef")
         c_unauth.wait_for_pattern(r"(\[ERROR\] connection already belongs to a match|connection already belongs to a match)")
 
         # Player cannot impersonate another player_id in action

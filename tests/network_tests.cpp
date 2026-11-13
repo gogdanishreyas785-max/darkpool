@@ -1,4 +1,6 @@
 #include "darkpool/network.hpp"
+#include "darkpool/credential_policy.hpp"
+#include "darkpool/secure_random.hpp"
 
 #if defined(__linux__)
 #include "darkpool/server_runtime.hpp"
@@ -6,6 +8,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iostream>
@@ -22,6 +25,51 @@ void check(bool condition, const char* expression, int line) {
   if (!condition) { ++failures; std::cerr << "FAIL line " << line << ": " << expression << '\n'; }
 }
 #define CHECK(value) check(static_cast<bool>(value), #value, __LINE__)
+
+void test_credential_security_helpers() {
+  using darkpool::security::detail::make_hex_token_128_with;
+#if defined(__linux__)
+  // A zero-refill bucket models the shared pre-authentication budget: it
+  // remains exhausted across connections because the runtime owns one bucket.
+  darkpool::network::TokenBucketRateLimiter auth_budget(0.0, 2.0);
+  CHECK(auth_budget.try_acquire());
+  CHECK(auth_budget.try_acquire());
+  CHECK(!auth_budget.try_acquire());
+#endif
+
+  CHECK(darkpool::security::has_valid_credential_length(std::string(32U, 'x')));
+  CHECK(darkpool::security::has_valid_credential_length(std::string(256U, 'x')));
+  CHECK(!darkpool::security::has_valid_credential_length(std::string(31U, 'x')));
+  CHECK(!darkpool::security::has_valid_credential_length(std::string(257U, 'x')));
+
+  // Entropy failure and provider exceptions must not produce a zero-filled token.
+  const auto unavailable = make_hex_token_128_with(
+      [](std::span<std::uint8_t>) noexcept { return false; });
+  CHECK(!unavailable);
+  const auto throwing = make_hex_token_128_with(
+      [](std::span<std::uint8_t>) -> bool { throw std::runtime_error("entropy unavailable"); });
+  CHECK(!throwing);
+
+  const auto deterministic = make_hex_token_128_with(
+      [](std::span<std::uint8_t> bytes) noexcept {
+        std::fill(bytes.begin(), bytes.end(), static_cast<std::uint8_t>(0xA5));
+        return true;
+      });
+  CHECK(deterministic.has_value());
+  CHECK(deterministic.value_or("") == "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5");
+
+  const auto generated = darkpool::security::generate_token_128();
+  CHECK(generated.has_value());
+  CHECK(generated && generated->size() == 32U);
+  CHECK(generated && std::all_of(generated->begin(), generated->end(), [](char ch) {
+    return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
+  }));
+
+  CHECK(constant_time_equals("same-length-secret", "same-length-secret"));
+  CHECK(!constant_time_equals("same-length-secret", "same-length-secreu"));
+  CHECK(!constant_time_equals("short", "short-but-longer"));
+  CHECK(!constant_time_equals("shorter-secret", "short"));
+}
 
 void test_frame_golden_and_round_trip() {
   const Frame frame(json{{"x", 1}});
@@ -346,6 +394,7 @@ void test_server_runtime_step_shutdown_batch_truncation() {
 }  // namespace
 
 int main() {
+  test_credential_security_helpers();
   test_frame_golden_and_round_trip();
   test_fragmented_and_coalesced_stream();
   test_persistent_frame_stream_queue();

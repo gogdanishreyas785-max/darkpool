@@ -1,5 +1,6 @@
 #include "darkpool/socket_primitives.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 
@@ -19,15 +20,16 @@
 namespace darkpool::network {
 
 bool constant_time_equals(std::string_view a, std::string_view b) noexcept {
-  if (a.size() != b.size()) {
-    return false;
+  // Fold the length mismatch into the accumulator and always traverse the
+  // longer input. A length mismatch must not trigger an early return.
+  const std::size_t max_size = std::max(a.size(), b.size());
+  std::size_t diff = a.size() ^ b.size();
+  for (std::size_t i = 0; i < max_size; ++i) {
+    const auto a_byte = i < a.size() ? static_cast<unsigned char>(a[i]) : 0U;
+    const auto b_byte = i < b.size() ? static_cast<unsigned char>(b[i]) : 0U;
+    diff |= static_cast<std::size_t>(a_byte ^ b_byte);
   }
-  unsigned char diff = 0;
-  for (std::size_t i = 0; i < a.size(); ++i) {
-    diff |= static_cast<unsigned char>(static_cast<unsigned char>(a[i]) ^
-                                       static_cast<unsigned char>(b[i]));
-  }
-  return diff == 0;
+  return diff == 0U;
 }
 
 bool parse_port(const char* text, std::uint16_t& port) {

@@ -15,6 +15,7 @@
 #include <mqueue.h>
 #include <netinet/in.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <string>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -280,6 +281,22 @@ static void test_process_manager_end_to_end(const std::string& worker_bin) {
   require(mgr.is_alive(), "worker is_alive");
   std::cout << "Worker launched with PID: " << mgr.worker_pid() << std::endl;
 
+  // Verify the exec handoff applied no_new_privs in the actual worker process.
+  {
+    std::ifstream status_file("/proc/" + std::to_string(mgr.worker_pid()) + "/status");
+    require(status_file.good(), "open worker proc status");
+    std::string status_line;
+    bool no_new_privs_enabled = false;
+    while (std::getline(status_file, status_line)) {
+      if (status_line.rfind("NoNewPrivs:", 0U) == 0U &&
+          status_line.find('1') != std::string::npos) {
+        no_new_privs_enabled = true;
+        break;
+      }
+    }
+    require(no_new_privs_enabled, "worker no_new_privs is enabled");
+  }
+
   WorkerRequestMessage req{};
   req.opcode = static_cast<int32_t>(WorkerOpcode::Ping);
   req.request_id = 100;
@@ -307,6 +324,91 @@ static void test_process_manager_end_to_end(const std::string& worker_bin) {
   cleanup_shm(req_shm);
   cleanup_shm(resp_shm);
   std::cout << "[TEST] ProcessManager end-to-end passed." << std::endl;
+}
+
+static void test_worker_exits_when_parent_dies(const std::string& worker_bin) {
+  std::cout << "[TEST] Worker exits when its managing parent dies" << std::endl;
+  int pid_pipe[2]{-1, -1};
+  require(::pipe2(pid_pipe, O_CLOEXEC) == 0, "create parent-death test pipe");
+
+  const auto launcher_pid = ::fork();
+  require(launcher_pid >= 0, "fork parent-death launcher");
+  if (launcher_pid == 0) {
+    (void)::close(pid_pipe[0]);
+    const auto suffix = std::to_string(::getpid());
+    const std::string req_shm = "/dp_test_parentdeath_req_" + suffix;
+    const std::string resp_shm = "/dp_test_parentdeath_resp_" + suffix;
+
+    // Mirror ServerRuntime's signalfd setup: the manager's parent blocks
+    // SIGINT/SIGTERM, so the worker must explicitly unblock them before exec.
+    sigset_t server_signal_mask;
+    require(::sigemptyset(&server_signal_mask) == 0, "init launcher signal mask");
+    require(::sigaddset(&server_signal_mask, SIGINT) == 0, "add launcher SIGINT mask");
+    require(::sigaddset(&server_signal_mask, SIGTERM) == 0, "add launcher SIGTERM mask");
+    require(::sigprocmask(SIG_BLOCK, &server_signal_mask, nullptr) == 0,
+            "block launcher shutdown signals");
+
+    WorkerProcessConfig cfg;
+    cfg.worker_binary_path = worker_bin;
+    cfg.request_shm_name = req_shm;
+    cfg.response_shm_name = resp_shm;
+    cfg.queue_capacity = 16;
+
+    std::string err;
+    auto manager = WorkerProcessManager::launch(cfg, err);
+    if (!manager) _exit(20);
+    const pid_t worker_pid = manager->worker_pid();
+    const auto written = ::write(pid_pipe[1], &worker_pid, sizeof(worker_pid));
+    (void)::close(pid_pipe[1]);
+    if (written != static_cast<ssize_t>(sizeof(worker_pid))) _exit(21);
+
+    // The test parent kills this process without running C++ destructors.
+    for (;;) (void)::pause();
+  }
+
+  (void)::close(pid_pipe[1]);
+  pid_t worker_pid = -1;
+  const auto received = ::read(pid_pipe[0], &worker_pid, sizeof(worker_pid));
+  (void)::close(pid_pipe[0]);
+  require(received == static_cast<ssize_t>(sizeof(worker_pid)) && worker_pid > 0,
+          "receive worker PID from launcher");
+  require(::kill(launcher_pid, SIGKILL) == 0, "kill managing parent");
+  int launcher_status = 0;
+  require(::waitpid(launcher_pid, &launcher_status, 0) == launcher_pid,
+          "reap killed managing parent");
+
+  bool worker_stopped = false;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{4};
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::ifstream status_file("/proc/" + std::to_string(worker_pid) + "/status");
+    if (!status_file) {
+      worker_stopped = true;
+      break;
+    }
+    std::string line;
+    while (std::getline(status_file, line)) {
+      if (line.rfind("State:", 0U) == 0U &&
+          (line.find('Z') != std::string::npos || line.find('X') != std::string::npos)) {
+        worker_stopped = true;
+        break;
+      }
+    }
+    if (worker_stopped) break;
+    if (::kill(worker_pid, 0) != 0 && errno == ESRCH) {
+      worker_stopped = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+  }
+
+  if (!worker_stopped) {
+    (void)::kill(worker_pid, SIGKILL);
+  }
+  const auto suffix = std::to_string(launcher_pid);
+  cleanup_shm("/dp_test_parentdeath_req_" + suffix);
+  cleanup_shm("/dp_test_parentdeath_resp_" + suffix);
+  require(worker_stopped, "worker stopped after parent death");
+  std::cout << "[TEST] Parent-death worker cleanup passed." << std::endl;
 }
 
 // -------------------------------------------------------------
@@ -711,6 +813,15 @@ static void test_server_worker_startup_failure(const std::string& server_bin) {
 } // namespace darkpool::ipc::test
 
 int main(int argc, char* argv[]) {
+  // Seed credential-bearing variables in the test runner's environment. The
+  // WorkerProcessManager must not pass them through execve() to darkpool_worker.
+  (void)::setenv("DARKPOOL_MODERATOR_TOKEN",
+                 "0123456789abcdef0123456789abcdef", 1);
+  (void)::setenv("DARKPOOL_ENROLLMENT_TOKEN",
+                 "fedcba9876543210fedcba9876543210", 1);
+  (void)::setenv("DARKPOOL_PLAYER_RESUME_TOKEN",
+                 "resume-token-test-sentinel", 1);
+
   if (argc < 2) {
     std::cerr << "Usage: darkpool_worker_integration_tests <darkpool_worker_path> [server_path]" << std::endl;
     return 1;
@@ -722,6 +833,7 @@ int main(int argc, char* argv[]) {
     darkpool::ipc::test::test_worker_channel_direct();
     darkpool::ipc::test::test_queue_bounds_and_backpressure();
     darkpool::ipc::test::test_process_manager_end_to_end(worker_bin);
+    darkpool::ipc::test::test_worker_exits_when_parent_dies(worker_bin);
     darkpool::ipc::test::test_server_worker_eval_model_e2e(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_input_validation(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_crash_and_recovery_e2e(server_bin, worker_bin);

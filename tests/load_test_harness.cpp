@@ -375,7 +375,7 @@ RunResult execute_16_player_match(
   result.run_index = run_index;
   result.player_count = player_count;
 
-  const std::string mod_token = "load-test-mod-token-" + std::to_string(run_index);
+  const std::string mod_token = "load-test-mod-token-" + std::to_string(run_index) + "-0123456789abcdef";
   const std::uint16_t port = reserve_ephemeral_port();
   if (port == 0) {
     std::cerr << "Run " << run_index << ": Failed to reserve ephemeral port\n";

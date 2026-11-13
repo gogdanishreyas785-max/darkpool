@@ -128,7 +128,7 @@ bool TelemetryPublisher::start(const TelemetryInput& initial_input, std::string&
   }
 
   // 1. Exclusively create the shared memory object with 0600 permissions
-  shm_fd_ = ::shm_open(shm_name_.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+  shm_fd_ = ::shm_open(shm_name_.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (shm_fd_ < 0) {
     const int err = errno;
     if (err == EEXIST) {
@@ -472,7 +472,7 @@ bool TelemetryObserver::open(std::string_view shm_name, std::string_view sem_nam
   }
 
   // Open existing shared memory with O_RDWR (required by POSIX for process-shared robust mutex operations)
-  shm_fd_ = ::shm_open(shm_str.c_str(), O_RDWR, 0);
+  shm_fd_ = ::shm_open(shm_str.c_str(), O_RDWR | O_CLOEXEC, 0);
   if (shm_fd_ < 0) {
     const int err = errno;
     if (err == ENOENT) {

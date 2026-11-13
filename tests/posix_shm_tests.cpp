@@ -798,7 +798,7 @@ void test_server_and_watch_integration(const char* server_bin, const char* watch
   const auto sem_name = "/darkpool_test_srv_sem_" + token;
   const auto queue_name = darkpool::control::ControlServer::default_queue_name() + "_srv_" + token;
   const auto socket_path = "/tmp/darkpool_shm_srv_" + token + ".sock";
-  const std::string mod_token = "mod_test_token_" + token;
+  const std::string mod_token = "mod_test_token_" + token + "_0123456789abcdef";
 
   ::setenv("DARKPOOL_MODERATOR_TOKEN", mod_token.c_str(), 1);
 
@@ -1131,7 +1131,7 @@ void test_load_harness_cleanup_after_forced_server_exit(const std::string& serve
   using darkpool::load_test::telemetry_shm_for_test_server;
 
   const auto socket_path = generate_unique_socket_path();
-  const auto server_pid = spawn_server_unix(server_bin, socket_path, "test-telemetry-cleanup-token");
+  const auto server_pid = spawn_server_unix(server_bin, socket_path, "test-telemetry-cleanup-token-0123456789abcdef");
   CHECK(server_pid > 0);
   if (server_pid <= 0) {
     return;

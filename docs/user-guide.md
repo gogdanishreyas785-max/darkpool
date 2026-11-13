@@ -352,6 +352,18 @@ Three different things should not be confused:
 
 The player CLI accepts the match token directly as **join <match_id> <token>**. It also recognizes DARKPOOL_PLAYER_TOKEN and DARKPOOL_JOIN_TOKEN in the client process environment. The moderator-side create command recognizes DARKPOOL_MATCH_JOIN_TOKEN and DARKPOOL_PLAYER_TOKEN for a custom token, but normally generates a secure random token automatically.
 
+**Credential strength requirements:** moderator, custom match-join, and enrollment secrets must be 32–256 bytes. This is a minimum length check, not an entropy estimator; use a cryptographically secure random generator rather than a memorable phrase. For example:
+
+~~~bash
+# 128-bit custom match token (32 hexadecimal characters)
+openssl rand -hex 16
+
+# Moderator or enrollment secret (256-bit, 64 hexadecimal characters)
+openssl rand -hex 32
+~~~
+
+The server generates default match-join and player seat-resume tokens from the Linux OS CSPRNG (`getrandom`). If the OS entropy source fails, the protected match/join/reconnect operation fails closed rather than issuing a predictable token. Resume tokens are fixed 128-bit values; the client rejects malformed lengths. Do not pass secrets through command-line arguments, shell history, source control, or logs; prefer protected environment files or the launcher-managed owner-only token store.
+
 The local launcher enables token storage so players can use **join** or **join <match_id>** without manual token entry. For TLS LAN play, the server launcher stores tokens under `~/.darkpool/tokens`; the player launcher synchronizes them over SSH/SCP using the server SSH account recorded during setup. Create the protected match before launching the players, or restart a player launcher after creating the match. If synchronization fails, securely share the match ID and token through a private trusted channel. Never share the moderator credential with players.
 
 An optional in-band enrollment command is also available when the server and client are configured with the same pre-shared `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`. The standard setup scripts do not configure this shared enrollment secret automatically. Use an open lobby only if you intentionally want to disable match-token admission.

@@ -339,6 +339,9 @@ bool ServerRuntime::handle_client_read(int fd, Connection& conn) {
               std::span<const char>(buffer, bytes_read));
           for (const auto& frame : frames) {
             if (!conn.is_authenticated) {
+              if (config_.enable_rate_limiting && !unauthenticated_rate_limiter_.try_acquire()) {
+                return false;
+              }
               if (message_handler_ && !message_handler_(conn.session_id, frame)) {
                 return false;
               }
@@ -398,6 +401,9 @@ bool ServerRuntime::handle_client_read(int fd, Connection& conn) {
           std::span<const char>(buffer, static_cast<std::size_t>(count)));
       for (const auto& frame : frames) {
         if (!conn.is_authenticated) {
+          if (config_.enable_rate_limiting && !unauthenticated_rate_limiter_.try_acquire()) {
+            return false;
+          }
           if (message_handler_ && !message_handler_(conn.session_id, frame)) {
             return false;
           }

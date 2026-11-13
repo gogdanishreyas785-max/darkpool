@@ -1,4 +1,6 @@
 #include "darkpool/match_coordinator.hpp"
+#include "darkpool/credential_policy.hpp"
+#include "darkpool/secure_random.hpp"
 #include "darkpool/token_store.hpp"
 
 #include <algorithm>
@@ -41,42 +43,6 @@ std::optional<std::uint64_t> role_shuffle_seed() noexcept {
     return std::nullopt;
   }
 #endif
-}
-
-std::string generate_secure_join_token() noexcept {
-  unsigned char bytes[16] = {0};
-#if defined(__linux__)
-  std::size_t offset = 0;
-  while (offset < sizeof(bytes)) {
-    const auto received = getrandom(bytes + offset, sizeof(bytes) - offset, 0);
-    if (received < 0 && errno == EINTR) continue;
-    if (received <= 0) break;
-    offset += static_cast<std::size_t>(received);
-  }
-  if (offset < sizeof(bytes)) {
-    try {
-      std::random_device rd;
-      for (std::size_t i = offset; i < sizeof(bytes); ++i) {
-        bytes[i] = static_cast<unsigned char>(rd() & 0xFF);
-      }
-    } catch (...) {}
-  }
-#else
-  try {
-    std::random_device rd;
-    for (std::size_t i = 0; i < sizeof(bytes); ++i) {
-      bytes[i] = static_cast<unsigned char>(rd() & 0xFF);
-    }
-  } catch (...) {}
-#endif
-  static constexpr char kHexDigits[] = "0123456789abcdef";
-  std::string token;
-  token.reserve(sizeof(bytes) * 2);
-  for (unsigned char b : bytes) {
-    token.push_back(kHexDigits[(b >> 4) & 0x0F]);
-    token.push_back(kHexDigits[b & 0x0F]);
-  }
-  return token;
 }
 
 bool secure_compare(std::string_view a, std::string_view b) noexcept {
@@ -728,17 +694,30 @@ std::optional<network::json> MatchCoordinator::handle(
 
       std::optional<std::string> join_token;
       if (!is_open_lobby) {
-        if (command.contains("join_token") && command["join_token"].is_string()) {
-          const auto tok = command["join_token"].get<std::string>();
-          if (!tok.empty()) join_token = tok;
+        std::optional<std::string> supplied_token;
+        if (command.contains("join_token")) {
+          if (!command["join_token"].is_string()) {
+            return error("custom join_token must be a string of 32 to 256 bytes");
+          }
+          const auto token_value = command["join_token"].get<std::string>();
+          if (!token_value.empty()) supplied_token = token_value;
         } else if (const char* env_token = std::getenv("DARKPOOL_MATCH_JOIN_TOKEN")) {
-          if (std::strlen(env_token) > 0) join_token = std::string(env_token);
+          if (std::strlen(env_token) > 0) supplied_token = std::string(env_token);
         } else if (const char* env_p_token = std::getenv("DARKPOOL_PLAYER_TOKEN")) {
-          if (std::strlen(env_p_token) > 0) join_token = std::string(env_p_token);
+          if (std::strlen(env_p_token) > 0) supplied_token = std::string(env_p_token);
         }
-        if (!join_token) {
-          // Production default: auto-generate unpredictable 128-bit hex token
-          join_token = generate_secure_join_token();
+
+        if (supplied_token) {
+          if (!security::has_valid_credential_length(*supplied_token)) {
+            return error("custom join_token must be 32 to 256 bytes; use a securely generated token");
+          }
+          join_token = std::move(*supplied_token);
+        } else {
+          // Default admission credential: 128 bits from the OS CSPRNG.
+          join_token = security::generate_token_128();
+          if (!join_token) {
+            return error("secure credential generation failed; protected match was not created");
+          }
         }
       }
 
@@ -802,7 +781,7 @@ std::optional<network::json> MatchCoordinator::handle(
 
     if (command.contains("resume_token")) {
       if (!command["resume_token"].is_string() ||
-          command["resume_token"].get_ref<const std::string&>().empty()) {
+          command["resume_token"].get_ref<const std::string&>().size() != 32U) {
         return error("invalid or expired player resume token");
       }
       const auto& provided_resume_token = command["resume_token"].get_ref<const std::string&>();
@@ -817,11 +796,14 @@ std::optional<network::json> MatchCoordinator::handle(
           match->second.player_disconnected_at[seat].reset();
           return error("player resume token has expired");
         }
-        const auto rotated_resume_token = generate_secure_join_token();
+        const auto rotated_resume_token = security::generate_token_128();
+        if (!rotated_resume_token) {
+          return error("secure credential generation failed; reconnect was not completed");
+        }
         const auto player_id = static_cast<PlayerId>(seat + 1U);
         match->second.player_sessions[seat] = session;
         match->second.player_disconnected_at[seat].reset();
-        match->second.player_resume_tokens[seat] = rotated_resume_token;
+        match->second.player_resume_tokens[seat] = *rotated_resume_token;
         connection->second.player_match = match_id;
         connection->second.player_id = player_id;
         const auto role = match->second.match->state().players[seat].role;
@@ -832,7 +814,7 @@ std::optional<network::json> MatchCoordinator::handle(
         return network::json{{"type", "joined_match"}, {"match_id", match_id},
             {"player_id", player_id}, {"seat", seat + 1U},
             {"private_role", Match::to_string(role)},
-            {"resume_token", rotated_resume_token}, {"reconnected", true}};
+            {"resume_token", *rotated_resume_token}, {"reconnected", true}};
       }
       return error("invalid or expired player resume token");
     }
@@ -849,7 +831,8 @@ std::optional<network::json> MatchCoordinator::handle(
       } else if (const char* env_j_token = std::getenv("DARKPOOL_JOIN_TOKEN")) {
         provided_token = std::string(env_j_token);
       }
-      if (provided_token.empty() || !secure_compare(provided_token, *match->second.join_token)) {
+      if (!security::has_valid_credential_length(provided_token) ||
+          !secure_compare(provided_token, *match->second.join_token)) {
         return error("invalid or missing match join token");
       }
     }
@@ -863,10 +846,13 @@ std::optional<network::json> MatchCoordinator::handle(
         match->second.player_resume_tokens[seat].reset();
         match->second.player_disconnected_at[seat].reset();
       }
-      const auto resume_token = generate_secure_join_token();
+      const auto resume_token = security::generate_token_128();
+      if (!resume_token) {
+        return error("secure credential generation failed; player seat was not assigned");
+      }
       const auto player_id = static_cast<PlayerId>(seat + 1U);
       match->second.player_sessions[seat] = session;
-      match->second.player_resume_tokens[seat] = resume_token;
+      match->second.player_resume_tokens[seat] = *resume_token;
       match->second.player_disconnected_at[seat].reset();
       connection->second.player_match = match_id;
       connection->second.player_id = player_id;
@@ -878,7 +864,7 @@ std::optional<network::json> MatchCoordinator::handle(
       return network::json{{"type", "joined_match"}, {"match_id", match_id},
           {"player_id", player_id}, {"seat", seat + 1U},
           {"private_role", Match::to_string(role)},
-          {"resume_token", resume_token}, {"reconnected", false}};
+          {"resume_token", *resume_token}, {"reconnected", false}};
     }
     return error("match is full");
   }
@@ -901,11 +887,15 @@ std::optional<network::json> MatchCoordinator::handle(
     if (!server_enroll_token || server_enroll_token[0] == '\0') {
       return error("enrollment authorization not configured on server");
     }
+    if (!security::has_valid_credential_length(server_enroll_token)) {
+      return error("server enrollment secret must be 32 to 256 bytes");
+    }
     if (!command.contains("enrollment_token") || !command["enrollment_token"].is_string()) {
       return error("enrollment_token is required");
     }
     const auto client_enroll = command["enrollment_token"].get<std::string>();
-    if (!secure_compare(client_enroll, server_enroll_token)) {
+    if (!security::has_valid_credential_length(client_enroll) ||
+        !secure_compare(client_enroll, server_enroll_token)) {
       return error("invalid enrollment authorization");
     }
     return network::json{{"type", "match_token_result"}, {"ok", true},

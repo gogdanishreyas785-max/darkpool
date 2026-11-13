@@ -211,7 +211,7 @@ void test_server_capacity_and_echo(const char* server_path) {
   CHECK(port != 0U);
   if (port == 0U) return;
 
-  const auto child = start_server(server_path, port, "integration-test-mod-token");
+  const auto child = start_server(server_path, port, "integration-test-mod-token-0123456789abcdef");
   CHECK(child >= 0);
   if (child < 0) return;
 
@@ -247,7 +247,7 @@ void test_server_capacity_and_echo(const char* server_path) {
   moderator = connect_to(port);
   CHECK(moderator >= 0);
   if (moderator >= 0) {
-    const auto reply = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token"}});
+    const auto reply = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token-0123456789abcdef"}});
     CHECK(reply && (*reply)["type"] == "connect" && (*reply)["role"] == "moderator" && !reply->contains("token"));
   }
 
@@ -265,7 +265,7 @@ void test_server_capacity_and_echo(const char* server_path) {
     const int mod_fd = connect_to(port);
     CHECK(mod_fd >= 0);
     if (mod_fd >= 0) {
-      const auto reply = request_json(mod_fd, json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token"}});
+      const auto reply = request_json(mod_fd, json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token-0123456789abcdef"}});
       CHECK(reply && (*reply)["type"] == "connect" && (*reply)["role"] == "moderator");
       extra_moderators.push_back(mod_fd);
     }
@@ -273,7 +273,7 @@ void test_server_capacity_and_echo(const char* server_path) {
   duplicate_moderator = connect_to(port);
   CHECK(duplicate_moderator >= 0);
   if (duplicate_moderator >= 0) {
-    const auto hello = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token"}}).serialize();
+    const auto hello = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "integration-test-mod-token-0123456789abcdef"}}).serialize();
     CHECK(send_all(duplicate_moderator, hello.data(), hello.size(), false));
     CHECK(rejected_by_server(duplicate_moderator));
   }
@@ -299,7 +299,7 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
   const auto port = reserve_port();
   CHECK(port != 0U);
   if (port == 0U) return;
-  const auto child = start_server(server_path, port, "gameplay-test-token");
+  const auto child = start_server(server_path, port, "gameplay-test-token-0123456789abcdef");
   CHECK(child >= 0);
   if (child < 0) return;
 
@@ -317,7 +317,7 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
   connected.push_back(moderator);
   timeval timeout{2, 0};
   (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  const auto moderator_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "gameplay-test-token"}});
+  const auto moderator_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "gameplay-test-token-0123456789abcdef"}});
   CHECK(moderator_hello && (*moderator_hello)["type"] == "connect");
   CHECK(moderator_hello && (*moderator_hello)["role"] == "moderator");
   CHECK(moderator_hello && !moderator_hello->contains("token"));
@@ -437,6 +437,20 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
 }
 
 void test_moderator_authentication(const char* server_path) {
+  // A configured but weak moderator credential must fail server startup.
+  {
+    const auto port = reserve_port();
+    CHECK(port != 0U);
+    const auto server_pid = start_server(server_path, port, "weak-secret");
+    CHECK(server_pid > 0);
+    if (server_pid > 0) {
+      int status = 0;
+      CHECK(::waitpid(server_pid, &status, 0) == server_pid);
+      CHECK(WIFEXITED(status));
+      CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Scenario 1: Server configured WITHOUT DARKPOOL_MODERATOR_TOKEN (fail closed)
   // -------------------------------------------------------------------------
@@ -531,7 +545,7 @@ void test_moderator_authentication(const char* server_path) {
   // Scenario 3: Server configured WITH valid DARKPOOL_MODERATOR_TOKEN
   // -------------------------------------------------------------------------
   {
-    const char* expected_token = "correct-moderator-secret-789";
+    const char* expected_token = "correct-moderator-secret-789-0123456789";
     const auto port = reserve_port();
     CHECK(port != 0U);
     const auto server_pid = start_server(server_path, port, expected_token);
@@ -591,7 +605,7 @@ void test_moderator_authentication(const char* server_path) {
       const int fd3 = connect_to(port);
       CHECK(fd3 >= 0);
       if (fd3 >= 0) {
-        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", json::array({"correct-moderator-secret-789"})}}).serialize();
+        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", json::array({"correct-moderator-secret-789-0123456789"})}}).serialize();
         CHECK(send_all(fd3, payload.data(), payload.size(), false));
         CHECK(rejected_by_server(fd3));
       }
@@ -600,7 +614,7 @@ void test_moderator_authentication(const char* server_path) {
       const int fd4 = connect_to(port);
       CHECK(fd4 >= 0);
       if (fd4 >= 0) {
-        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", json{{"secret", "correct-moderator-secret-789"}}}}).serialize();
+        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", json{{"secret", "correct-moderator-secret-789-0123456789"}}}}).serialize();
         CHECK(send_all(fd4, payload.data(), payload.size(), false));
         CHECK(rejected_by_server(fd4));
       }
@@ -621,7 +635,7 @@ void test_moderator_authentication(const char* server_path) {
       const int fd2 = connect_to(port);
       CHECK(fd2 >= 0);
       if (fd2 >= 0) {
-        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "correct-moderator-secret-788"}}).serialize();
+        const auto payload = Frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "correct-moderator-secret-788-0123456789"}}).serialize();
         CHECK(send_all(fd2, payload.data(), payload.size(), false));
         CHECK(rejected_by_server(fd2));
       }
@@ -751,7 +765,7 @@ void test_idle_unassigned_timeout(const char* server_path) {
   if (port == 0U) return;
 
   TimeoutTestGuard guard;
-  guard.child = start_server(server_path, port, "integration-test-mod-token");
+  guard.child = start_server(server_path, port, "integration-test-mod-token-0123456789abcdef");
   CHECK(guard.child >= 0);
   if (guard.child < 0) return;
 
@@ -860,7 +874,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
   CHECK(port != 0U);
   if (port == 0U) return;
 
-  const auto child = start_server(server_path, port, "integration-test-mod-token");
+  const auto child = start_server(server_path, port, "integration-test-mod-token-0123456789abcdef");
   CHECK(child > 0);
   if (child <= 0) return;
 
@@ -904,7 +918,7 @@ void test_malformed_tcp_isolation(const char* server_path) {
   set_receive_timeout(moderator, 2000);
   const auto moderator_reply = request_json(
       moderator, json{{"type", "connect"}, {"role", "moderator"},
-                      {"token", "integration-test-mod-token"}});
+                      {"token", "integration-test-mod-token-0123456789abcdef"}});
   CHECK(moderator_reply && (*moderator_reply)["type"] == "connect" &&
         (*moderator_reply)["role"] == "moderator" && !moderator_reply->contains("token"));
 
@@ -1162,7 +1176,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
       CHECK(::lstat(stale_path.c_str(), &st) == 0);
       CHECK(S_ISSOCK(st.st_mode));
 
-      const auto child = start_unix_server(server_path, stale_path, "mod-token");
+      const auto child = start_unix_server(server_path, stale_path, "mod-token-0123456789abcdef0123456789");
       CHECK(child >= 0);
       if (child >= 0) {
         const int client = connect_unix_with_retry(stale_path);
@@ -1199,7 +1213,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
       // Set permissions to 0000 so connect() yields EACCES
       CHECK(chmod(perm_path.c_str(), 0000) == 0);
 
-      const auto child = start_unix_server(server_path, perm_path, "mod-token");
+      const auto child = start_unix_server(server_path, perm_path, "mod-token-0123456789abcdef0123456789");
       CHECK(child >= 0);
       if (child >= 0) {
         int status = 0;
@@ -1222,13 +1236,13 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string active_path = "/tmp/darkpool_test_active_" + pid_str + ".sock";
     (void)::unlink(active_path.c_str());
 
-    const auto child1 = start_unix_server(server_path, active_path, "token1");
+    const auto child1 = start_unix_server(server_path, active_path, "token1-0123456789abcdef0123456789");
     CHECK(child1 >= 0);
     if (child1 >= 0) {
       const int client = connect_unix_with_retry(active_path);
       CHECK(client >= 0);
 
-      const auto child2 = start_unix_server(server_path, active_path, "token2");
+      const auto child2 = start_unix_server(server_path, active_path, "token2-0123456789abcdef0123456789");
       CHECK(child2 >= 0);
       if (child2 >= 0) {
         int status = 0;
@@ -1255,7 +1269,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string game_path = "/tmp/darkpool_test_game_" + pid_str + ".sock";
     (void)::unlink(game_path.c_str());
 
-    const auto child = start_unix_server(server_path, game_path, "mod-token-game");
+    const auto child = start_unix_server(server_path, game_path, "mod-token-game-0123456789abcdef0123");
     CHECK(child >= 0);
     if (child >= 0) {
       const int mod_fd = connect_unix_with_retry(game_path);
@@ -1268,7 +1282,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
 
         const auto mod_resp = request_json(
             mod_fd,
-            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-game"}});
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-game-0123456789abcdef0123"}});
         CHECK(mod_resp && (*mod_resp)["type"] == "connect" && (*mod_resp)["role"] == "moderator");
 
         std::vector<int> players;
@@ -1378,7 +1392,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string malformed_path = "/tmp/darkpool_test_malformed_" + pid_str + ".sock";
     (void)::unlink(malformed_path.c_str());
 
-    const auto child = start_unix_server(server_path, malformed_path, "mod-token");
+    const auto child = start_unix_server(server_path, malformed_path, "mod-token-0123456789abcdef0123456789");
     CHECK(child >= 0);
     if (child >= 0) {
       const int client_a = connect_unix_with_retry(malformed_path);
@@ -1423,7 +1437,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string notif_path = "/tmp/darkpool_test_notif_" + pid_str + ".sock";
     (void)::unlink(notif_path.c_str());
 
-    const auto child = start_unix_server(server_path, notif_path, "mod-token-unix-notif");
+    const auto child = start_unix_server(server_path, notif_path, "mod-token-unix-notif-0123456789abcdef");
     CHECK(child >= 0);
     if (child >= 0) {
       const int mod_fd = connect_unix_with_retry(notif_path);
@@ -1432,7 +1446,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
         set_receive_timeout(mod_fd, 3000);
         const auto mod_resp = request_json(
             mod_fd,
-            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-unix-notif"}});
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-unix-notif-0123456789abcdef"}});
         CHECK(mod_resp && (*mod_resp)["type"] == "connect");
 
         const auto create_resp = request_json(
@@ -1746,7 +1760,7 @@ void test_min_player_and_boundary_rejection(const char* server_path) {
   const auto port = reserve_port();
   CHECK(port != 0U);
   if (port == 0U) return;
-  const auto child = start_server(server_path, port, "min-player-test-token");
+  const auto child = start_server(server_path, port, "min-player-test-token-0123456789abcdef");
   CHECK(child >= 0);
   if (child < 0) return;
 
@@ -1765,7 +1779,7 @@ void test_min_player_and_boundary_rejection(const char* server_path) {
   (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
 
   // Authenticate moderator
-  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "min-player-test-token"}});
+  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "min-player-test-token-0123456789abcdef"}});
   CHECK(mod_hello && (*mod_hello)["type"] == "connect" && (*mod_hello)["role"] == "moderator");
 
   // 1. Explicitly verify N=2 boundary rejection over TCP protocol (lower illegal boundary)
@@ -1958,7 +1972,7 @@ void test_notifications_and_market_snapshots(const char* server_path) {
   const auto port = reserve_port();
   CHECK(port != 0U);
   if (port == 0U) return;
-  const auto child = start_server(server_path, port, "notif-test-token");
+  const auto child = start_server(server_path, port, "notif-test-token-0123456789abcdef");
   CHECK(child >= 0);
   if (child < 0) return;
 
@@ -1975,7 +1989,7 @@ void test_notifications_and_market_snapshots(const char* server_path) {
   connected.push_back(moderator);
   set_receive_timeout(moderator, 3000);
 
-  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "notif-test-token"}});
+  const auto mod_hello = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "notif-test-token-0123456789abcdef"}});
   CHECK(mod_hello && (*mod_hello)["type"] == "connect");
 
   const auto create_resp = request_json(moderator, json{{"type", "create_match"}, {"player_count", 5}});
@@ -2176,7 +2190,7 @@ void test_automatic_phase_timers_and_late_actions(const char* server_path) {
   CHECK(child >= 0);
   if (child < 0) return;
   if (child == 0) {
-    setenv("DARKPOOL_MODERATOR_TOKEN", "fast-timer-mod-token", 1);
+    setenv("DARKPOOL_MODERATOR_TOKEN", "fast-timer-mod-token-0123456789abcdef", 1);
     setenv("DARKPOOL_FAST_TIMERS", "1", 1);
     const auto port_text = std::to_string(port);
     execl(server_path, server_path, port_text.c_str(), static_cast<char*>(nullptr));
@@ -2196,7 +2210,7 @@ void test_automatic_phase_timers_and_late_actions(const char* server_path) {
   connected.push_back(moderator);
   timeval timeout{4, 0};
   (void)setsockopt(moderator, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  const auto mod_reply = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "fast-timer-mod-token"}});
+  const auto mod_reply = request_json(moderator, json{{"type", "connect"}, {"role", "moderator"}, {"token", "fast-timer-mod-token-0123456789abcdef"}});
   CHECK(mod_reply && (*mod_reply)["type"] == "connect" && (*mod_reply)["role"] == "moderator");
 
   std::vector<int> players;
