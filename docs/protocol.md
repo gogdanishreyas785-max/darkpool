@@ -167,27 +167,27 @@ The request and response queues use fixed-size 256-byte message slots (`darkpool
 
 #### 1. Worker Request Message (`WorkerRequestMessage`)
 Transferred from `darkpool_server` to `darkpool_worker`:
-- `request_id`: uint64 sequence / correlation identifier.
+- `request_id`: uint64 sequence / correlation identifier generated monotonically by the server.
 - `client_session_id`: uint64 client network session identifier.
-- `opcode`: int32 operation code (`1 = Ping`, `2 = EvaluateMarketModel`, `3 = Shutdown`).
+- `opcode`: int32 operation code (`1 = Ping`, `2 = EvaluateMarketModel`, `3 = Shutdown`, `4 = Ready`).
 - `price`: int32 baseline asset price.
 - `health`: int32 baseline market health.
-- `event_impact`: int32 scheduled business event impact (-2 to +2).
-- `demand`: int32 buy volume / demand pressure.
-- `volume`: int32 total transaction volume.
-- `sentiment`: int32 market sentiment index.
+- `event_impact`: int32 scheduled business event impact (-100 to +100).
+- `demand`: int32 buy volume / demand pressure (-10000 to +10000).
+- `volume`: int32 total transaction volume (non-negative).
+- `sentiment`: int32 market sentiment index (-1000 to +1000).
 - `total_supply`: uint32 circulating supply.
 - `reserve`: uint32 treasury reserve units.
 - `flags`: uint32 control bits.
 
 #### 2. Worker Response Message (`WorkerResponseMessage`)
 Transferred from `darkpool_worker` to `darkpool_server`:
-- `request_id`: uint64 matching the request sequence.
+- `request_id`: uint64 matching the request sequence correlation ID.
 - `client_session_id`: uint64 client network session identifier.
 - `opcode`: int32 operation code matching the request.
 - `status`: int32 outcome status (`0 = Success`, `1 = InvalidPayload`, `2 = QueueFull`, `3 = TimedOut`, `4 = WorkerFaulted`, `5 = WorkerExited`).
-- `projected_price`: int32 calculated model price after simulation.
-- `projected_health`: int32 calculated market health.
+- `projected_price`: int32 calculated model price after simulation (clamped between 1 and 100).
+- `projected_health`: int32 calculated market health (clamped between 0 and 10).
 - `price_delta`: int32 change in asset price.
 - `baseline_price`: int32 original input price.
 - `flags`: uint32 status bits.
@@ -199,7 +199,7 @@ Clients can submit an asynchronous simulation query:
 ```json
 {
   "type": "eval_model",
-  "request_id": 42,
+  "request_id": "req-client-42",
   "price": 100,
   "health": 50,
   "event_impact": 1,
@@ -211,17 +211,36 @@ Clients can submit an asynchronous simulation query:
 }
 ```
 
+Input fields are strictly validated on the server before queuing:
+- `price`: Integer in `[1, 100000]`
+- `health`: Integer in `[0, 100]`
+- `event_impact`: Integer in `[-100, 100]`
+- `demand`: Integer in `[-10000, 10000]`
+- `volume`: Non-negative integer in `[0, 1000000]`
+- `sentiment`: Integer in `[-1000, 1000]`
+
+If any input is outside its valid range, the server immediately returns:
+```json
+{
+  "type": "eval_model_response",
+  "request_id": "req-client-42",
+  "status": "failed",
+  "error": "invalid price: must be integer between 1 and 100000"
+}
+```
+
 When the worker returns the calculation via the process-shared queue, `ServerRuntime` receives an epoll notification on the server eventfd and responds asynchronously:
 ```json
 {
-  "type": "model_evaluated",
-  "request_id": 42,
+  "type": "eval_model_response",
+  "request_id": "req-client-42",
   "status": "success",
   "projected_price": 102,
-  "projected_health": 52,
+  "projected_health": 7,
   "price_delta": 2,
+  "baseline_price": 103,
   "worker_pid": 12345
 }
 ```
-If the worker process is absent, faulted, or the queue is saturated, the server returns an error response (`status: "worker_unavailable"` or `"worker_timeout"`) without delaying or affecting authoritative match coordination.
+If the worker process is absent, terminated, or the queue is saturated, the server returns an error response (`status: "failed"`, `error: "worker unavailable"`) without delaying or affecting authoritative match coordination. All calculations use widened safe 64-bit integer arithmetic to prevent signed integer overflow.
 

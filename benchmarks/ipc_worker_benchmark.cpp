@@ -52,12 +52,29 @@ static BenchmarkMetrics benchmark_ping_pong(WorkerProcessManager& mgr, uint64_t 
     WorkerRequestMessage req{};
     req.opcode = static_cast<int32_t>(WorkerOpcode::Ping);
     req.request_id = i + 1;
-    mgr.send_request(req, std::chrono::milliseconds{100});
+    if (mgr.send_request(req, std::chrono::milliseconds{100}) != QueueOpStatus::Success) {
+      std::cerr << "Warmup ping send failed\n";
+      std::abort();
+    }
 
-    while (mgr.drain_responses([](const WorkerResponseMessage&) {}) == 0) {}
+    const auto warm_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{2000};
+    bool got_warm = false;
+    while (std::chrono::steady_clock::now() < warm_deadline) {
+      if (mgr.drain_responses([](const WorkerResponseMessage&) {}) > 0) {
+        got_warm = true;
+        break;
+      }
+      struct timespec ts{0, 100'000L};
+      ::nanosleep(&ts, nullptr);
+    }
+    if (!got_warm) {
+      std::cerr << "Warmup ping response timeout\n";
+      std::abort();
+    }
   }
 
   auto start_time = std::chrono::steady_clock::now();
+  uint64_t completed = 0;
 
   for (uint64_t i = 0; i < iterations; ++i) {
     WorkerRequestMessage req{};
@@ -65,30 +82,60 @@ static BenchmarkMetrics benchmark_ping_pong(WorkerProcessManager& mgr, uint64_t 
     req.request_id = i + 1;
 
     auto t0 = std::chrono::steady_clock::now();
-    mgr.send_request(req, std::chrono::milliseconds{1000});
+    if (mgr.send_request(req, std::chrono::milliseconds{1000}) != QueueOpStatus::Success) {
+      std::cerr << "Ping send failed at iteration " << i << '\n';
+      std::abort();
+    }
 
-    while (mgr.drain_responses([](const WorkerResponseMessage&) {}) == 0) {}
+    const auto ping_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{2000};
+    bool got_resp = false;
+    while (std::chrono::steady_clock::now() < ping_deadline) {
+      size_t drained = mgr.drain_responses([&](const WorkerResponseMessage& resp) {
+        if (resp.request_id != (i + 1) || resp.status != static_cast<int32_t>(WorkerStatusCode::Success)) {
+          std::cerr << "Mismatched ping response ID or status! Expected " << (i + 1)
+                    << ", got " << resp.request_id << " status " << resp.status << '\n';
+          std::abort();
+        }
+        got_resp = true;
+      });
+      if (drained > 0 && got_resp) {
+        break;
+      }
+      struct timespec ts{0, 50'000L};
+      ::nanosleep(&ts, nullptr);
+    }
+
+    if (!got_resp) {
+      std::cerr << "FATAL: Ping response timed out at iteration " << i << '\n';
+      std::abort();
+    }
+
     auto t1 = std::chrono::steady_clock::now();
-
     uint64_t duration_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
     latencies.push_back(duration_ns);
+    completed++;
   }
 
   auto end_time = std::chrono::steady_clock::now();
   double elapsed_sec = std::chrono::duration<double>(end_time - start_time).count();
 
+  if (completed != iterations) {
+    std::cerr << "FATAL: Completed count " << completed << " != requested iterations " << iterations << '\n';
+    std::abort();
+  }
+
   std::sort(latencies.begin(), latencies.end());
 
   BenchmarkMetrics m;
   m.name = "Worker Process-Shared Cross-Process Ping-Pong";
-  m.total_messages = iterations;
+  m.total_messages = completed;
   m.elapsed_sec = elapsed_sec;
-  m.throughput_msg_sec = static_cast<double>(iterations) / elapsed_sec;
+  m.throughput_msg_sec = static_cast<double>(completed) / elapsed_sec;
   m.min_ns = latencies.front();
-  m.p50_ns = latencies[iterations * 50 / 100];
-  m.p90_ns = latencies[iterations * 90 / 100];
-  m.p99_ns = latencies[iterations * 99 / 100];
+  m.p50_ns = latencies[completed * 50 / 100];
+  m.p90_ns = latencies[completed * 90 / 100];
+  m.p99_ns = latencies[completed * 99 / 100];
   m.max_ns = latencies.back();
 
   return m;
@@ -104,8 +151,16 @@ static BenchmarkMetrics benchmark_pipelined_eval(WorkerProcessManager& mgr, uint
   uint64_t received = 0;
 
   std::vector<std::chrono::steady_clock::time_point> sent_times(total_items);
+  std::vector<bool> received_ids(total_items, false);
+
+  const auto pipeline_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
 
   while (received < total_items) {
+    if (std::chrono::steady_clock::now() > pipeline_deadline) {
+      std::cerr << "FATAL: Pipelined benchmark timed out! Sent: " << sent << ", Received: " << received << '\n';
+      std::abort();
+    }
+
     // Send up to batch_size in-flight
     while (sent < total_items && (sent - received) < batch_size) {
       WorkerRequestMessage req{};
@@ -130,29 +185,49 @@ static BenchmarkMetrics benchmark_pipelined_eval(WorkerProcessManager& mgr, uint
     // Drain available responses
     size_t drained = mgr.drain_responses([&](const WorkerResponseMessage& resp) {
       auto now = std::chrono::steady_clock::now();
-      if (resp.request_id >= 1 && resp.request_id <= total_items) {
-        uint64_t latency = static_cast<uint64_t>(
-            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                now - sent_times[static_cast<size_t>(resp.request_id - 1)]).count());
-        latencies.push_back(latency);
+      if (resp.request_id < 1 || resp.request_id > total_items) {
+        std::cerr << "FATAL: Received out-of-range request_id in response: " << resp.request_id << '\n';
+        std::abort();
       }
+      if (resp.status != static_cast<int32_t>(WorkerStatusCode::Success)) {
+        std::cerr << "FATAL: Response status failure: " << resp.status << '\n';
+        std::abort();
+      }
+      const size_t idx = static_cast<size_t>(resp.request_id - 1);
+      if (received_ids[idx]) {
+        std::cerr << "FATAL: Duplicate response received for ID " << resp.request_id << '\n';
+        std::abort();
+      }
+      received_ids[idx] = true;
+
+      uint64_t latency = static_cast<uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(now - sent_times[idx]).count());
+      latencies.push_back(latency);
       received++;
     });
-    if (drained == 0 && sent == received) {
-      break;
+
+    if (drained == 0 && sent < total_items) {
+      struct timespec ts{0, 10'000L};
+      ::nanosleep(&ts, nullptr);
     }
   }
 
   auto end_time = std::chrono::steady_clock::now();
   double elapsed_sec = std::chrono::duration<double>(end_time - start_time).count();
 
+  if (received != total_items || sent != total_items) {
+    std::cerr << "FATAL: Mismatched counts! Sent: " << sent << ", Received: " << received
+              << ", Expected: " << total_items << '\n';
+    std::abort();
+  }
+
   std::sort(latencies.begin(), latencies.end());
 
   BenchmarkMetrics m;
   m.name = "Worker Process-Shared Batch Pipeline (EvaluateMarketModel)";
-  m.total_messages = total_items;
+  m.total_messages = received;
   m.elapsed_sec = elapsed_sec;
-  m.throughput_msg_sec = static_cast<double>(total_items) / elapsed_sec;
+  m.throughput_msg_sec = static_cast<double>(received) / elapsed_sec;
   m.min_ns = latencies.empty() ? 0 : latencies.front();
   m.p50_ns = latencies.empty() ? 0 : latencies[latencies.size() * 50 / 100];
   m.p90_ns = latencies.empty() ? 0 : latencies[latencies.size() * 90 / 100];

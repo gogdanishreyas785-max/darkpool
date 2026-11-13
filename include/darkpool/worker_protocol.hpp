@@ -15,7 +15,8 @@ inline constexpr std::uint32_t kWorkerProtocolVersion = 1U;
 enum class WorkerOpcode : std::int32_t {
   Ping = 1,
   EvaluateMarketModel = 2,
-  Shutdown = 3
+  Shutdown = 3,
+  Ready = 4
 };
 
 enum class WorkerStatusCode : std::int32_t {

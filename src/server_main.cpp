@@ -378,22 +378,116 @@ int main(int argc, char** argv) {
 
   // Initialize WorkerProcessManager if requested
   std::unique_ptr<darkpool::ipc::WorkerProcessManager> worker_mgr;
+  darkpool::ipc::WorkerProcessConfig w_cfg{};
   std::uint64_t worker_req_id_gen = 0;
+
+  // Track pending client requests routed to worker:
+  // correlation_id (request_id) -> struct PendingWorkerRequest
+  struct PendingWorkerRequest {
+    std::uint64_t client_session_id{0};
+    std::string client_request_id;
+    std::chrono::steady_clock::time_point submitted_at;
+  };
+  std::unordered_map<std::uint64_t, PendingWorkerRequest> pending_worker_requests;
+
+  auto fail_all_pending_requests = [&](std::string_view reason) {
+    for (const auto& [req_id, pending] : pending_worker_requests) {
+      if (runtime.has_session(pending.client_session_id)) {
+        json resp_json{
+            {"type", "eval_model_response"},
+            {"status", "failed"},
+            {"error", std::string(reason)}
+        };
+        if (!pending.client_request_id.empty()) {
+          resp_json["request_id"] = pending.client_request_id;
+        }
+        (void)runtime.send_message(pending.client_session_id, Frame(resp_json));
+      }
+    }
+    pending_worker_requests.clear();
+  };
+
+  auto ensure_worker_running = [&]() -> bool {
+    if (!config.enable_worker) return false;
+    if (worker_mgr && worker_mgr->is_alive() && !worker_mgr->is_faulted()) {
+      return true;
+    }
+
+    // Worker died or faulted: fail all pending requests first
+    fail_all_pending_requests("worker process terminated abnormally");
+
+    if (worker_mgr) {
+      if (worker_mgr->server_notify_fd() >= 0) {
+        runtime.remove_epoll_event_source(worker_mgr->server_notify_fd());
+      }
+      worker_mgr->shutdown(std::chrono::milliseconds{200});
+      worker_mgr.reset();
+    }
+
+    std::string w_err;
+    auto mgr_opt = darkpool::ipc::WorkerProcessManager::launch(w_cfg, w_err);
+    if (mgr_opt.has_value()) {
+      worker_mgr = std::make_unique<darkpool::ipc::WorkerProcessManager>(std::move(*mgr_opt));
+      std::cout << "[darkpool_server] (Re)started worker process (PID: " << worker_mgr->worker_pid() << ")\n";
+
+      // Register new worker notify eventfd in epoll
+      if (worker_mgr->server_notify_fd() >= 0) {
+        std::string epoll_err;
+        runtime.add_epoll_event_source(
+            worker_mgr->server_notify_fd(),
+            [&](std::uint32_t events) {
+              if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
+                if (worker_mgr) {
+                  worker_mgr->consume_server_notification();
+                  worker_mgr->drain_responses([&](const darkpool::ipc::WorkerResponseMessage& resp) {
+                    auto it = pending_worker_requests.find(resp.request_id);
+                    if (it != pending_worker_requests.end()) {
+                      const auto pending = it->second;
+                      pending_worker_requests.erase(it);
+
+                      if (runtime.has_session(pending.client_session_id)) {
+                        json resp_json{
+                            {"type", "eval_model_response"},
+                            {"status", resp.status == 0 ? "success" : "failed"},
+                            {"projected_price", resp.projected_price},
+                            {"projected_health", resp.projected_health},
+                            {"price_delta", resp.price_delta},
+                            {"baseline_price", resp.baseline_price},
+                            {"worker_pid", resp.worker_pid}
+                        };
+                        if (!pending.client_request_id.empty()) {
+                          resp_json["request_id"] = pending.client_request_id;
+                        }
+                        runtime.send_message(pending.client_session_id, Frame(resp_json));
+                      }
+                    }
+                  });
+                }
+              }
+            },
+            epoll_err);
+      }
+      return true;
+    } else {
+      std::cerr << "warning: failed to launch/recover worker process: " << w_err << '\n';
+      return false;
+    }
+  };
+
+  std::string start_err;
+  if (!runtime.start(start_err)) {
+    std::cerr << "error: server startup failed: " << start_err << '\n';
+    return 1;
+  }
+
   if (config.enable_worker) {
-    darkpool::ipc::WorkerProcessConfig w_cfg{
+    w_cfg = darkpool::ipc::WorkerProcessConfig{
         .worker_binary_path = config.worker_binary.empty() ? "./darkpool_worker" : config.worker_binary,
         .request_shm_name = config.worker_req_shm.empty() ? "/dp_srv_worker_req" : config.worker_req_shm,
         .response_shm_name = config.worker_resp_shm.empty() ? "/dp_srv_worker_resp" : config.worker_resp_shm,
         .queue_capacity = darkpool::ipc::kWorkerQueueCapacity
     };
-    std::string w_err;
-    auto mgr_opt = darkpool::ipc::WorkerProcessManager::launch(std::move(w_cfg), w_err);
-    if (mgr_opt.has_value()) {
-      worker_mgr = std::make_unique<darkpool::ipc::WorkerProcessManager>(std::move(*mgr_opt));
-      std::cout << "[darkpool_server] Started worker process (PID: " << worker_mgr->worker_pid() << ")\n";
-    } else {
-      std::cerr << "warning: failed to launch worker process: " << w_err << '\n';
-    }
+    ensure_worker_running();
   }
 
   auto publish_telemetry = [&](bool is_stopping = false) {
@@ -420,6 +514,16 @@ int main(int argc, char** argv) {
       session_kinds.erase(found);
     }
     coordinator.unregister_session(session_id);
+
+    // Clean up any pending worker requests for disconnected session
+    for (auto it = pending_worker_requests.begin(); it != pending_worker_requests.end(); ) {
+      if (it->second.client_session_id == session_id) {
+        it = pending_worker_requests.erase(it);
+      } else {
+        ++it;
+      }
+    }
+
     publish_telemetry();
   });
 
@@ -477,11 +581,56 @@ int main(int argc, char** argv) {
 
     // Already assigned connection: check for offloaded worker request
     if (frame.payload().is_object() &&
-        frame.payload().value("type", std::string{}) == "eval_model" &&
-        worker_mgr) {
+        frame.payload().value("type", std::string{}) == "eval_model") {
       const auto& p = frame.payload();
+      std::string client_req_id;
+      if (p.contains("request_id")) {
+        if (p["request_id"].is_string()) {
+          client_req_id = p["request_id"].get<std::string>();
+        } else if (p["request_id"].is_number()) {
+          client_req_id = p["request_id"].dump();
+        }
+      }
+
+      auto send_client_error = [&](std::string_view err_msg) {
+        json err_resp{
+            {"type", "eval_model_response"},
+            {"status", "failed"},
+            {"error", std::string(err_msg)}
+        };
+        if (!client_req_id.empty()) {
+          err_resp["request_id"] = client_req_id;
+        }
+        return runtime.send_message(session_id, Frame(err_resp));
+      };
+
+      // Input range validation
+      if (p.contains("price") && (!p["price"].is_number_integer() || p["price"].get<std::int64_t>() < 1 || p["price"].get<std::int64_t>() > 100000)) {
+        return send_client_error("invalid price: must be integer between 1 and 100000");
+      }
+      if (p.contains("health") && (!p["health"].is_number_integer() || p["health"].get<std::int64_t>() < 0 || p["health"].get<std::int64_t>() > 100)) {
+        return send_client_error("invalid health: must be integer between 0 and 100");
+      }
+      if (p.contains("event_impact") && (!p["event_impact"].is_number_integer() || p["event_impact"].get<std::int64_t>() < -100 || p["event_impact"].get<std::int64_t>() > 100)) {
+        return send_client_error("invalid event_impact: must be integer between -100 and 100");
+      }
+      if (p.contains("demand") && (!p["demand"].is_number_integer() || p["demand"].get<std::int64_t>() < -10000 || p["demand"].get<std::int64_t>() > 10000)) {
+        return send_client_error("invalid demand: must be integer between -10000 and 10000");
+      }
+      if (p.contains("volume") && (!p["volume"].is_number_integer() || p["volume"].get<std::int64_t>() < 0 || p["volume"].get<std::int64_t>() > 1000000)) {
+        return send_client_error("invalid volume: must be non-negative integer");
+      }
+      if (p.contains("sentiment") && (!p["sentiment"].is_number_integer() || p["sentiment"].get<std::int64_t>() < -1000 || p["sentiment"].get<std::int64_t>() > 1000)) {
+        return send_client_error("invalid sentiment: must be integer between -1000 and 1000");
+      }
+
+      if (!config.enable_worker || !ensure_worker_running()) {
+        return send_client_error("worker unavailable");
+      }
+
+      const std::uint64_t correlation_id = ++worker_req_id_gen;
       darkpool::ipc::WorkerRequestMessage req{};
-      req.request_id = ++worker_req_id_gen;
+      req.request_id = correlation_id;
       req.client_session_id = session_id;
       req.opcode = static_cast<std::int32_t>(darkpool::ipc::WorkerOpcode::EvaluateMarketModel);
       req.price = p.value("price", 10);
@@ -493,18 +642,23 @@ int main(int argc, char** argv) {
       req.total_supply = p.value("total_supply", 100U);
       req.reserve = p.value("reserve", 50U);
 
+      // Record pending request before sending
+      pending_worker_requests[correlation_id] = PendingWorkerRequest{
+          .client_session_id = session_id,
+          .client_request_id = client_req_id,
+          .submitted_at = std::chrono::steady_clock::now()
+      };
+
       std::string send_err;
       const auto send_st = worker_mgr->send_request(req, std::chrono::milliseconds{10}, &send_err);
       if (send_st == darkpool::ipc::QueueOpStatus::Success) {
         // Pending worker response will be delivered asynchronously via epoll
         return true;
       }
-      // If worker queue is full or faulted, notify client of error
-      return runtime.send_message(session_id, Frame(json{
-          {"type", "eval_model_response"},
-          {"error", "worker unavailable or queue full"},
-          {"status", "failed"}
-      }));
+
+      // If push failed, erase pending record and return error
+      pending_worker_requests.erase(correlation_id);
+      return send_client_error("worker queue full or write timeout");
     }
 
     const auto response = coordinator.handle(session_id, frame.payload());
@@ -522,6 +676,35 @@ int main(int argc, char** argv) {
   runtime.set_tick_handler([&]() {
     systemd_notifier.check_watchdog();
     coordinator.tick();
+
+    // Check worker health & handle timeouts
+    if (config.enable_worker && worker_mgr) {
+      if (!worker_mgr->is_alive() || worker_mgr->is_faulted()) {
+        ensure_worker_running();
+      } else if (!pending_worker_requests.empty()) {
+        const auto now = std::chrono::steady_clock::now();
+        for (auto it = pending_worker_requests.begin(); it != pending_worker_requests.end(); ) {
+          if (now - it->second.submitted_at > std::chrono::seconds{5}) {
+            const auto pending = it->second;
+            it = pending_worker_requests.erase(it);
+            if (runtime.has_session(pending.client_session_id)) {
+              json err_resp{
+                  {"type", "eval_model_response"},
+                  {"status", "failed"},
+                  {"error", "worker request timed out"}
+              };
+              if (!pending.client_request_id.empty()) {
+                err_resp["request_id"] = pending.client_request_id;
+              }
+              runtime.send_message(pending.client_session_id, Frame(err_resp));
+            }
+          } else {
+            ++it;
+          }
+        }
+      }
+    }
+
     const auto notifications = coordinator.drain_notifications();
     for (const auto& notif : notifications) {
       for (const auto recipient_id : notif.recipients) {
@@ -531,11 +714,6 @@ int main(int argc, char** argv) {
     publish_telemetry();
   });
 
-  std::string start_err;
-  if (!runtime.start(start_err)) {
-    std::cerr << "error: server startup failed: " << start_err << '\n';
-    return 1;
-  }
   std::string epoll_source_error;
   if (!runtime.add_epoll_event_source(
           control_server.descriptor(),
@@ -560,36 +738,6 @@ int main(int argc, char** argv) {
     runtime.stop();
     return 1;
   }
-  if (worker_mgr && worker_mgr->server_notify_fd() >= 0) {
-    std::string w_epoll_err;
-    if (!runtime.add_epoll_event_source(
-            worker_mgr->server_notify_fd(),
-            [&](std::uint32_t events) {
-              if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
-                // Consume notification counter
-                worker_mgr->consume_server_notification();
-                // Drain responses
-                worker_mgr->drain_responses([&](const darkpool::ipc::WorkerResponseMessage& resp) {
-                  if (resp.client_session_id != 0 && runtime.has_session(resp.client_session_id)) {
-                    runtime.send_message(resp.client_session_id, Frame(json{
-                        {"type", "eval_model_response"},
-                        {"request_id", resp.request_id},
-                        {"status", resp.status == 0 ? "success" : "failed"},
-                        {"projected_price", resp.projected_price},
-                        {"projected_health", resp.projected_health},
-                        {"price_delta", resp.price_delta},
-                        {"baseline_price", resp.baseline_price},
-                        {"worker_pid", resp.worker_pid}
-                    }));
-                  }
-                });
-              }
-            },
-            w_epoll_err)) {
-      std::cerr << "warning: failed to register worker notify eventfd in epoll: " << w_epoll_err << '\n';
-    }
-  }
-
   systemd_notifier.ready();
   publish_telemetry();
 
@@ -611,6 +759,9 @@ int main(int argc, char** argv) {
   }
 
   const int run_result = runtime.run();
+  if (worker_mgr) {
+    worker_mgr->shutdown(std::chrono::milliseconds{1000});
+  }
   runtime.stop();
   systemd_notifier.stopping();
   telemetry_publisher.stop();

@@ -119,15 +119,60 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
     return std::nullopt;
   }
 
-  return WorkerProcessManager(std::move(config), pid, std::move(*channel));
+  WorkerProcessManager mgr(std::move(config), pid, std::move(*channel));
+
+  // 3. Genuine readiness handshake: wait boundedly for Ready message from worker
+  bool ready_received = false;
+  const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{3000};
+  while (std::chrono::steady_clock::now() < ready_deadline) {
+    if (!mgr.is_alive()) {
+      error_msg = "Worker process exited before completing readiness handshake";
+      mgr.shutdown(std::chrono::milliseconds{500});
+      return std::nullopt;
+    }
+
+    std::size_t drained = mgr.drain_responses([&](const WorkerResponseMessage& resp) {
+      if (resp.opcode == static_cast<std::int32_t>(WorkerOpcode::Ready)) {
+        ready_received = true;
+      }
+    });
+
+    if (ready_received) {
+      break;
+    }
+
+    if (drained == 0) {
+      struct timespec ts{0, 10'000'000L}; // 10ms
+      ::nanosleep(&ts, nullptr);
+    }
+  }
+
+  if (!ready_received) {
+    error_msg = "Worker readiness handshake timed out";
+    mgr.shutdown(std::chrono::milliseconds{500});
+    return std::nullopt;
+  }
+
+  return mgr;
 }
 
-bool WorkerProcessManager::is_alive() const noexcept {
+bool WorkerProcessManager::is_alive() noexcept {
   if (worker_pid_ <= 0) return false;
   int status = 0;
   const pid_t rc = ::waitpid(worker_pid_, &status, WNOHANG);
   if (rc == 0) {
     return true;  // Still running
+  }
+  if (rc == worker_pid_) {
+    // Process has exited and was reaped by waitpid!
+    // Never leave a stale PID.
+    worker_pid_ = -1;
+    return false;
+  }
+  if (rc < 0 && errno == ECHILD) {
+    // Already reaped or not a child
+    worker_pid_ = -1;
+    return false;
   }
   return false;
 }

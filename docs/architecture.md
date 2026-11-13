@@ -569,14 +569,22 @@ IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `Event
   - Epoll integration: `server_notifier.descriptor()` is registered directly into `ServerRuntime`'s epoll loop (`EPOLLIN | EPOLLET`), allowing responses to be processed asynchronously without polling loops or thread blocks.
 - **Fixed-Layout Wire Protocol (`darkpool/worker_protocol.hpp`):**
   - Standard-layout, 64-bit aligned, zero-heap structs fitting inside `QueueMessageSlot` (256 bytes):
-    - `WorkerRequestMessage`: request ID, client session ID, opcode (`Ping`, `EvaluateMarketModel`, `Shutdown`), parameters (price, health, event impact, demand, volume, sentiment, total supply, reserve).
-    - `WorkerResponseMessage`: request ID, client session ID, opcode, status code (`Success`, `InvalidPayload`, `QueueFull`, `TimedOut`, `WorkerFaulted`, `WorkerExited`), projection outputs, worker PID.
-- **Lifecycle Management (`WorkerProcessManager`):**
+    - `WorkerRequestMessage`: internal monotonic correlation ID (`request_id`), client session ID, opcode (`Ping`, `EvaluateMarketModel`, `Shutdown`, `Ready`), parameters (price, health, event impact, demand, volume, sentiment, total supply, reserve).
+    - `WorkerResponseMessage`: correlation ID matching the request, client session ID, opcode, status code (`Success`, `InvalidPayload`, `QueueFull`, `TimedOut`, `WorkerFaulted`, `WorkerExited`), projection outputs, worker PID.
+  - Client correlation mapping: The server reconciles client-supplied string/numeric request IDs with server-generated 64-bit internal correlation IDs. When responses arrive via epoll, the server looks up the pending record, maps the correlation ID back to the client's original `request_id`, and delivers the response frame.
+- **Lifecycle Management & Readiness (`WorkerProcessManager`):**
   - Clean startup: Unlinks any stale POSIX shared memory segments before creation.
-  - Descriptor inheritance across `exec()`: Clears `FD_CLOEXEC` on inherited `eventfd` descriptors in child process prior to `exec()`.
-  - Non-blocking zombie reaping: `try_reap()` utilizes `waitpid(-1, &status, WNOHANG)` to reap child processes without stalling reactor dispatch.
+  - Genuine readiness handshake: Upon start, `WorkerProcessManager::launch()` blocks boundedly until the spawned worker finishes connecting its endpoints and transmits a `WorkerOpcode::Ready` response message. If the worker crashes during startup or times out, launch fails safely.
+  - Non-stale PID reaping: `is_alive()` and `try_reap()` use `waitpid(pid, &status, WNOHANG)`. When a process exit is detected and reaped, `worker_pid_` is immediately set to `-1` so a dead PID is never retained.
+  - Server lifecycle integration: The production server monitors worker health in its tick loop and request submission path. If the worker crashes or faults:
+    1. All pending client requests are immediately failed with an informative error frame, ensuring accepted client requests are never left hanging indefinitely.
+    2. Pending requests for disconnected sessions are automatically pruned.
+    3. The server cleanly recovers by shutting down the dead manager, unlinking resources, and restarting a fresh worker instance with its eventfd registered in epoll.
   - Escalated shutdown: Transmits `Shutdown` opcode via queue, waits boundedly for graceful worker exit, escalates to `SIGTERM` and `SIGKILL` if timeout expires, and cleans up POSIX shared memory.
-  - Crash recovery: If the worker process crashes or terminates abnormally, the server detects the child exit via `try_reap()` or queue fault state, cleans up resources safely, and can restart a clean worker without compromising server continuity or dropping client network sessions.
+- **Notification Wakeup Semantics:**
+  - One clearly defined notification mechanism per direction:
+    - Server to worker: Server pushes request to POSIX SHM queue and signals `worker_notifier` (Linux `eventfd`). The worker consumes the counter and pops the queue.
+    - Worker to server: Worker pushes response to POSIX SHM queue and signals `server_notifier` (Linux `eventfd`). The server consumes the counter inside the epoll reactor callback and drains the queue.
 
 
 

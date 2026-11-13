@@ -81,8 +81,20 @@ int main(int argc, char** argv) {
   auto& channel = *channel_opt;
   const auto my_pid = static_cast<std::uint32_t>(::getpid());
 
+  // Send initial Ready handshake message to server
+  {
+    WorkerResponseMessage ready_resp{};
+    ready_resp.opcode = static_cast<std::int32_t>(WorkerOpcode::Ready);
+    ready_resp.status = static_cast<std::int32_t>(WorkerStatusCode::Success);
+    ready_resp.worker_pid = my_pid;
+    channel.send_response(ready_resp);
+  }
+
   // Main worker loop: wait on requests from the queue / eventfd
   while (!g_stop_requested) {
+    // Consume worker-side eventfd notification if signaled
+    (void)channel.consume_worker_notification();
+
     WorkerRequestMessage req{};
     std::string pop_err;
     // Bounded timeout wait for requests (1000ms check allows responsive signal handling)
@@ -123,24 +135,28 @@ int main(int argc, char** argv) {
 
     if (req.opcode == static_cast<std::int32_t>(WorkerOpcode::EvaluateMarketModel)) {
       // Perform advisory market model sensitivity / projection evaluation
-      // Baseline formula: event e, net demand sign s = sign(demand)
-      const std::int32_t e = req.event_impact;
-      const std::int32_t s = (req.demand > 0) ? 1 : ((req.demand < 0) ? -1 : 0);
-      const std::int32_t baseline_p = std::clamp(req.price + 2 * e + s, 1, 100);
-      const std::int32_t baseline_h = std::clamp(req.health + e + s, 0, 10);
+      // Safely widen to int64_t to prevent signed overflow
+      const std::int64_t price = req.price;
+      const std::int64_t health = req.health;
+      const std::int64_t e = req.event_impact;
+      const std::int64_t s = (req.demand > 0) ? 1 : ((req.demand < 0) ? -1 : 0);
 
-      // Candidate multi-factor evaluation (as in market_sensitivity_analysis):
-      // terms: event*2, demand*1.5, volume, volatility
-      std::int32_t candidate_p = req.price + (2 * e) + (2 * s);
+      const std::int64_t raw_baseline_p = price + (2 * e) + s;
+      const std::int64_t raw_baseline_h = health + e + s;
+      const std::int32_t baseline_p = static_cast<std::int32_t>(std::clamp<std::int64_t>(raw_baseline_p, 1, 100));
+      const std::int32_t baseline_h = static_cast<std::int32_t>(std::clamp<std::int64_t>(raw_baseline_h, 0, 10));
+
+      // Candidate multi-factor evaluation with safe int64_t arithmetic
+      std::int64_t raw_candidate_p = price + (2 * e) + (2 * s);
       if (req.volume > 10) {
-        candidate_p += 1;
+        raw_candidate_p += 1;
       }
-      candidate_p = std::clamp(candidate_p, 1, 100);
+      const std::int32_t candidate_p = static_cast<std::int32_t>(std::clamp<std::int64_t>(raw_candidate_p, 1, 100));
 
       resp.status = static_cast<std::int32_t>(WorkerStatusCode::Success);
       resp.projected_price = candidate_p;
       resp.projected_health = baseline_h;
-      resp.price_delta = candidate_p - req.price;
+      resp.price_delta = static_cast<std::int32_t>(candidate_p - req.price);
       resp.baseline_price = baseline_p;
 
       channel.send_response(resp);

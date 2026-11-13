@@ -34,12 +34,14 @@ class WorkerProcessManager {
       std::string& error_msg);
 
   [[nodiscard]] pid_t worker_pid() const noexcept { return worker_pid_; }
-  [[nodiscard]] bool is_alive() const noexcept;
+  [[nodiscard]] bool is_alive() noexcept;
 
   // File descriptor for ServerRuntime epoll loop registration (server receives notifications on this fd)
   [[nodiscard]] int server_notify_fd() const noexcept {
     return channel_ ? channel_->server_notify_fd() : -1;
   }
+
+  [[nodiscard]] const WorkerProcessConfig& config() const noexcept { return config_; }
 
   // Submit request to worker
   QueueOpStatus send_request(const WorkerRequestMessage& request,
