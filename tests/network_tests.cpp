@@ -28,6 +28,14 @@ void check(bool condition, const char* expression, int line) {
 
 void test_credential_security_helpers() {
   using darkpool::security::detail::make_hex_token_128_with;
+#if defined(__linux__)
+  // A zero-refill bucket models the shared pre-authentication budget: it
+  // remains exhausted across connections because the runtime owns one bucket.
+  darkpool::network::TokenBucketRateLimiter auth_budget(0.0, 2.0);
+  CHECK(auth_budget.try_acquire());
+  CHECK(auth_budget.try_acquire());
+  CHECK(!auth_budget.try_acquire());
+#endif
 
   CHECK(darkpool::security::has_valid_credential_length(std::string(32U, 'x')));
   CHECK(darkpool::security::has_valid_credential_length(std::string(256U, 'x')));
