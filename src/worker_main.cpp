@@ -58,6 +58,15 @@ int main(int argc, char** argv) {
     }
   }
 
+  // The worker is a managed child, not a standalone daemon. Refuse to run
+  // without the parent-death signal installed before execve by the manager.
+  int parent_death_signal = 0;
+  if (::prctl(PR_GET_PDEATHSIG, &parent_death_signal, 0, 0, 0) != 0 ||
+      parent_death_signal != SIGTERM) {
+    std::cerr << "[darkpool_worker] parent-death supervision is missing\\n";
+    return 1;
+  }
+
   // Defense in depth for the compute-only child: prevent later privilege-
   // gaining exec transitions, deny ptrace/core-dump access to its address
   // space, and disable core dumps. This is not a syscall sandbox.
