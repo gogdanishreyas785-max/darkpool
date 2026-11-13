@@ -16,10 +16,12 @@ int main() {
 #include "darkpool/server_runtime.hpp"
 #include "darkpool/socket_primitives.hpp"
 #include "darkpool/systemd_notify.hpp"
+#include "darkpool/worker_process_manager.hpp"
 
 #include <cstdlib>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <sys/epoll.h>
@@ -57,6 +59,10 @@ struct ServerConfig {
   std::string telemetry_shm;
   std::string telemetry_sem;
   bool open_lobby{false};
+  bool enable_worker{false};
+  std::string worker_binary;
+  std::string worker_req_shm;
+  std::string worker_resp_shm;
 };
 
 bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string& error_msg) {
@@ -218,6 +224,29 @@ bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string&
         return false;
       }
       config.telemetry_sem = argv[++i];
+    } else if (arg == "--worker") {
+      config.enable_worker = true;
+    } else if (arg == "--worker-binary") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --worker-binary";
+        return false;
+      }
+      config.worker_binary = argv[++i];
+      config.enable_worker = true;
+    } else if (arg == "--worker-req-shm") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --worker-req-shm";
+        return false;
+      }
+      config.worker_req_shm = argv[++i];
+      config.enable_worker = true;
+    } else if (arg == "--worker-resp-shm") {
+      if (i + 1 >= argc) {
+        error_msg = "missing argument for --worker-resp-shm";
+        return false;
+      }
+      config.worker_resp_shm = argv[++i];
+      config.enable_worker = true;
     } else {
       std::uint16_t p = 0;
       if (darkpool::network::parse_port(argv[i], p)) {
@@ -347,6 +376,26 @@ int main(int argc, char** argv) {
   std::size_t players = 0;
   std::size_t moderators = 0;
 
+  // Initialize WorkerProcessManager if requested
+  std::unique_ptr<darkpool::ipc::WorkerProcessManager> worker_mgr;
+  std::uint64_t worker_req_id_gen = 0;
+  if (config.enable_worker) {
+    darkpool::ipc::WorkerProcessConfig w_cfg{
+        .worker_binary_path = config.worker_binary.empty() ? "./darkpool_worker" : config.worker_binary,
+        .request_shm_name = config.worker_req_shm.empty() ? "/dp_srv_worker_req" : config.worker_req_shm,
+        .response_shm_name = config.worker_resp_shm.empty() ? "/dp_srv_worker_resp" : config.worker_resp_shm,
+        .queue_capacity = darkpool::ipc::kWorkerQueueCapacity
+    };
+    std::string w_err;
+    auto mgr_opt = darkpool::ipc::WorkerProcessManager::launch(std::move(w_cfg), w_err);
+    if (mgr_opt.has_value()) {
+      worker_mgr = std::make_unique<darkpool::ipc::WorkerProcessManager>(std::move(*mgr_opt));
+      std::cout << "[darkpool_server] Started worker process (PID: " << worker_mgr->worker_pid() << ")\n";
+    } else {
+      std::cerr << "warning: failed to launch worker process: " << w_err << '\n';
+    }
+  }
+
   auto publish_telemetry = [&](bool is_stopping = false) {
     (void)telemetry_publisher.publish(
         darkpool::telemetry::TelemetryInput{
@@ -426,6 +475,38 @@ int main(int argc, char** argv) {
       return false;
     }
 
+    // Already assigned connection: check for offloaded worker request
+    if (frame.payload().is_object() &&
+        frame.payload().value("type", std::string{}) == "eval_model" &&
+        worker_mgr) {
+      const auto& p = frame.payload();
+      darkpool::ipc::WorkerRequestMessage req{};
+      req.request_id = ++worker_req_id_gen;
+      req.client_session_id = session_id;
+      req.opcode = static_cast<std::int32_t>(darkpool::ipc::WorkerOpcode::EvaluateMarketModel);
+      req.price = p.value("price", 10);
+      req.health = p.value("health", 5);
+      req.event_impact = p.value("event_impact", 0);
+      req.demand = p.value("demand", 0);
+      req.volume = p.value("volume", 0);
+      req.sentiment = p.value("sentiment", 0);
+      req.total_supply = p.value("total_supply", 100U);
+      req.reserve = p.value("reserve", 50U);
+
+      std::string send_err;
+      const auto send_st = worker_mgr->send_request(req, std::chrono::milliseconds{10}, &send_err);
+      if (send_st == darkpool::ipc::QueueOpStatus::Success) {
+        // Pending worker response will be delivered asynchronously via epoll
+        return true;
+      }
+      // If worker queue is full or faulted, notify client of error
+      return runtime.send_message(session_id, Frame(json{
+          {"type", "eval_model_response"},
+          {"error", "worker unavailable or queue full"},
+          {"status", "failed"}
+      }));
+    }
+
     const auto response = coordinator.handle(session_id, frame.payload());
     const bool ok = runtime.send_message(session_id, response ? Frame(*response) : frame);
     const auto notifications = coordinator.drain_notifications();
@@ -479,6 +560,36 @@ int main(int argc, char** argv) {
     runtime.stop();
     return 1;
   }
+  if (worker_mgr && worker_mgr->server_notify_fd() >= 0) {
+    std::string w_epoll_err;
+    if (!runtime.add_epoll_event_source(
+            worker_mgr->server_notify_fd(),
+            [&](std::uint32_t events) {
+              if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
+                // Consume notification counter
+                worker_mgr->consume_server_notification();
+                // Drain responses
+                worker_mgr->drain_responses([&](const darkpool::ipc::WorkerResponseMessage& resp) {
+                  if (resp.client_session_id != 0 && runtime.has_session(resp.client_session_id)) {
+                    runtime.send_message(resp.client_session_id, Frame(json{
+                        {"type", "eval_model_response"},
+                        {"request_id", resp.request_id},
+                        {"status", resp.status == 0 ? "success" : "failed"},
+                        {"projected_price", resp.projected_price},
+                        {"projected_health", resp.projected_health},
+                        {"price_delta", resp.price_delta},
+                        {"baseline_price", resp.baseline_price},
+                        {"worker_pid", resp.worker_pid}
+                    }));
+                  }
+                });
+              }
+            },
+            w_epoll_err)) {
+      std::cerr << "warning: failed to register worker notify eventfd in epoll: " << w_epoll_err << '\n';
+    }
+  }
+
   systemd_notifier.ready();
   publish_telemetry();
 

@@ -66,6 +66,7 @@ class EventNotifier {
   [[nodiscard]] std::optional<std::uint64_t> try_consume() noexcept;
 
   static std::optional<EventNotifier> create(std::string* error_msg = nullptr);
+  static EventNotifier from_fd(int fd) noexcept { return EventNotifier(fd); }
 
  private:
   explicit EventNotifier(int fd) noexcept;

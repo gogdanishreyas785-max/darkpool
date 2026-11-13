@@ -521,7 +521,62 @@ IPC-9 introduces a bounded single-producer/single-consumer (SPSC) work queue pro
   - Subsequent queue operations immediately return `QueueOpStatus::Faulted`. Recovery requires external intervention: terminating remaining participants, unlinking the shared memory object (`shm_unlink`), and re-instantiating a fresh queue.
 - **Synchronization Object Lifetime Precautions (IPC-4):**
   Teardown does not destroy mutexes or condition variables while peer processes may retain active mappings. Detaching endpoints unmap the region (`munmap`) and close descriptors (`close`). The shared memory object is explicitly unlinked (`shm_unlink`) by the controlling harness or operator.
-- **Isolation Boundary:**
-  `ProcessSharedQueue` is a standalone IPC prototype (`darkpool_ipc_shm_queue`). It is not linked into `darkpool_server`, and production server dispatch, `MatchCoordinator`, and `GameEngine` do not use process-shared queues.
+
+### 9.11 Server-Worker Process-Shared IPC Architecture (IPC-10)
+
+IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `EventNotifier`) into a production multi-process server–worker architecture:
+
+```text
+ Client TCP/TLS               Server Process (darkpool_server)                      Worker Process (darkpool_worker)
+   Connection                           [epoll Loop]
+       |                                      |
+  (eval_model)                                |
+       +--------> ServerRuntime               |
+                     |                        |
+             MatchCoordinator                 |
+            (State Authoritative)             |
+                     |                        |
+            ServerWorkerChannel               |
+                     |                        |
+         [push request]                       |
+                     |                        |
+                     +---> Request Queue ----+---> pop_request()
+                           (POSIX SHM SPSC)  |            |
+                                             |       Compute Projection
+                     +--- worker eventfd ----+---> (non-authoritative)
+                     |                       |            |
+                     |                       |    [push response]
+                     |                       |            |
+         pop_response() <--- Response Queue -+------------+
+               |             (POSIX SHM SPSC)
+               |
+  ServerRuntime Callback <--- server eventfd -+
+               |
+  Deliver JSON frame
+       |
+       v
+ Client Connection
+```
+
+- **Separation of Concerns & Authoritative State:**
+  - The server (`darkpool_server`) remains strictly authoritative for all gameplay, market state, orders, order books, trades, player accounts, and phase transitions.
+  - The worker process (`darkpool_worker`) performs non-authoritative compute offload (e.g. Monte Carlo market simulation, pricing sensitivity curves, volatility scenarios). The worker cannot mutate game state.
+- **Bi-directional Process-Shared Channel (`ServerWorkerChannel` / `WorkerClientChannel`):**
+  - Uses two separate `ProcessSharedQueue` instances:
+    1. `request_queue`: Server is the sole Producer; Worker is the sole Consumer.
+    2. `response_queue`: Worker is the sole Producer; Server is the sole Consumer.
+  - Notification signaling: Two `EventNotifier` instances (Linux `eventfd`). The server signals `worker_notifier` on request push; the worker signals `server_notifier` on response push.
+  - Epoll integration: `server_notifier.descriptor()` is registered directly into `ServerRuntime`'s epoll loop (`EPOLLIN | EPOLLET`), allowing responses to be processed asynchronously without polling loops or thread blocks.
+- **Fixed-Layout Wire Protocol (`darkpool/worker_protocol.hpp`):**
+  - Standard-layout, 64-bit aligned, zero-heap structs fitting inside `QueueMessageSlot` (256 bytes):
+    - `WorkerRequestMessage`: request ID, client session ID, opcode (`Ping`, `EvaluateMarketModel`, `Shutdown`), parameters (price, health, event impact, demand, volume, sentiment, total supply, reserve).
+    - `WorkerResponseMessage`: request ID, client session ID, opcode, status code (`Success`, `InvalidPayload`, `QueueFull`, `TimedOut`, `WorkerFaulted`, `WorkerExited`), projection outputs, worker PID.
+- **Lifecycle Management (`WorkerProcessManager`):**
+  - Clean startup: Unlinks any stale POSIX shared memory segments before creation.
+  - Descriptor inheritance across `exec()`: Clears `FD_CLOEXEC` on inherited `eventfd` descriptors in child process prior to `exec()`.
+  - Non-blocking zombie reaping: `try_reap()` utilizes `waitpid(-1, &status, WNOHANG)` to reap child processes without stalling reactor dispatch.
+  - Escalated shutdown: Transmits `Shutdown` opcode via queue, waits boundedly for graceful worker exit, escalates to `SIGTERM` and `SIGKILL` if timeout expires, and cleans up POSIX shared memory.
+  - Crash recovery: If the worker process crashes or terminates abnormally, the server detects the child exit via `try_reap()` or queue fault state, cleans up resources safely, and can restart a clean worker without compromising server continuity or dropping client network sessions.
+
 
 

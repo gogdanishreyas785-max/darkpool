@@ -244,3 +244,41 @@ Evidence location (exclude tokens, private roles/clues, and credentials):
 ~~~
 
 Historical loopback load results and five-player LAN records remain separate. Do not use a same-host 64-player result as evidence for this multi-computer acceptance.
+
+## Server-Worker IPC Integration and Multi-Process Verification
+
+### Integration Tests (`darkpool_worker_integration_tests`)
+
+Multi-process integration test verifying cross-process communication between `darkpool_server` / `WorkerProcessManager` and `darkpool_worker`.
+
+Execution:
+```bash
+ctest --test-dir build -R darkpool_worker_integration_tests --output-on-failure
+# Or direct executable invocation:
+./build/darkpool_worker_integration_tests ./build/darkpool_worker ./build/darkpool_server
+```
+
+Coverage areas:
+1. **Direct channel push/pop:** Tests bidirectionally transferring `WorkerRequestMessage` and `WorkerResponseMessage` across independent threads/processes using `ServerWorkerChannel` and `WorkerClientChannel` with eventfd notifications.
+2. **Queue bounds and backpressure:** Tests fixed capacity boundaries, verifying that overflowing the request queue triggers bounded timeout/backpressure without data corruption.
+3. **ProcessManager lifecycle:** End-to-end launch of `darkpool_worker`, parameter passing via CLI flags (`--request-shm`, `--response-shm`, `--worker-eventfd`, `--server-eventfd`), execution of `Ping` and `EvaluateMarketModel` simulation calculations, and clean shutdown.
+4. **Worker crash recovery:** Simulates worker ungraceful termination via `SIGKILL`, verifies `try_reap()` correctly reaps the child process without zombie leakage, cleans up shared memory, and launches a healthy worker instance that resumes message processing.
+5. **Stale shared memory cleanup:** Verifies that leftover or unlinked POSIX shared memory objects from prior unclean runs are unlinked and recreated cleanly.
+
+### Server-Worker Latency and Throughput Benchmark (`darkpool_worker_benchmark`)
+
+Measures cross-process round-trip latency and pipelined throughput between the server and worker process.
+
+Execution:
+```bash
+./build/darkpool_worker_benchmark ./build/darkpool_worker 10000
+```
+
+Observed characteristics (WSL2 environment, 10,000 iterations):
+- **Cross-process Ping-Pong (Roundtrip Latency):**
+  - Throughput: ~7,185 msg/sec
+  - Latency: p50 ~119 µs, p90 ~191 µs, p99 ~301 µs
+- **Batch Pipelining (128 In-Flight `EvaluateMarketModel` requests):**
+  - Throughput: ~434,700 msg/sec
+  - Latency: p50 ~75 µs, p90 ~173 µs, p99 ~243 µs
+
