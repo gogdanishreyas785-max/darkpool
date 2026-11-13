@@ -140,7 +140,7 @@ pid_t start_tls_server(
     std::uint16_t tls_port,
     const std::string& cert_path,
     const std::string& key_path,
-    const char* token_env = "test-moderator-token",
+    const char* token_env = "test-moderator-token-0123456789abcdef",
     const std::string& bind_ip = "127.0.0.1",
     std::string* server_stdout_path = nullptr) {
   set_operation("server startup");
@@ -1251,7 +1251,7 @@ void test_scenario_13_secret_redaction(const char* server_path) {
 void test_scenario_14_complete_match_gameplay(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-secret");
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-secret-0123456789abcdef0123456789");
   CHECK(child > 0);
 
   darkpool::transport::ClientTlsConfig client_cfg;
@@ -1262,7 +1262,7 @@ void test_scenario_14_complete_match_gameplay(const char* server_path) {
   // 1. Moderator connects
   auto mod = connect_tls_client(port, client_cfg);
   CHECK(mod != nullptr);
-  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-secret"}}));
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-secret-0123456789abcdef0123456789"}}));
   auto mod_conn_resp = mod->receive_frame();
   CHECK(mod_conn_resp.has_value());
 
@@ -2091,7 +2091,7 @@ void test_scenario_25_write_cursor_semantics(const char* server_path) {
 void test_scenario_26_tls_push_notifications_and_moderator_controls(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-secret");
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-secret-0123456789abcdef0123456789");
   CHECK(child > 0);
 
   darkpool::transport::ClientTlsConfig client_cfg;
@@ -2102,7 +2102,7 @@ void test_scenario_26_tls_push_notifications_and_moderator_controls(const char* 
   // 1. Moderator connects
   auto mod = connect_tls_client(port, client_cfg);
   CHECK(mod != nullptr);
-  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-secret"}}));
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-secret-0123456789abcdef0123456789"}}));
   auto mod_conn_resp = mod->receive_frame(5000, true);
   CHECK(mod_conn_resp.has_value());
 
