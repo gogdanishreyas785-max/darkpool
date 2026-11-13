@@ -204,7 +204,7 @@ def run_scenario_insider_win(server_bin, client_bin, temp_dir):
     log("==================================================================")
     port = find_free_port()
     key_file, cert_file, fingerprint = generate_cert(temp_dir, "127.0.0.1")
-    mod_token = "mod-token-scenario-1"
+    mod_token = "mod-token-scenario-1-0123456789abcdef"
 
     server_env = os.environ.copy()
     server_env["DARKPOOL_MODERATOR_TOKEN"] = mod_token
