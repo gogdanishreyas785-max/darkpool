@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <thread>
@@ -118,6 +119,16 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
       child_setup_errno = ECHILD;
     } else if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
       child_setup_errno = errno;
+    } else {
+      // ServerRuntime blocks SIGINT/SIGTERM for signalfd. Do not carry that
+      // mask into the worker: PR_SET_PDEATHSIG must be deliverable after exec.
+      sigset_t worker_signal_mask;
+      if (::sigemptyset(&worker_signal_mask) != 0 ||
+          ::sigaddset(&worker_signal_mask, SIGINT) != 0 ||
+          ::sigaddset(&worker_signal_mask, SIGTERM) != 0 ||
+          ::sigprocmask(SIG_UNBLOCK, &worker_signal_mask, nullptr) != 0) {
+        child_setup_errno = errno;
+      }
     }
     if (child_setup_errno != 0) {
       const ssize_t reported = ::write(exec_pipe[1], &child_setup_errno, sizeof(child_setup_errno));
