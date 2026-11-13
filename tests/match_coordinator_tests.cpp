@@ -1,4 +1,5 @@
 #include "darkpool/match_coordinator.hpp"
+#include "darkpool/credential_policy.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -1538,15 +1539,26 @@ void test_player_admission_security_and_identity() {
     coordinator.register_session(s, SessionRole::Player);
   }
 
-  // 1. Moderator creates match with admission token
+  // Weak caller-selected credentials are rejected before a protected match is created.
+  const auto weak_created = coordinator.handle(100, json{
+    {"type", "create_match"}, {"player_count", 5}, {"join_token", "too-short"}
+  });
+  CHECK(weak_created && (*weak_created)["type"] == "error");
+
+  const auto oversized_created = coordinator.handle(100, json{
+    {"type", "create_match"}, {"player_count", 5}, {"join_token", std::string(257U, 'x')}
+  });
+  CHECK(oversized_created && (*oversized_created)["type"] == "error");
+
+  // 1. Moderator creates match with a sufficiently long admission token
   const auto created = coordinator.handle(100, json{
     {"type", "create_match"},
     {"player_count", 5},
-    {"join_token", "protected-token-abc"}
+    {"join_token", "0123456789abcdef0123456789abcdef"}
   });
   CHECK(created && (*created)["type"] == "match_created");
   const auto match_id = (*created)["match_id"].get<std::uint64_t>();
-  CHECK((*created)["join_token"] == "protected-token-abc");
+  CHECK((*created)["join_token"] == "0123456789abcdef0123456789abcdef");
 
   // 2. Player joins without join token -> rejected
   const auto no_token = coordinator.handle(1, json{
@@ -1569,7 +1581,7 @@ void test_player_admission_security_and_identity() {
   const auto spoof_seat = coordinator.handle(1, json{
     {"type", "join_match"},
     {"match_id", match_id},
-    {"join_token", "protected-token-abc"},
+    {"join_token", "0123456789abcdef0123456789abcdef"},
     {"seat", 1}
   });
   CHECK(spoof_seat && (*spoof_seat)["type"] == "error");
@@ -1578,7 +1590,7 @@ void test_player_admission_security_and_identity() {
   const auto spoof_role = coordinator.handle(1, json{
     {"type", "join_match"},
     {"match_id", match_id},
-    {"join_token", "protected-token-abc"},
+    {"join_token", "0123456789abcdef0123456789abcdef"},
     {"role", "Insider"}
   });
   CHECK(spoof_role && (*spoof_role)["type"] == "error");
@@ -1588,7 +1600,7 @@ void test_player_admission_security_and_identity() {
   const auto valid_join = coordinator.handle(1, json{
     {"type", "join_match"},
     {"match_id", match_id},
-    {"join_token", "protected-token-abc"}
+    {"join_token", "0123456789abcdef0123456789abcdef"}
   });
   CHECK(valid_join && (*valid_join)["type"] == "joined_match");
   CHECK((*valid_join)["player_id"] == 1U);
@@ -1600,7 +1612,7 @@ void test_player_admission_security_and_identity() {
   const auto rejoin = coordinator.handle(1, json{
     {"type", "join_match"},
     {"match_id", match_id},
-    {"join_token", "protected-token-abc"}
+    {"join_token", "0123456789abcdef0123456789abcdef"}
   });
   CHECK(rejoin && (*rejoin)["type"] == "error");
   CHECK((*rejoin)["error"] == "connection already belongs to a match");
@@ -1610,7 +1622,7 @@ void test_player_admission_security_and_identity() {
   const auto mod_join = coordinator.handle(100, json{
     {"type", "join_match"},
     {"match_id", match_id},
-    {"join_token", "protected-token-abc"}
+    {"join_token", "0123456789abcdef0123456789abcdef"}
   });
   CHECK(mod_join && (*mod_join)["type"] == "error");
   CHECK((*mod_join)["error"] == "player permission required");
@@ -1628,7 +1640,7 @@ void test_player_admission_security_and_identity() {
     const auto j = coordinator.handle(s, json{
       {"type", "join_match"},
       {"match_id", match_id},
-      {"join_token", "protected-token-abc"}
+      {"join_token", "0123456789abcdef0123456789abcdef"}
     });
     CHECK(j && (*j)["type"] == "joined_match");
   }
@@ -1751,7 +1763,7 @@ void test_list_matches_and_enrollment_token_authorization() {
   const auto created = coord.handle(10, json{
     {"type", "create_match"},
     {"player_count", 4},
-    {"join_token", "prot-secret-88"}
+    {"join_token", "fedcba9876543210fedcba9876543210"}
   });
   CHECK(created && (*created)["type"] == "match_created");
   const auto mid = (*created)["match_id"].get<std::uint64_t>();
@@ -1774,8 +1786,16 @@ void test_list_matches_and_enrollment_token_authorization() {
   });
   CHECK(unauth_token_req && (*unauth_token_req)["type"] == "error");
 
-  // 4. Set server enrollment secret
-  test_setenv("DARKPOOL_ENROLLMENT_TOKEN", "valid-enroll-token");
+  // 4. Weak server enrollment secrets fail closed.
+  test_setenv("DARKPOOL_ENROLLMENT_TOKEN", "weak-enrollment-secret");
+  const auto weak_enroll_req = coord.handle(20, json{
+    {"type", "get_match_token"}, {"match_id", mid},
+    {"enrollment_token", "weak-enrollment-secret"}
+  });
+  CHECK(weak_enroll_req && (*weak_enroll_req)["type"] == "error");
+
+  // A sufficiently long enrollment secret is accepted.
+  test_setenv("DARKPOOL_ENROLLMENT_TOKEN", "valid-enrollment-token-0123456789abcdef");
 
   // Wrong enrollment token -> rejected
   const auto bad_req = coord.handle(20, json{
@@ -1789,11 +1809,11 @@ void test_list_matches_and_enrollment_token_authorization() {
   const auto good_req = coord.handle(20, json{
     {"type", "get_match_token"},
     {"match_id", mid},
-    {"enrollment_token", "valid-enroll-token"}
+    {"enrollment_token", "valid-enrollment-token-0123456789abcdef"}
   });
   CHECK(good_req && (*good_req)["type"] == "match_token_result");
   CHECK((*good_req)["ok"] == true);
-  CHECK((*good_req)["join_token"] == "prot-secret-88");
+  CHECK((*good_req)["join_token"] == "fedcba9876543210fedcba9876543210");
 
   // Player joins using retrieved token
   const auto join_res = coord.handle(20, json{
