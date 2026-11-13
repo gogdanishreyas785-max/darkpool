@@ -18,16 +18,22 @@
 namespace darkpool::network {
 
 struct TokenBucketRateLimiter {
-  static constexpr double kRate = 20.0;     // 20 requests per second (DEC-11)
-  static constexpr double kBurst = 40.0;    // burst capacity 40 (DEC-11)
+  static constexpr double kRate = 20.0;     // Per-session request rate (DEC-11)
+  static constexpr double kBurst = 40.0;    // Per-session burst capacity
+  double rate{kRate};
+  double burst{kBurst};
   double tokens{kBurst};
   std::chrono::steady_clock::time_point last_refill{std::chrono::steady_clock::now()};
+
+  TokenBucketRateLimiter() = default;
+  TokenBucketRateLimiter(double configured_rate, double configured_burst) noexcept
+      : rate(configured_rate), burst(configured_burst), tokens(configured_burst) {}
 
   bool try_acquire() {
     const auto now = std::chrono::steady_clock::now();
     const auto elapsed = std::chrono::duration<double>(now - last_refill).count();
     last_refill = now;
-    tokens = std::min(kBurst, tokens + elapsed * kRate);
+    tokens = std::min(burst, tokens + elapsed * rate);
     if (tokens >= 1.0) {
       tokens -= 1.0;
       return true;
@@ -144,6 +150,10 @@ class ServerRuntime {
   darkpool::transport::SslCtxPtr server_ssl_ctx_{nullptr};
 
   std::map<int, Connection> clients_;
+  // Shared across connections so reconnects cannot reset the unauthenticated
+  // authentication-frame budget. The burst accommodates a coordinated start
+  // of the configured 260 player/moderator clients.
+  TokenBucketRateLimiter unauthenticated_rate_limiter_{32.0, 512.0};
   bool is_running_{false};
   bool should_terminate_{false};
 
