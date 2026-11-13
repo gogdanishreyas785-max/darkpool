@@ -1736,7 +1736,8 @@ void test_player_reconnect_restores_original_seat() {
   CHECK(first_join.contains("resume_token"));
   const auto original_resume_token = first_join["resume_token"].get<std::string>();
   CHECK(original_resume_token.size() == 32U);
-  const auto malformed_resume = coordinator.handle(1, json{
+  coordinator.register_session(4, SessionRole::Player);
+  const auto malformed_resume = coordinator.handle(4, json{
       {"type", "join_match"}, {"match_id", match_id}, {"resume_token", std::string(4096U, 'x')}});
   CHECK(malformed_resume && (*malformed_resume)["type"] == "error");
   CHECK((*malformed_resume)["error"] == "invalid or expired player resume token");
