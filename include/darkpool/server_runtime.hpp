@@ -81,6 +81,7 @@ class ServerRuntime {
   bool start(std::string& error_msg);
   bool add_epoll_event_source(int fd, EpollEventHandler handler,
                               std::string& error_msg);
+  bool remove_epoll_event_source(int fd) noexcept;
   int run();
   bool step(int timeout_ms = -1);
   void stop() noexcept;

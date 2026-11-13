@@ -244,3 +244,59 @@ Evidence location (exclude tokens, private roles/clues, and credentials):
 ~~~
 
 Historical loopback load results and five-player LAN records remain separate. Do not use a same-host 64-player result as evidence for this multi-computer acceptance.
+
+## Server-Worker IPC Integration and Multi-Process Verification
+
+### Integration Tests (`darkpool_worker_integration_tests`)
+
+Multi-process integration test verifying cross-process communication between `darkpool_server` / `WorkerProcessManager` and `darkpool_worker`.
+
+Execution:
+```bash
+ctest --test-dir build -R darkpool_worker_integration_tests --output-on-failure
+# Or direct executable invocation:
+./build/darkpool_worker_integration_tests ./build/darkpool_worker ./build/darkpool_server
+```
+
+Coverage areas:
+1. **Direct channel push/pop:** Tests bidirectionally transferring `WorkerRequestMessage` and `WorkerResponseMessage` across independent threads/processes using `ServerWorkerChannel` and `WorkerClientChannel` with eventfd notifications.
+2. **Queue bounds and backpressure:** Tests fixed capacity boundaries, verifying that overflowing the request queue triggers bounded timeout/backpressure without data corruption.
+3. **ProcessManager lifecycle & readiness:** End-to-end launch of `darkpool_worker` with genuine `WorkerOpcode::Ready` handshake, parameter passing via CLI flags (`--request-shm`, `--response-shm`, `--worker-eventfd`, `--server-eventfd`), execution of `Ping` and `EvaluateMarketModel` simulation calculations, and clean shutdown.
+4. **Real Server–Worker E2E (`eval_model`):** Launches real `darkpool_server` with `darkpool_worker`, connects a real client over TCP, sends `eval_model` frames, and verifies asynchronous response delivery via the production `ServerRuntime` epoll reactor path with correlated request IDs.
+5. **Input validation & Range checks:** Tests rejection of invalid prices, out-of-range health, demand, volume, and sentiment values with informative error messages.
+6. **Worker mid-request SIGKILL & recovery:** Simulates worker termination via `SIGKILL` while connected to the server. Verifies that the server reaps the dead worker, cleans up state, fails pending requests rather than hanging, automatically restarts a healthy worker instance, registers its eventfd in epoll, and resumes servicing client queries.
+7. **True in-flight SIGSTOP/SIGKILL:** Confirms the worker has entered the stopped state before submitting a request, then kills it and verifies the exact pending request receives one correlated failure before the replacement worker serves later requests.
+8. **Worker startup failure handling:** Verifies that when the worker binary is missing or fails startup, the server continues normal execution and returns graceful failure frames to client requests without hanging.
+9. **Client disconnect cleanup:** Verifies that pending worker requests for disconnected client sessions are cleanly purged without dangling session references or memory leaks.
+10. **Epoll registration failure cleanup (test-hook builds):** Configure with `-DDARKPOOL_ENABLE_TEST_HOOKS=ON`. A test-only server argument injects worker eventfd registration failure; the test verifies the client receives `worker unavailable`, the child is reaped, and both shared-memory objects are removed. Ordinary builds leave this injection hook disabled.
+
+### Server-Worker Latency and Throughput Benchmark (`darkpool_worker_benchmark`)
+
+Measures cross-process round-trip latency and pipelined throughput between the server and worker process with strict verification.
+
+Execution:
+```bash
+./build/darkpool_worker_benchmark ./build/darkpool_worker 10000
+```
+
+Benchmark integrity controls:
+- Enforces strict completion deadlines for both ping-pong and pipelined benchmarks.
+- Tracks and verifies all sent and received IDs, asserting that exact completed count equals the requested message count.
+- Aborts immediately on any missing, timed-out, duplicate, or mismatched responses. Throughput is never calculated from incomplete counts.
+
+Observed characteristics (WSL2 environment, 10,000 completed iterations):
+- **Cross-process Ping-Pong (Strict Roundtrip Latency):**
+  - Completed: 10,000 / 10,000 messages (100% completed)
+  - Throughput: ~6,802 msg/sec
+  - Latency: Min: 79 µs | p50: ~125 µs | p90: ~212 µs | p99: ~306 µs
+- **Batch Pipelining (128 In-Flight `EvaluateMarketModel` requests):**
+  - Completed: 10,000 / 10,000 messages (100% completed)
+  - Throughput: ~419,934 msg/sec
+  - Latency: Min: 39 µs | p50: ~81 µs | p90: ~158 µs | p99: ~665 µs
+
+### Test Suite Organization
+
+- **Total Registered CTest Targets:** 44 tests (listed via `ctest -N`).
+- **Local Comprehensive Suite:** Runs all 44 tests (`ctest --test-dir build`), including multi-process integration tests, TLS integration, network tests, coordinator tests, POSIX MQ/SHM, and playable match scenarios.
+- **CI Workflow Scope (`.github/workflows/s1-ubuntu.yml`):** Runs focused core and POSIX IPC tests (`-R "^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests|darkpool_ipc_async_tests|darkpool_ipc_epoll_tests|darkpool_process_shared_queue_tests|darkpool_worker_integration_tests)$"`). Multi-minute stress and multi-host acceptance scripts are reserved for targeted local execution.
+

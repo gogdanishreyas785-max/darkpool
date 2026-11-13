@@ -21,10 +21,10 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v5
       - name: Configure Release build
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON -DDARKPOOL_ENABLE_TEST_HOOKS=ON
       - name: Build
         run: cmake --build build --parallel
       - name: Run focused core and POSIX IPC tests
         run: >
           ctest --test-dir build --output-on-failure
-          -R "^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests|darkpool_ipc_async_tests|darkpool_ipc_epoll_tests|darkpool_process_shared_queue_tests)$"
+          -R "^(darkpool_engine_tests|darkpool_network_tests|darkpool_coordinator_tests|darkpool_cli_tests|darkpool_posix_mq_tests|darkpool_posix_shm_tests|darkpool_ipc_async_tests|darkpool_ipc_epoll_tests|darkpool_process_shared_queue_tests|darkpool_worker_integration_tests)$"

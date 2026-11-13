@@ -231,6 +231,19 @@ bool ServerRuntime::add_epoll_event_source(int fd, EpollEventHandler handler,
   return true;
 }
 
+bool ServerRuntime::remove_epoll_event_source(int fd) noexcept {
+  if (epoll_fd_ < 0 || fd < 0) {
+    return false;
+  }
+  auto it = event_sources_.find(fd);
+  if (it != event_sources_.end()) {
+    (void)::epoll_ctl(epoll_fd_, EPOLL_CTL_DEL, fd, nullptr);
+    event_sources_.erase(it);
+    return true;
+  }
+  return false;
+}
+
 void ServerRuntime::accept_pending_clients(int listener_fd, bool is_tls) {
   while (true) {
     const auto client =

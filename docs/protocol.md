@@ -156,3 +156,92 @@ A player session can request a token for a joinable protected match using:
 The server only honors this request for a player session while the match is in its Lobby phase. The server must have `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET` configured, and the client must present the matching secret. The response contains `match_token_result` with `join_token`; invalid or missing authorization is rejected. The open-lobby response indicates that no token is needed.
 
 This in-band enrollment is optional and is not configured automatically by the standard TLS setup scripts. Treat the enrollment secret as a credential that grants access to protected-match join tokens. The default launcher workflow instead uses SSH/SCP token synchronization after a match has been created.
+
+## Server-Worker Internal IPC Wire Protocol
+
+In addition to client TCP/TLS JSON framing, the server can delegate non-authoritative market modeling to a child worker process (`darkpool_worker`) over POSIX shared memory queues (`darkpool::ipc::ProcessSharedQueue`) synchronized by Linux `eventfd` (`EventNotifier`).
+
+### Memory Layout & Alignment
+
+The request and response queues use fixed-size 256-byte message slots (`darkpool::ipc::QueueMessageSlot`) with zero dynamic memory allocation. All structures use 8-byte alignment `#pragma pack(push, 8)`.
+
+#### 1. Worker Request Message (`WorkerRequestMessage`)
+Transferred from `darkpool_server` to `darkpool_worker`:
+- `request_id`: uint64 sequence / correlation identifier generated monotonically by the server.
+- `client_session_id`: uint64 client network session identifier.
+- `opcode`: int32 operation code (`1 = Ping`, `2 = EvaluateMarketModel`, `3 = Shutdown`, `4 = Ready`).
+- `price`: int32 baseline asset price.
+- `health`: int32 baseline market health.
+- `event_impact`: int32 scheduled business event impact (-100 to +100).
+- `demand`: int32 buy volume / demand pressure (-10000 to +10000).
+- `volume`: int32 total transaction volume (non-negative).
+- `sentiment`: int32 market sentiment index (-1000 to +1000).
+- `total_supply`: uint32 circulating supply.
+- `reserve`: uint32 treasury reserve units.
+- `flags`: uint32 control bits.
+
+#### 2. Worker Response Message (`WorkerResponseMessage`)
+Transferred from `darkpool_worker` to `darkpool_server`:
+- `request_id`: uint64 matching the request sequence correlation ID.
+- `client_session_id`: uint64 client network session identifier.
+- `opcode`: int32 operation code matching the request.
+- `status`: int32 outcome status (`0 = Success`, `1 = InvalidPayload`, `2 = QueueFull`, `3 = TimedOut`, `4 = WorkerFaulted`, `5 = WorkerExited`).
+- `projected_price`: int32 calculated model price after simulation (clamped between 1 and 100).
+- `projected_health`: int32 calculated market health (clamped between 0 and 10).
+- `price_delta`: int32 change in asset price.
+- `baseline_price`: int32 original input price.
+- `flags`: uint32 status bits.
+- `worker_pid`: uint32 worker PID producing the response.
+
+### Client-Facing JSON Framing (`eval_model`)
+
+Clients can submit an asynchronous simulation query. The optional `request_id` may be a JSON string or number; the server uses a separate internal 64-bit correlation ID and echoes the original client value with its original JSON type in success and failure responses.
+
+```json
+{
+  "type": "eval_model",
+  "request_id": "req-client-42",
+  "price": 100,
+  "health": 50,
+  "event_impact": 1,
+  "demand": 10,
+  "volume": 20,
+  "sentiment": 5,
+  "total_supply": 1000,
+  "reserve": 500
+}
+```
+
+Input fields are strictly validated on the server before queuing:
+- `price`: Integer in `[1, 100000]`
+- `health`: Integer in `[0, 100]`
+- `event_impact`: Integer in `[-100, 100]`
+- `demand`: Integer in `[-10000, 10000]`
+- `volume`: Non-negative integer in `[0, 1000000]`
+- `sentiment`: Integer in `[-1000, 1000]`
+
+If any input is outside its valid range, the server immediately returns:
+```json
+{
+  "type": "eval_model_response",
+  "request_id": "req-client-42",
+  "status": "failed",
+  "error": "invalid price: must be integer between 1 and 100000"
+}
+```
+
+When the worker returns the calculation via the process-shared queue, `ServerRuntime` receives an epoll notification on the server eventfd and responds asynchronously:
+```json
+{
+  "type": "eval_model_response",
+  "request_id": "req-client-42",
+  "status": "success",
+  "projected_price": 102,
+  "projected_health": 7,
+  "price_delta": 2,
+  "baseline_price": 103,
+  "worker_pid": 12345
+}
+```
+If the worker process is absent, terminated, or the queue is saturated, the server returns an error response (`status: "failed"`, `error: "worker unavailable"`) without delaying or affecting authoritative match coordination. All calculations use widened safe 64-bit integer arithmetic to prevent signed integer overflow.
+
