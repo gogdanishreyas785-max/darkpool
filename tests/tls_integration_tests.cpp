@@ -870,7 +870,7 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   std::string log_arg = server_log_path;
 
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path,
-                                      certs->server_key_pem_path, "mod-token", "127.0.0.1", &log_arg);
+                                      certs->server_key_pem_path, "mod-token-0123456789abcdef0123456789", "127.0.0.1", &log_arg);
   CHECK(child > 0);
   ServerSubprocessGuard server_guard{child};
 
@@ -890,7 +890,7 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
   // 2. Setup healthy sibling match participants
   auto mod = connect_tls_client(port, client_cfg);
   CHECK(mod != nullptr);
-  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-0123456789abcdef0123456789"}}));
   auto mod_conn = mod->receive_frame();
   CHECK(mod_conn.has_value());
 
@@ -1091,7 +1091,7 @@ void test_scenario_11_slow_reader_bounds(const char* server_path) {
 void test_scenario_12_flood_rate_limiting(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token-0123456789abcdef0123456789");
   CHECK(child > 0);
   ServerSubprocessGuard server_guard{child};
 
@@ -1103,7 +1103,7 @@ void test_scenario_12_flood_rate_limiting(const char* server_path) {
   // Create match and initialize to Event phase
   auto mod = connect_tls_client(port, client_cfg);
   CHECK(mod != nullptr);
-  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  CHECK(mod->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-0123456789abcdef0123456789"}}));
   auto mod_conn = mod->receive_frame();
   CHECK(mod_conn.has_value());
 
@@ -1217,7 +1217,7 @@ void test_scenario_13_secret_redaction(const char* server_path) {
   const auto port = reserve_port();
 
   std::string stdout_log = certs->temp_dir_path + "/server_stdout.log";
-  const std::string sensitive_token = "ultra-secret-test-token-xyz123";
+  const std::string sensitive_token = "ultra-secret-test-token-xyz123-0123456789";
   const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, sensitive_token.c_str(), "127.0.0.1", &stdout_log);
   CHECK(child > 0);
 
@@ -1418,7 +1418,7 @@ void test_scenario_14_complete_match_gameplay(const char* server_path) {
 void test_scenario_15_concurrent_match_isolation(const char* server_path) {
   auto certs = generate_ephemeral_certs("127.0.0.1", 1, false, false);
   const auto port = reserve_port();
-  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token");
+  const auto child = start_tls_server(server_path, port, certs->server_cert_pem_path, certs->server_key_pem_path, "mod-token-0123456789abcdef0123456789");
   CHECK(child > 0);
 
   darkpool::transport::ClientTlsConfig client_cfg;
@@ -1428,7 +1428,7 @@ void test_scenario_15_concurrent_match_isolation(const char* server_path) {
 
   auto mod1 = connect_tls_client(port, client_cfg);
   CHECK(mod1 != nullptr);
-  CHECK(mod1->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  CHECK(mod1->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-0123456789abcdef0123456789"}}));
   (void)mod1->receive_frame();
   CHECK(mod1->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
   auto m1_create = mod1->receive_frame();
@@ -1437,7 +1437,7 @@ void test_scenario_15_concurrent_match_isolation(const char* server_path) {
 
   auto mod2 = connect_tls_client(port, client_cfg);
   CHECK(mod2 != nullptr);
-  CHECK(mod2->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token"}}));
+  CHECK(mod2->send_frame(json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-0123456789abcdef0123456789"}}));
   (void)mod2->receive_frame();
   CHECK(mod2->send_frame(json{{"type", "create_match"}, {"player_count", 3}}));
   auto m2_create = mod2->receive_frame();
