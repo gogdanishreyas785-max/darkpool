@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 project(darkpool_s1 LANGUAGES CXX)
 
 option(DARKPOOL_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+option(DARKPOOL_ENABLE_TEST_HOOKS "Enable test-only failure injection hooks" OFF)
 
 find_package(nlohmann_json 3.11.3 CONFIG QUIET)
 if(NOT nlohmann_json_FOUND)
@@ -146,6 +147,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   add_executable(darkpool_server src/server_main.cpp)
   target_link_libraries(darkpool_server PRIVATE darkpool_coordinator darkpool_communications darkpool_control darkpool_telemetry darkpool_ipc_worker)
+  if(DARKPOOL_ENABLE_TEST_HOOKS)
+    target_compile_definitions(darkpool_server PRIVATE DARKPOOL_ENABLE_TEST_HOOKS=1)
+  endif()
   darkpool_enable_warnings(darkpool_server)
 
   add_executable(darkpool_ctl src/darkpool_ctl_main.cpp)
@@ -195,6 +199,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(darkpool_worker_integration_tests PRIVATE darkpool_ipc_worker darkpool_communications Threads::Threads)
   if(DARKPOOL_RT_LIBRARY)
     target_link_libraries(darkpool_worker_integration_tests PRIVATE ${DARKPOOL_RT_LIBRARY})
+  endif()
+  if(DARKPOOL_ENABLE_TEST_HOOKS)
+    target_compile_definitions(darkpool_worker_integration_tests PRIVATE DARKPOOL_ENABLE_TEST_HOOKS=1)
   endif()
   darkpool_enable_warnings(darkpool_worker_integration_tests)
   add_test(NAME darkpool_worker_integration_tests

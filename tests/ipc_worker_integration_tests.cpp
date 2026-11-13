@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <iostream>
 #include <mqueue.h>
 #include <netinet/in.h>
@@ -115,6 +116,51 @@ static int connect_tcp(uint16_t port) {
   }
   return fd;
 }
+
+static bool wait_for_process_state(pid_t pid, char expected_state,
+                                   std::chrono::milliseconds timeout) {
+  const std::string stat_path = "/proc/" + std::to_string(pid) + "/stat";
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::ifstream stat_file(stat_path);
+    std::string stat_line;
+    if (std::getline(stat_file, stat_line)) {
+      const std::size_t comm_end = stat_line.rfind(')');
+      if (comm_end != std::string::npos && comm_end + 2U < stat_line.size() &&
+          stat_line[comm_end + 2U] == expected_state) {
+        return true;
+      }
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  return false;
+}
+
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+static bool wait_for_no_child_processes(pid_t pid, std::chrono::milliseconds timeout) {
+  const std::string children_path = "/proc/" + std::to_string(pid) + "/task/" +
+                                    std::to_string(pid) + "/children";
+  const auto deadline = std::chrono::steady_clock::now() + timeout;
+  while (std::chrono::steady_clock::now() < deadline) {
+    std::ifstream children_file(children_path);
+    std::string child_pid;
+    if (children_file.is_open() && !(children_file >> child_pid)) {
+      return true;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return false;
+}
+
+static bool shared_memory_object_exists(const std::string& name) {
+  const int fd = ::shm_open(name.c_str(), O_RDONLY, 0);
+  if (fd < 0) {
+    return errno != ENOENT;
+  }
+  ::close(fd);
+  return true;
+}
+#endif
 
 // -------------------------------------------------------------
 // Manager-level unit tests
@@ -281,7 +327,8 @@ struct ServerProcessFixture {
   ServerProcessFixture(const std::string& server_bin,
                        const std::string& worker_bin,
                        uint16_t target_port,
-                       bool enable_worker = true) {
+                       bool enable_worker = true,
+                       bool force_epoll_registration_failure = false) {
     port = target_port;
     unix_path = "/tmp/dp_srv_test_" + std::to_string(::getpid()) + "_" + std::to_string(port) + ".sock";
     req_shm = "/dp_srv_test_req_" + std::to_string(::getpid()) + "_" + std::to_string(port);
@@ -309,6 +356,13 @@ struct ServerProcessFixture {
           "--open-lobby",
           "--no-tls"
       };
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+      if (force_epoll_registration_failure) {
+        args.push_back("--test-fail-worker-epoll-registration");
+      }
+#else
+      (void)force_epoll_registration_failure;
+#endif
       if (enable_worker) {
         args.push_back("--worker");
         args.push_back("--worker-binary");
@@ -384,7 +438,7 @@ static void test_server_worker_eval_model_e2e(const std::string& server_bin, con
   // Send eval_model request
   json eval_req{
       {"type", "eval_model"},
-      {"request_id", "req-client-42"},
+      {"request_id", 42042},
       {"price", 100},
       {"health", 5},
       {"event_impact", 1},
@@ -399,7 +453,8 @@ static void test_server_worker_eval_model_e2e(const std::string& server_bin, con
   require(eval_resp.has_value(), "eval_model response received via epoll");
   require((*eval_resp)["type"] == "eval_model_response", "eval_model_response type");
   require((*eval_resp)["status"] == "success", "status success");
-  require((*eval_resp)["request_id"] == "req-client-42", "request_id correlated");
+  require((*eval_resp)["request_id"].is_number_integer(), "numeric request_id type preserved");
+  require((*eval_resp)["request_id"].get<int>() == 42042, "numeric request_id value preserved");
   require((*eval_resp)["projected_price"].get<int>() > 0, "projected_price positive");
   require((*eval_resp)["worker_pid"].get<int>() > 0, "worker_pid present");
 
@@ -524,7 +579,9 @@ static void test_server_worker_true_inflight_crash(const std::string& server_bin
 
   // 1. Freeze worker with SIGSTOP so it cannot pop or process incoming requests
   std::cout << "Freezing worker (PID: " << worker_pid << ") with SIGSTOP..." << std::endl;
-  ::kill(worker_pid, SIGSTOP);
+  require(::kill(worker_pid, SIGSTOP) == 0, "SIGSTOP delivered to worker");
+  require(wait_for_process_state(worker_pid, 'T', std::chrono::seconds(2)),
+          "worker confirmed stopped in /proc before request submission");
 
   // 2. Submit in-flight request while worker is frozen
   json inflight_req{
@@ -588,6 +645,44 @@ static void test_server_worker_true_inflight_crash(const std::string& server_bin
   std::cout << "[TEST] True in-flight crash test passed." << std::endl;
 }
 
+
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+static void test_server_worker_epoll_registration_failure(const std::string& server_bin,
+                                                           const std::string& worker_bin) {
+  std::cout << "[TEST] Worker cleanup after injected epoll registration failure..." << std::endl;
+  ServerProcessFixture server(server_bin, worker_bin, 49157, true, true);
+
+  int client_fd = connect_tcp(server.port);
+  require(client_fd >= 0, "client connected");
+
+  auto connect_resp = request_json(client_fd, json{{"type", "connect"}, {"role", "player"}});
+  require(connect_resp.has_value() && (*connect_resp)["type"] == "connect", "connected");
+
+  json eval_req{
+      {"type", "eval_model"},
+      {"request_id", 42043},
+      {"price", 50}
+  };
+  auto resp = request_json(client_fd, eval_req);
+  require(resp.has_value(), "received response after epoll registration failure");
+  require((*resp)["status"] == "failed", "request failed when worker epoll registration is unavailable");
+  require((*resp)["error"] == "worker unavailable", "worker failure surfaced to client");
+  require((*resp)["request_id"].is_number_integer() &&
+              (*resp)["request_id"].get<int>() == 42043,
+          "numeric request_id type preserved on error");
+
+  require(wait_for_no_child_processes(server.pid, std::chrono::seconds(2)),
+          "worker child reaped after registration failure");
+  require(!shared_memory_object_exists(server.req_shm),
+          "request shared memory removed after registration failure");
+  require(!shared_memory_object_exists(server.resp_shm),
+          "response shared memory removed after registration failure");
+
+  ::close(client_fd);
+  std::cout << "[TEST] Epoll registration failure cleanup passed." << std::endl;
+}
+#endif
+
 static void test_server_worker_startup_failure(const std::string& server_bin) {
   std::cout << "[TEST] Server behavior when worker fails startup..." << std::endl;
   // Non-existent worker binary path
@@ -631,6 +726,9 @@ int main(int argc, char* argv[]) {
     darkpool::ipc::test::test_server_worker_input_validation(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_crash_and_recovery_e2e(server_bin, worker_bin);
     darkpool::ipc::test::test_server_worker_true_inflight_crash(server_bin, worker_bin);
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+    darkpool::ipc::test::test_server_worker_epoll_registration_failure(server_bin, worker_bin);
+#endif
     darkpool::ipc::test::test_server_worker_startup_failure(server_bin);
   } catch (const std::exception& ex) {
     std::cerr << "Test failed with exception: " << ex.what() << std::endl;

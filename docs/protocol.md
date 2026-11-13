@@ -195,7 +195,8 @@ Transferred from `darkpool_worker` to `darkpool_server`:
 
 ### Client-Facing JSON Framing (`eval_model`)
 
-Clients can submit an asynchronous simulation query:
+Clients can submit an asynchronous simulation query. The optional `request_id` may be a JSON string or number; the server uses a separate internal 64-bit correlation ID and echoes the original client value with its original JSON type in success and failure responses.
+
 ```json
 {
   "type": "eval_model",

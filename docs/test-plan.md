@@ -265,8 +265,10 @@ Coverage areas:
 4. **Real Server–Worker E2E (`eval_model`):** Launches real `darkpool_server` with `darkpool_worker`, connects a real client over TCP, sends `eval_model` frames, and verifies asynchronous response delivery via the production `ServerRuntime` epoll reactor path with correlated request IDs.
 5. **Input validation & Range checks:** Tests rejection of invalid prices, out-of-range health, demand, volume, and sentiment values with informative error messages.
 6. **Worker mid-request SIGKILL & recovery:** Simulates worker termination via `SIGKILL` while connected to the server. Verifies that the server reaps the dead worker, cleans up state, fails pending requests rather than hanging, automatically restarts a healthy worker instance, registers its eventfd in epoll, and resumes servicing client queries.
+7. **True in-flight SIGSTOP/SIGKILL:** Confirms the worker has entered the stopped state before submitting a request, then kills it and verifies the exact pending request receives one correlated failure before the replacement worker serves later requests.
 7. **Worker startup failure handling:** Verifies that when the worker binary is missing or fails startup, the server continues normal execution and returns graceful failure frames to client requests without hanging.
 8. **Client disconnect cleanup:** Verifies that pending worker requests for disconnected client sessions are cleanly purged without dangling session references or memory leaks.
+9. **Epoll registration failure cleanup (test-hook builds):** Configure with `-DDARKPOOL_ENABLE_TEST_HOOKS=ON`. A test-only server argument injects worker eventfd registration failure; the test verifies the client receives `worker unavailable`, the child is reaped, and both shared-memory objects are removed. Ordinary builds leave this injection hook disabled.
 
 ### Server-Worker Latency and Throughput Benchmark (`darkpool_worker_benchmark`)
 

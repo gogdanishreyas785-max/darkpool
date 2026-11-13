@@ -63,6 +63,9 @@ struct ServerConfig {
   std::string worker_binary;
   std::string worker_req_shm;
   std::string worker_resp_shm;
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+  bool test_fail_worker_epoll_registration{false};
+#endif
 };
 
 bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string& error_msg) {
@@ -247,6 +250,10 @@ bool parse_server_args(int argc, char** argv, ServerConfig& config, std::string&
       }
       config.worker_resp_shm = argv[++i];
       config.enable_worker = true;
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+    } else if (arg == "--test-fail-worker-epoll-registration") {
+      config.test_fail_worker_epoll_registration = true;
+#endif
     } else {
       std::uint16_t p = 0;
       if (darkpool::network::parse_port(argv[i], p)) {
@@ -385,7 +392,7 @@ int main(int argc, char** argv) {
   // correlation_id (request_id) -> struct PendingWorkerRequest
   struct PendingWorkerRequest {
     std::uint64_t client_session_id{0};
-    std::string client_request_id;
+    json client_request_id{nullptr};
     std::chrono::steady_clock::time_point submitted_at;
   };
   std::unordered_map<std::uint64_t, PendingWorkerRequest> pending_worker_requests;
@@ -398,7 +405,7 @@ int main(int argc, char** argv) {
             {"status", "failed"},
             {"error", std::string(reason)}
         };
-        if (!pending.client_request_id.empty()) {
+        if (!pending.client_request_id.is_null()) {
           resp_json["request_id"] = pending.client_request_id;
         }
         (void)runtime.send_message(pending.client_session_id, Frame(resp_json));
@@ -433,7 +440,14 @@ int main(int argc, char** argv) {
       // Register new worker notify eventfd in epoll
       if (worker_mgr->server_notify_fd() >= 0) {
         std::string epoll_err;
-        const bool reg_ok = runtime.add_epoll_event_source(
+        bool reg_ok = false;
+#if defined(DARKPOOL_ENABLE_TEST_HOOKS)
+        if (config.test_fail_worker_epoll_registration) {
+          epoll_err = "injected worker epoll registration failure";
+        } else
+#endif
+        {
+          reg_ok = runtime.add_epoll_event_source(
             worker_mgr->server_notify_fd(),
             [&](std::uint32_t events) {
               if ((events & static_cast<std::uint32_t>(EPOLLIN)) != 0U) {
@@ -455,7 +469,7 @@ int main(int argc, char** argv) {
                             {"baseline_price", resp.baseline_price},
                             {"worker_pid", resp.worker_pid}
                         };
-                        if (!pending.client_request_id.empty()) {
+                        if (!pending.client_request_id.is_null()) {
                           resp_json["request_id"] = pending.client_request_id;
                         }
                         runtime.send_message(pending.client_session_id, Frame(resp_json));
@@ -466,6 +480,7 @@ int main(int argc, char** argv) {
               }
             },
             epoll_err);
+        }
 
         if (!reg_ok) {
           std::cerr << "error: failed to register worker notify eventfd in epoll: " << epoll_err << '\n';
@@ -597,13 +612,10 @@ int main(int argc, char** argv) {
     if (frame.payload().is_object() &&
         frame.payload().value("type", std::string{}) == "eval_model") {
       const auto& p = frame.payload();
-      std::string client_req_id;
-      if (p.contains("request_id")) {
-        if (p["request_id"].is_string()) {
-          client_req_id = p["request_id"].get<std::string>();
-        } else if (p["request_id"].is_number()) {
-          client_req_id = p["request_id"].dump();
-        }
+      json client_req_id = nullptr;
+      if (p.contains("request_id") &&
+          (p["request_id"].is_string() || p["request_id"].is_number())) {
+        client_req_id = p["request_id"];
       }
 
       auto send_client_error = [&](std::string_view err_msg) {
@@ -612,7 +624,7 @@ int main(int argc, char** argv) {
             {"status", "failed"},
             {"error", std::string(err_msg)}
         };
-        if (!client_req_id.empty()) {
+        if (!client_req_id.is_null()) {
           err_resp["request_id"] = client_req_id;
         }
         return runtime.send_message(session_id, Frame(err_resp));
@@ -707,7 +719,7 @@ int main(int argc, char** argv) {
                   {"status", "failed"},
                   {"error", "worker request timed out"}
               };
-              if (!pending.client_request_id.empty()) {
+              if (!pending.client_request_id.is_null()) {
                 err_resp["request_id"] = pending.client_request_id;
               }
               runtime.send_message(pending.client_session_id, Frame(err_resp));
