@@ -26,7 +26,7 @@ The CMake configuration defines tests for these areas:
 
 - **Engine:** role-count boundaries, initial state, trading, reserve/supply invariants, clues, voting, victory precedence, and deterministic behavior.
 - **Communications primitives:** JSON framing, fragmented/coalesced stream decoding, bounded output queues, socket lifecycle, and protocol errors.
-- **Coordinator and CLI:** match creation/joining, admission-token enforcement, permission boundaries, phase transitions, command parsing, and result formatting.
+- **Coordinator and CLI:** match creation/joining, admission-token enforcement, permission boundaries, phase transitions, command parsing, and result formatting. Credential regressions verify minimum/maximum secret lengths, malformed resume-token rejection, no partial token issuance on entropy-source failure, and constant-time helper behavior for matching and length-mismatched inputs.
 - **Server integration:** UNIX-domain sockets, TCP sessions, authentication, gameplay flows, variable-size matches, notifications, timers/deadlines, late actions, and malformed input.
 - **TLS integration:** OpenSSL TLS 1.3 handshakes, certificate trust and identity validation, transport I/O, and negative security cases.
 - **Reactor dispatch:** readiness decisions for nonblocking socket and TLS operations.
