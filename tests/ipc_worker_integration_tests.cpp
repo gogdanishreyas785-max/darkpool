@@ -280,6 +280,22 @@ static void test_process_manager_end_to_end(const std::string& worker_bin) {
   require(mgr.is_alive(), "worker is_alive");
   std::cout << "Worker launched with PID: " << mgr.worker_pid() << std::endl;
 
+  // Verify the exec handoff applied no_new_privs in the actual worker process.
+  {
+    std::ifstream status_file("/proc/" + std::to_string(mgr.worker_pid()) + "/status");
+    require(status_file.good(), "open worker proc status");
+    std::string status_line;
+    bool no_new_privs_enabled = false;
+    while (std::getline(status_file, status_line)) {
+      if (status_line.rfind("NoNewPrivs:", 0U) == 0U &&
+          status_line.find('1') != std::string::npos) {
+        no_new_privs_enabled = true;
+        break;
+      }
+    }
+    require(no_new_privs_enabled, "worker no_new_privs is enabled");
+  }
+
   WorkerRequestMessage req{};
   req.opcode = static_cast<int32_t>(WorkerOpcode::Ping);
   req.request_id = 100;
