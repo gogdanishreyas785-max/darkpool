@@ -26,7 +26,7 @@ The same JSON framing is used over UNIX-domain sockets, plaintext TCP, and TLS 1
 
 1. The client establishes the selected transport. TLS clients verify the server certificate using a configured local CA or server-leaf fingerprint, including certificate validity and IP SAN checks.
 2. The client identifies its session role as player or moderator during connection setup. Moderator sessions must provide the configured moderator authentication token; the server fails closed when that token is not configured.
-3. The server assigns a session ID. For a protected match, the moderator creates a match with its own join token. Player admission requires the correct match ID and match token.
+3. The server assigns a session ID. For a protected match, the moderator creates a match with its own join token. Player admission requires the correct match ID and match token. The coordinator compares protected-match join tokens using its constant-time comparison helper. A match token grants admission to that match; it does not grant moderator privileges.
 4. The server associates the connection/session with a match and assigns player identity/seat and private role. Client-supplied role/seat identity fields are rejected.
 5. Commands are authorized against session role, match membership, current phase, player activity, and role-specific rules.
 6. The coordinator applies state changes through the game engine and emits responses plus audience-filtered notifications. Private roles, hints, clue answers, research signals, and individual balances/holdings must not be sent through public snapshots.
