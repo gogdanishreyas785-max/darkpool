@@ -191,7 +191,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::create(
   std::string name(shm_name);
 
   // Exclusive creation with 0600 permissions
-  const int fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL, 0600);
+  const int fd = ::shm_open(name.c_str(), O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (fd < 0) {
     const int err = errno;
     error_msg = "shm_open O_CREAT|O_EXCL failed: " + std::string(std::strerror(err));
@@ -336,7 +336,7 @@ std::optional<ProcessSharedQueue> ProcessSharedQueue::open_existing(
   }
 
   std::string name(shm_name);
-  const int fd = ::shm_open(name.c_str(), O_RDWR, 0);
+  const int fd = ::shm_open(name.c_str(), O_RDWR | O_CLOEXEC, 0);
   if (fd < 0) {
     const int err = errno;
     error_msg = "shm_open O_RDWR failed: " + std::string(std::strerror(err));
