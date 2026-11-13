@@ -4,8 +4,12 @@
 #if defined(__linux__)
 
 #include <chrono>
+#include <cerrno>
 #include <csignal>
 #include <cstdlib>
+#include <cstring>
+#include <sys/prctl.h>
+#include <sys/resource.h>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -52,6 +56,22 @@ int main(int argc, char** argv) {
       std::cerr << "[darkpool_worker] refusing credential-bearing environment\n";
       return 2;
     }
+  }
+
+  // Defense in depth for the compute-only child: prevent later privilege-
+  // gaining exec transitions, deny ptrace/core-dump access to its address
+  // space, and disable core dumps. This is not a syscall sandbox.
+  if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 ||
+      ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+    std::cerr << "[darkpool_worker] required process hardening failed: "
+              << std::strerror(errno) << '\n';
+    return 1;
+  }
+  struct rlimit core_limit {0, 0};
+  if (::setrlimit(RLIMIT_CORE, &core_limit) != 0) {
+    std::cerr << "[darkpool_worker] failed to disable core dumps: "
+              << std::strerror(errno) << '\n';
+    return 1;
   }
 
   std::string req_shm;
