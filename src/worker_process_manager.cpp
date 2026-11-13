@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -90,6 +91,10 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
     return std::nullopt;
   }
 
+  // Bind the worker lifetime to this server process. If the server crashes,
+  // the kernel sends SIGTERM to the worker rather than leaving an orphan.
+  const pid_t expected_parent_pid = ::getpid();
+
   // 2. Fork worker process
   const pid_t pid = ::fork();
   if (pid < 0) {
@@ -102,6 +107,23 @@ std::optional<WorkerProcessManager> WorkerProcessManager::launch(
   if (pid == 0) {
     // Child process
     ::close(exec_pipe[0]);
+
+    // Install parent-death handling before exec and close the fork/parent-exit
+    // race. Set no_new_privs before execve so even a misconfigured setuid
+    // worker binary cannot gain privilege during the exec transition.
+    int child_setup_errno = 0;
+    if (::prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0) != 0) {
+      child_setup_errno = errno;
+    } else if (::getppid() != expected_parent_pid) {
+      child_setup_errno = ECHILD;
+    } else if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+      child_setup_errno = errno;
+    }
+    if (child_setup_errno != 0) {
+      (void)::write(exec_pipe[1], &child_setup_errno, sizeof(child_setup_errno));
+      ::close(exec_pipe[1]);
+      ::_exit(127);
+    }
 
     // Clear O_CLOEXEC on eventfd descriptors so they survive execv
     int flags = ::fcntl(w_efd, F_GETFD);
