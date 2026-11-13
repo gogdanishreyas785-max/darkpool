@@ -1539,6 +1539,15 @@ void test_player_admission_security_and_identity() {
     coordinator.register_session(s, SessionRole::Player);
   }
 
+  // Weak environment-provided custom tokens also fail closed.
+  test_unsetenv("DARKPOOL_OPEN_LOBBY");
+  test_setenv("DARKPOOL_MATCH_JOIN_TOKEN", "weak-env-token");
+  const auto weak_env_created = coordinator.handle(100, json{
+    {"type", "create_match"}, {"player_count", 5}
+  });
+  CHECK(weak_env_created && (*weak_env_created)["type"] == "error");
+  test_unsetenv("DARKPOOL_MATCH_JOIN_TOKEN");
+
   // Weak caller-selected credentials are rejected before a protected match is created.
   const auto weak_created = coordinator.handle(100, json{
     {"type", "create_match"}, {"player_count", 5}, {"join_token", "too-short"}
@@ -1727,6 +1736,10 @@ void test_player_reconnect_restores_original_seat() {
   CHECK(first_join.contains("resume_token"));
   const auto original_resume_token = first_join["resume_token"].get<std::string>();
   CHECK(original_resume_token.size() == 32U);
+  const auto malformed_resume = coordinator.handle(1, json{
+      {"type", "join_match"}, {"match_id", match_id}, {"resume_token", std::string(4096U, 'x')}});
+  CHECK(malformed_resume && (*malformed_resume)["type"] == "error");
+  CHECK((*malformed_resume)["error"] == "invalid or expired player resume token");
   CHECK((*coordinator.handle(100, json{{"type", "start_match"}, {"match_id", match_id}}))["ok"]);
 
   coordinator.unregister_session(1);
