@@ -711,6 +711,15 @@ static void test_server_worker_startup_failure(const std::string& server_bin) {
 } // namespace darkpool::ipc::test
 
 int main(int argc, char* argv[]) {
+  // Seed credential-bearing variables in the test runner's environment. The
+  // WorkerProcessManager must not pass them through execve() to darkpool_worker.
+  (void)::setenv("DARKPOOL_MODERATOR_TOKEN",
+                 "0123456789abcdef0123456789abcdef", 1);
+  (void)::setenv("DARKPOOL_ENROLLMENT_TOKEN",
+                 "fedcba9876543210fedcba9876543210", 1);
+  (void)::setenv("DARKPOOL_PLAYER_RESUME_TOKEN",
+                 "resume-token-test-sentinel", 1);
+
   if (argc < 2) {
     std::cerr << "Usage: darkpool_worker_integration_tests <darkpool_worker_path> [server_path]" << std::endl;
     return 1;
