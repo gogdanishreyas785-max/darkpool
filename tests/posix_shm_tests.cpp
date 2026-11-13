@@ -1131,7 +1131,7 @@ void test_load_harness_cleanup_after_forced_server_exit(const std::string& serve
   using darkpool::load_test::telemetry_shm_for_test_server;
 
   const auto socket_path = generate_unique_socket_path();
-  const auto server_pid = spawn_server_unix(server_bin, socket_path, "test-telemetry-cleanup-token");
+  const auto server_pid = spawn_server_unix(server_bin, socket_path, "test-telemetry-cleanup-token-0123456789abcdef");
   CHECK(server_pid > 0);
   if (server_pid <= 0) {
     return;
