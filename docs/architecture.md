@@ -152,7 +152,7 @@ Return to epoll_wait()
 
 TLS adds an important detail: an OpenSSL read can need socket writability, and an OpenSSL write can need socket readability. The runtime resumes the operation according to the readiness direction requested by TLS, not merely according to whether the application intended to read or write. `include/darkpool/reactor_dispatch.hpp` provides a testable helper for these readiness decisions.
 
-The server runtime also manages connection lifecycle, per-session request rate limits, bounded outgoing queues, and broadcast/multicast delivery.
+The server runtime also manages connection lifecycle, a shared pre-authentication request budget (32 frames/second, burst 512) that cannot be reset by reconnecting, per-session authenticated request rate limits (20 requests/second, burst 40), bounded outgoing queues, and broadcast/multicast delivery. The pre-authentication budget accommodates the configured 260 player/moderator connections starting together; it is server-wide rather than per-source-IP protection.
 
 Implemented in `include/darkpool/server_runtime.hpp` and `src/server_runtime.cpp`.
 
