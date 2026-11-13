@@ -437,6 +437,20 @@ void test_complete_three_round_match(const char* server_path, std::size_t player
 }
 
 void test_moderator_authentication(const char* server_path) {
+  // A configured but weak moderator credential must fail server startup.
+  {
+    const auto port = reserve_port();
+    CHECK(port != 0U);
+    const auto server_pid = start_server(server_path, port, "weak-secret");
+    CHECK(server_pid > 0);
+    if (server_pid > 0) {
+      int status = 0;
+      CHECK(::waitpid(server_pid, &status, 0) == server_pid);
+      CHECK(WIFEXITED(status));
+      CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 2);
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Scenario 1: Server configured WITHOUT DARKPOOL_MODERATOR_TOKEN (fail closed)
   // -------------------------------------------------------------------------
