@@ -1162,7 +1162,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
       CHECK(::lstat(stale_path.c_str(), &st) == 0);
       CHECK(S_ISSOCK(st.st_mode));
 
-      const auto child = start_unix_server(server_path, stale_path, "mod-token");
+      const auto child = start_unix_server(server_path, stale_path, "mod-token-0123456789abcdef0123456789");
       CHECK(child >= 0);
       if (child >= 0) {
         const int client = connect_unix_with_retry(stale_path);
@@ -1199,7 +1199,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
       // Set permissions to 0000 so connect() yields EACCES
       CHECK(chmod(perm_path.c_str(), 0000) == 0);
 
-      const auto child = start_unix_server(server_path, perm_path, "mod-token");
+      const auto child = start_unix_server(server_path, perm_path, "mod-token-0123456789abcdef0123456789");
       CHECK(child >= 0);
       if (child >= 0) {
         int status = 0;
@@ -1255,7 +1255,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string game_path = "/tmp/darkpool_test_game_" + pid_str + ".sock";
     (void)::unlink(game_path.c_str());
 
-    const auto child = start_unix_server(server_path, game_path, "mod-token-game");
+    const auto child = start_unix_server(server_path, game_path, "mod-token-game-0123456789abcdef");
     CHECK(child >= 0);
     if (child >= 0) {
       const int mod_fd = connect_unix_with_retry(game_path);
@@ -1268,7 +1268,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
 
         const auto mod_resp = request_json(
             mod_fd,
-            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-game"}});
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-game-0123456789abcdef"}});
         CHECK(mod_resp && (*mod_resp)["type"] == "connect" && (*mod_resp)["role"] == "moderator");
 
         std::vector<int> players;
@@ -1378,7 +1378,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string malformed_path = "/tmp/darkpool_test_malformed_" + pid_str + ".sock";
     (void)::unlink(malformed_path.c_str());
 
-    const auto child = start_unix_server(server_path, malformed_path, "mod-token");
+    const auto child = start_unix_server(server_path, malformed_path, "mod-token-0123456789abcdef0123456789");
     CHECK(child >= 0);
     if (child >= 0) {
       const int client_a = connect_unix_with_retry(malformed_path);
@@ -1423,7 +1423,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
     const std::string notif_path = "/tmp/darkpool_test_notif_" + pid_str + ".sock";
     (void)::unlink(notif_path.c_str());
 
-    const auto child = start_unix_server(server_path, notif_path, "mod-token-unix-notif");
+    const auto child = start_unix_server(server_path, notif_path, "mod-token-unix-notif-0123456789abcdef");
     CHECK(child >= 0);
     if (child >= 0) {
       const int mod_fd = connect_unix_with_retry(notif_path);
@@ -1432,7 +1432,7 @@ void test_unix_socket_lifecycle_and_gameplay(const char* server_path) {
         set_receive_timeout(mod_fd, 3000);
         const auto mod_resp = request_json(
             mod_fd,
-            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-unix-notif"}});
+            json{{"type", "connect"}, {"role", "moderator"}, {"token", "mod-token-unix-notif-0123456789abcdef"}});
         CHECK(mod_resp && (*mod_resp)["type"] == "connect");
 
         const auto create_resp = request_json(
