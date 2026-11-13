@@ -15,6 +15,7 @@
 #include <mqueue.h>
 #include <netinet/in.h>
 #include <semaphore.h>
+#include <signal.h>
 #include <string>
 #include <sys/mman.h>
 #include <sys/socket.h>
@@ -337,6 +338,15 @@ static void test_worker_exits_when_parent_dies(const std::string& worker_bin) {
     const auto suffix = std::to_string(::getpid());
     const std::string req_shm = "/dp_test_parentdeath_req_" + suffix;
     const std::string resp_shm = "/dp_test_parentdeath_resp_" + suffix;
+
+    // Mirror ServerRuntime's signalfd setup: the manager's parent blocks
+    // SIGINT/SIGTERM, so the worker must explicitly unblock them before exec.
+    sigset_t server_signal_mask;
+    require(::sigemptyset(&server_signal_mask) == 0, "init launcher signal mask");
+    require(::sigaddset(&server_signal_mask, SIGINT) == 0, "add launcher SIGINT mask");
+    require(::sigaddset(&server_signal_mask, SIGTERM) == 0, "add launcher SIGTERM mask");
+    require(::sigprocmask(SIG_BLOCK, &server_signal_mask, nullptr) == 0,
+            "block launcher shutdown signals");
 
     WorkerProcessConfig cfg;
     cfg.worker_binary_path = worker_bin;
