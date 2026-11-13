@@ -25,7 +25,7 @@ A passing full CTest run is the default verification gate for a code change. Do 
 The CMake configuration defines tests for these areas:
 
 - **Engine:** role-count boundaries, initial state, trading, reserve/supply invariants, clues, voting, victory precedence, and deterministic behavior.
-- **Communications primitives:** JSON framing, fragmented/coalesced stream decoding, bounded output queues, socket lifecycle, and protocol errors.
+- **Communications primitives:** JSON framing, fragmented/coalesced stream decoding, bounded output queues, socket lifecycle, protocol errors, constant-time credential comparison, credential length policy, fail-closed entropy generation, and shared unauthenticated rate-budget behavior.
 - **Coordinator and CLI:** match creation/joining, admission-token enforcement, permission boundaries, phase transitions, command parsing, and result formatting. Credential regressions verify minimum/maximum secret lengths, malformed resume-token rejection, no partial token issuance on entropy-source failure, and constant-time helper behavior for matching and length-mismatched inputs.
 - **Server integration:** UNIX-domain sockets, TCP sessions, authentication, gameplay flows, variable-size matches, notifications, timers/deadlines, late actions, and malformed input.
 - **TLS integration:** OpenSSL TLS 1.3 handshakes, certificate trust and identity validation, transport I/O, and negative security cases.
