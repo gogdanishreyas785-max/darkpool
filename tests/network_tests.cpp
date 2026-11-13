@@ -8,6 +8,7 @@
 #include <unistd.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <iostream>
