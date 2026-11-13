@@ -1,6 +1,6 @@
 # DARKPOOL S0 decision register
 
-Status note: the S1 follow-up approved the five-player baseline mechanics. A later explicit user decision approves variable-size matches and the role-scaling policy recorded in DEC-02/DEC-20. Other unresolved protocol, operations, scoring and audit items remain open.
+Status note: the S1 follow-up approved the five-player baseline mechanics. A later explicit user decision approves variable-size matches and the role-scaling policy recorded in DEC-02/DEC-20. Some protocol, operations, scoring and audit questions remain open. Later implementation updates—including IPC-1 through IPC-10 and the player reconnect policy—are summarized in [Current implementation follow-up](#current-implementation-follow-up-ipc-and-player-reconnection).
 
 ## 1. Direct requirements from Draft 3
 
@@ -51,9 +51,9 @@ The finite-reserve model conserves shares: player holdings + reserve = 20N befor
 
 Full definitions are in game-rules.md, test-plan.md and protocol.md. The S1 follow-up status below supersedes the original S0 approval-request column for the S1 scope.
 
-### Remaining approvals for later milestones
+### Remaining approvals at the S0/S1 planning stage (historical)
 
-Protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment remain separate decisions where not already approved.
+At the time of the original S0/S1 planning, protocol format/versioning and ACK/duplicate semantics; local authentication and production limits; secret audit access and chat/audit retention; reconnect/exit/shutdown handling; scoring/final disclosure; and exact load-test workload/environment remained separate decisions. Subsequent implementation work resolved or implemented parts of the reconnect and shutdown scope; see the current implementation follow-up at the end of this register.
 
 ## 3. Deferred (Historical S0 Scope)
 
@@ -136,3 +136,32 @@ The following explicit architectural decisions govern the Stage 4 gameplay enhan
 | **AD-S4-09** | Candidate Reserve Depletion Scarcity Surcharge (`+w_l`) vs Illiquidity Discount (`-w_l`) | When buying ($D > 0$) into a depleted dark pool reserve ($\mathcal{L} < 20\%$), the candidate formula applies a positive scarcity surcharge (`+w_l \cdot \text{ScarcitySurcharge}_{\mathcal{L}}$`), rather than a negative illiquidity discount (`-w_l`). Rationale: Depleted pools experience physical shortage squeeze and upward execution slippage (+2 price impact). Gameplay consequence: Forces traders to anticipate reserve depletion, as buying scarce shares becomes increasingly expensive. Baseline leaves $w_l = 0$. | Reconciles documented candidate equation with code and Scenario 7B ($P'=24$ vs $P'=22$ for high reserve). Retained as an unapproved candidate proposal pending explicit user review. | **Candidate Proposal Pending User Review** |
 | **AD-S4-10** | Deterministic Volatility Magnification Factor (`volatility_weight` / $w_{\text{vol}}$) | Introduces centralized coefficient `volatility_weight` ($w_{\text{vol}}$, default 0 in `approved_baseline()`, 1 in `candidate_proposal()`). Market direction $\text{dir}_{\text{market}} = \text{sign}(D)$ if $D \ne 0$, else $\text{sign}(e)$ if $e \ne 0$, else 0. The volatility pricing term is $w_{\text{vol}} \cdot \text{dir}_{\text{market}} \cdot \lfloor \mathcal{V} / 4 \rfloor$. In neutral markets ($D=0, e=0$), $\text{dir}_{\text{market}} = 0$, strictly guaranteeing zero price bias. Higher gross volume under equal net demand increases price magnitude in the established market direction (e.g. Scenario 5: $G=3 \implies P'=23$ vs $G=7 \implies P'=24$). | Coherently incorporates calculated volatility $\mathcal{V}$ into candidate price determination without introducing directional bias in balanced markets. Kept separate from baseline. | **Candidate Proposal Pending User Review** |
 | **AD-S4-11** | Safe Mathematical Floor Division Precondition & Overflow Protection | `Match::floor_div(a, b)` computes mathematical floor $\lfloor a / b \rfloor$ via 64-bit integer arithmetic (`std::int64_t`) and clamps results to `[INT32_MIN, INT32_MAX]`, preventing signed integer overflow for `INT32_MIN / -1`. Rejects invalid divisors ($b == 0$) by throwing `std::invalid_argument` rather than silently returning 0. | Eliminates undefined behavior across the entire 32-bit signed integer domain while strictly adhering to mathematical floor semantics for all valid market-model inputs and failing closed on invalid preconditions. | **Approved** |
+
+
+## Current implementation follow-up: IPC and player reconnection
+
+This section records implementation decisions that supersede the earlier historical S0/S1 planning status. It does not change the approved game rules or authorize a distributed backend.
+
+### Advanced IPC and synchronization milestones
+
+The following IPC milestones are implemented and merged:
+
+| Milestone | Implemented functionality | Boundary |
+|---|---|---|
+| IPC-1 | POSIX message-queue local control plane for `ping`, aggregate `status`, and graceful `shutdown`. | Same-host operational control; gameplay remains on the existing client transports. |
+| IPC-2–4 | POSIX shared-memory aggregate telemetry, process-shared robust mutex/CRC32 integrity, semaphore notifications, and safe observer/resource lifetime during shutdown. | Read-only aggregate telemetry; no roles, clues, balances, or authoritative match state in shared memory. |
+| IPC-5–8 | `eventfd` notification primitive, bounded in-process MPMC queue, primitive benchmarks, an epoll integration prototype, and an end-to-end reactor benchmark. | MPMC queue and reactor benchmark remain standalone concurrency/performance work; they are not the server-worker data queue. |
+| IPC-9 | Bounded process-shared SPSC queue using POSIX shared memory, robust process-shared synchronization, monotonic timed waits, endpoint PID binding, and fail-stop handling for owner death. | Exactly one producer and one consumer per queue endpoint. |
+| IPC-10 | Optional server-worker process integration using two IPC-9 SPSC queues and two `eventfd` notifications, with readiness handshake, correlated asynchronous requests, health monitoring, pending-request failure, restart, and bounded shutdown. | Enable with server flag `--worker`; it is off by default. The worker performs non-authoritative market-model computation only. The server remains the sole authority for game state. |
+
+The worker-process path is an explicit later implementation of the IPC work and a narrow extension to the original DEC-14 worker deferral. It does not add a worker thread pool for gameplay, a second authoritative state owner, a multi-server cluster, replication, consensus, or failover. D-Bus is not used; local control and worker IPC use the approved POSIX IPC mechanisms.
+
+### Player seat reconnection and token security
+
+A player receives a cryptographically generated, per-seat resume token after joining. If the connection is lost, the server reserves that seat for five minutes. A reconnect request using the token restores the same player ID, seat, and private role, including during an active match. The token is rotated after successful reconnection, and the previous token is rejected. The server requires the seat to be disconnected and the reservation to remain valid; after expiry, the seat may be assigned to a new player. Join-token and resume-token comparisons use the coordinator's constant-time comparison helper.
+
+Resume tokens are bearer credentials, not persistent player accounts. They do not survive a server restart because match state remains in memory. The player-facing procedure is documented in [User Guide §8](user-guide.md#8-match-tokens-and-access-control), and the wire-level request/response behavior is in [Protocol: Player Seat Reconnection](protocol.md#player-seat-reconnection).
+
+### Current verification scope
+
+The Ubuntu 24.04 CI workflow builds all targets with warnings-as-errors and runs 11 focused CTest tests, including the worker-process integration tests and `darkpool_playable_match_e2e`. The standard local CTest configuration enables 44 tests; four additional sustained-load tests are opt-in. Neither that focused CI selection nor the IPC integration tests should be described as proof of multi-server operation or public-Internet readiness. See [Test and Verification Guide](test-plan.md) for exact commands and evidence boundaries.
