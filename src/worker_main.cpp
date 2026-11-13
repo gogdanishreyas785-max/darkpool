@@ -63,7 +63,7 @@ int main(int argc, char** argv) {
   int parent_death_signal = 0;
   if (::prctl(PR_GET_PDEATHSIG, &parent_death_signal, 0, 0, 0) != 0 ||
       parent_death_signal != SIGTERM) {
-    std::cerr << "[darkpool_worker] parent-death supervision is missing\\n";
+    std::cerr << "[darkpool_worker] parent-death supervision is missing\n";
     return 1;
   }
 
