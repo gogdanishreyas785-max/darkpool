@@ -280,7 +280,11 @@ The following are the communication and operating-system primitives used by DARK
 | **TCP network sockets** | Connect clients to the server across a network. TCP provides a reliable, ordered byte stream, not encryption or application message boundaries. |
 | **TLS 1.3 over TCP** | Protects remote-session bytes and validates the server's certificate identity through the configured CA or SHA-256 fingerprint method. |
 | **Linux signals via `signalfd`** | `SIGINT` and `SIGTERM` are blocked and exposed as a file descriptor, then handled by the `epoll` loop. They control process shutdown rather than carrying game messages. |
-| **POSIX message queues** | A Linux-only local control channel carries `ping` and aggregate `status` requests; its descriptor is polled by the same `epoll` loop. |
+| **POSIX message queues** | A Linux-only local control channel carries `ping`, aggregate `status`, and graceful `shutdown` requests; its descriptor is polled by the same `epoll` loop. |
+| **POSIX shared memory** | Carries aggregate telemetry snapshots to `darkpool_watch` and fixed-layout request/response slots between the server and worker processes. |
+| **Process-shared robust mutexes and condition variables** | Synchronize the telemetry snapshot and the bounded SPSC worker queues across process boundaries; worker queue waits use monotonic deadlines. |
+| **POSIX named semaphore** | Provides coalesced wake-up hints to telemetry observers after committed snapshot changes. |
+| **Linux `eventfd`** | Provides one-way wake-up notifications in each direction of the server-worker IPC channel; the server-side descriptor is registered with `epoll`. |
 
 ### 9.1 How IPC actually works today
 
@@ -399,19 +403,19 @@ Current limitations remain: the application does not provide durable crash recov
 
 ### 9.6 Asynchronous concurrency primitives foundation (IPC-5)
 
-To prepare for future off-thread worker integration, IPC-5 introduces two reusable concurrency primitives in `darkpool::ipc`:
+IPC-5 introduces two reusable asynchronous-concurrency primitives in `darkpool::ipc`. The bounded MPMC queue remains an in-process primitive; the `EventNotifier` is also reused by the production server-worker IPC added in IPC-10:
 
 1. **`EventNotifier` (`include/darkpool/event_notifier.hpp`):** A move-only RAII wrapper around Linux `eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC)`. It provides nonblocking counter-based notifications with standard coalescing semantics. Writes increment the 64-bit kernel counter, while nonblocking reads consume the accumulated counter and atomically reset it to zero.
    - **Counter limits:** Valid write increments range from `1` to `UINT64_MAX - 1` (`0xFFFFFFFFFFFFFFFEULL`). Zero and `UINT64_MAX` are rejected as invalid increments. If an increment would cause the counter to exceed `UINT64_MAX - 1`, the nonblocking write fails with `EAGAIN` (`NotifyStatus::Saturated`).
    - **Consumption:** `try_consume()` returns `std::nullopt` both when the counter is empty and if a read error occurs; callers requiring explicit error distinction use `consume()`.
-   - **Epoll integration:** The underlying file descriptor is exposed for future integration into Linux `epoll` loops.
+   - **Epoll integration:** The underlying file descriptor can be registered with Linux `epoll`. IPC-7 validates the generic reactor callback path, and IPC-10 uses `EventNotifier` instances to notify the production worker and server processes.
 2. **`BoundedMpmcQueue` (`include/darkpool/bounded_mpmc_queue.hpp`):** A fixed-capacity multi-producer, multi-consumer queue implementing Dmitry Vyukov's bounded MPMC algorithm using per-slot atomic sequence counters with acquire/release memory ordering. Capacities must be a power of two.
    - **Nonblocking & Zero Allocation:** The queue is nonblocking (no mutexes, condition variables, futexes, or system calls) and performs no heap allocations during queue operations.
    - **Exception Safety:** All queue operations are constrained to nothrow types and operations (`try_emplace` requires `nothrow` construction from arguments, `try_push` requires `nothrow` copy/move construction, `try_pop` requires `nothrow` move assignment/construction, and `T` requires a `nothrow` destructor). This ensures no user exception can occur after a slot ticket is claimed and before its sequence state is published.
    - **Progress & Availability Semantics:** Slot ticket allocation is always lock-free (via `compare_exchange_weak` on `std::atomic<std::size_t>`, verified at compile time by `static_assert(std::atomic<std::size_t>::is_always_lock_free)`). However, end-to-end progress is obstruction-tolerant rather than strictly lock-free: a producer can reserve an earlier slot and be suspended before publishing it, while later producers complete their enqueue operations. Consumers inspecting the queue will receive `false` from `try_pop()` because the FIFO head slot is not yet published. Thus, `try_pop() == false` does not necessarily mean no producer has enqueued an item anywhere in the queue; a stalled producer temporarily delays progress at the FIFO head.
    - **Approximate Metrics & Quiescence:** `size()`, `empty()`, and `full()` provide approximate observations during concurrent operations and must not be used as synchronization conditions. Destruction and `clear()` require all concurrent queue operations to have stopped (quiescence precondition).
 
-**Integration boundary:** These primitives represent a standalone concurrency foundation. Production server dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` do not use them yet. No worker threads or eventfd descriptors are registered in the production `epoll` loop in this milestone.
+**Integration boundary:** `BoundedMpmcQueue` remains a standalone in-process concurrency primitive and is not the production server-worker queue. `EventNotifier` is reused by IPC-10 for cross-process wake-ups. The production worker channel instead uses two `ProcessSharedQueue` SPSC queues in POSIX shared memory, synchronized with process-shared robust mutexes and condition variables. Worker responses are signaled to the server through an `eventfd` registered with the production `ServerRuntime` epoll loop. The game engine and coordinator remain server-owned; the worker cannot mutate authoritative match state.
 
 ### 9.7 Asynchronous IPC microbenchmarks (IPC-6)
 
@@ -472,7 +476,7 @@ IPC-7 demonstrates that `EventNotifier` and `BoundedMpmcQueue` can integrate as 
 - **Descriptor Lifetime and Ownership:**
   The `EventNotifier` is owned externally by the test harness or worker subsystem, not by `ServerRuntime`. Registering via `ServerRuntime::add_epoll_event_source(fd, handler, err)` adds the descriptor to the runtime's epoll set. When `ServerRuntime::stop()` is called, it unregisters the descriptor via `EPOLL_CTL_DEL` without closing it. The `EventNotifier` descriptor remains valid and open after runtime teardown. The notifier must outlive its epoll registration.
 - **Integration Boundary:**
-  The IPC-7 prototype (`darkpool_ipc_epoll_tests`) demonstrates that these primitives cooperate correctly with `ServerRuntime`. It does **not** integrate asynchronous worker threads or eventfd descriptors into the production `darkpool_server` daemon. Production gameplay dispatch (`ServerRuntime`), `MatchCoordinator`, and `GameEngine` remain single-threaded within the reactor loop.
+  IPC-7 remains a focused reactor-integration prototype for the in-process MPMC queue and eventfd notification pattern. It is not the production worker data path. Production cross-process compute offload was added separately in IPC-10 and uses process-shared SPSC queues plus eventfd notifications, as described in §9.11. The production server continues to own gameplay dispatch and authoritative state in its epoll loop; the worker performs advisory computation only.
 
 ### 9.9 End-to-end epoll reactor work-delivery benchmark (IPC-8)
 
@@ -524,7 +528,7 @@ IPC-9 introduces a bounded single-producer/single-consumer (SPSC) work queue pro
 
 ### 9.11 Server-Worker Process-Shared IPC Architecture (IPC-10)
 
-IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `EventNotifier`) into a production multi-process server–worker architecture:
+IPC-10 integrates the standalone IPC primitives (`ProcessSharedQueue` and `EventNotifier`) into an optional production multi-process server–worker path. The server starts this child process when launched with `--worker`; the default server invocation does not enable it:
 
 ```text
  Client TCP/TLS               Server Process (darkpool_server)                      Worker Process (darkpool_worker)

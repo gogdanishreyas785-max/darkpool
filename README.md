@@ -52,7 +52,9 @@ On every computer that runs a client, clone the repository and follow the provis
 
 The launchers store protected-match tokens under `~/.darkpool/tokens` (directory mode `0700`, token files mode `0600`). For local play, use `join` or `join <match_id>` without copying the token. For LAN play, create the protected match first, then launch player clients so they can synchronize token files over the SSH connection configured during setup. Manual token entry remains available as a fallback.
 
-Vote-resolution messages report aggregate ballot counts (submitted, explicitly abstained, missing, and eligible) without broadcasting individual ballot targets.
+Vote-resolution messages report aggregate ballot counts (submitted, explicitly abstained, missing, and eligible) without broadcasting individual ballot targets. Players who disconnect can reclaim their original seat during the five-minute reservation window with their private, rotating seat-resume token; see the user guide.
+
+On Linux, the server can optionally manage a separate `darkpool_worker` process for non-authoritative market-model computation; enable it with `--worker` (it is not started by the default server invocation). The worker exchanges fixed-size requests and responses with the server through two POSIX shared-memory SPSC queues, with `eventfd` notifications integrated into the server's `epoll` loop. The server remains authoritative for all gameplay state. POSIX MQ control, shared-memory telemetry, and the worker channel serve distinct operational, observational, and compute-offload purposes.
 
 ## Implementation at a glance
 
@@ -65,6 +67,7 @@ Vote-resolution messages report aggregate ballot counts (submitted, explicitly a
 | `darkpool_server`, `darkpool_client` | Linux server and interactive client executables. |
 | `darkpool_ctl` | Linux-only local `ping`, aggregate `status`, and graceful `shutdown` over POSIX message queues. |
 | `darkpool_watch` | Linux-only POSIX shared memory telemetry observer for server aggregate state. |
+| `darkpool_worker` | Optional Linux child process (enabled with server flag `--worker`) for non-authoritative market-model computation over process-shared SPSC queues and `eventfd` notifications. |
 
 ### Communications library: source files
 

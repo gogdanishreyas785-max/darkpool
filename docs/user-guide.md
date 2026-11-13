@@ -356,6 +356,19 @@ The local launcher enables token storage so players can use **join** or **join <
 
 An optional in-band enrollment command is also available when the server and client are configured with the same pre-shared `DARKPOOL_ENROLLMENT_TOKEN` or `DARKPOOL_PLAYER_SECRET`. The standard setup scripts do not configure this shared enrollment secret automatically. Use an open lobby only if you intentionally want to disable match-token admission.
 
+### Reconnecting after a disconnect
+
+After a successful join, the player CLI displays a private **Seat Resume Token**. Keep it separate from the match-wide join token. If the client disconnects, the server reserves that player's seat for **five minutes**. Start a replacement client, set the token in its environment, and join the same match:
+
+~~~bash
+export DARKPOOL_PLAYER_RESUME_TOKEN='YOUR_SEAT_RESUME_TOKEN'
+# Start the player client using the normal local or TLS LAN launcher.
+# In the player CLI:
+join MATCH_ID
+~~~
+
+The server restores the original player ID, seat, and role, even when the match is already active. A successful reconnect rotates the resume token; replace the environment value with the newly displayed token so a later disconnect can also be recovered. The previous token cannot be reused. Once the five-minute reservation expires, the seat may be assigned to another player. Treat the token as a bearer credential: do not share it, commit it, or include it in logs or screenshots.
+
 ## 9. Communication library and code map
 
 The communication library is the CMake target **darkpool_communications**, defined in CMakeLists.txt. It is not a separately downloaded package. Public headers are under include/darkpool; implementation is under src.
@@ -385,6 +398,18 @@ Framing matters because TCP and TLS are byte streams, not message-oriented trans
 
 TLS protects network traffic and verifies server identity; it does not replace match-level authorization. Match and moderator tokens have different purposes. Plaintext TCP on port 4782 is unsuitable for untrusted networks.
 
+### Linux worker-process IPC (IPC-10)
+
+The Linux server can optionally manage a separate `darkpool_worker` child process for non-authoritative market-model computation. Enable this path by starting the server with `--worker`; it is disabled by default. For example, from the repository root:
+
+~~~bash
+./build/darkpool_server --worker --worker-binary ./build/darkpool_worker
+~~~
+
+The server and worker exchange fixed-layout messages through two bounded POSIX shared-memory SPSC queues; one `eventfd` in each direction signals when work or a response is available. The server's response notification is handled by its existing `epoll` loop. The worker process is started, monitored, and shut down by `WorkerProcessManager`; operators do not start a second server or configure a separate network port for it.
+
+The client-facing `eval_model` request is asynchronous. The server validates its inputs, correlates the response with the originating client request, and returns the worker's projection. The worker cannot modify matches, trades, player accounts, or other authoritative game state. If the worker is unavailable or fails, pending requests receive an error and the server can restart the worker; normal authoritative gameplay remains owned by the server. See [Architecture §9.11](architecture.md#911-server-worker-process-shared-ipc-architecture-ipc-10) and [Protocol: Server-Worker Internal IPC Wire Protocol](protocol.md#server-worker-internal-ipc-wire-protocol).
+
 ### Other important source files
 
 | File / target | Responsibility |
@@ -394,7 +419,11 @@ TLS protects network traffic and verifies server identity; it does not replace m
 | src/cli.cpp, include/darkpool/cli.hpp | Human command parsing and output formatting. |
 | src/server_main.cpp | Server configuration, startup, listeners, moderator authentication, and runtime wiring. |
 | src/client_main.cpp | Executable argument parsing and client startup for UNIX, TCP, or TLS connections. |
-| CMakeLists.txt | Builds engine, communications, coordinator, CLI, server/client executables, and tests. |
+| include/darkpool/process_shared_queue.hpp | Bounded process-shared SPSC queue using POSIX shared memory and robust process-shared synchronization. |
+| include/darkpool/server_worker_channel.hpp and include/darkpool/worker_protocol.hpp | Fixed-layout bidirectional server-worker IPC messages and channel endpoints. |
+| include/darkpool/worker_process_manager.hpp | Child-worker launch, readiness handshake, health/reaping, restart, and bounded shutdown. |
+| include/darkpool/event_notifier.hpp | Linux eventfd RAII notifications used by the worker channel and epoll integration. |
+| CMakeLists.txt | Builds engine, communications, coordinator, CLI, server/client/worker executables, and tests. |
 
 ## 10. Build and test manually
 
