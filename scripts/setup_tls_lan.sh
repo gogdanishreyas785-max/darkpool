@@ -14,9 +14,9 @@ Server machine:
 Each client machine:
   bash scripts/setup_tls_lan.sh client SERVER_LAN_IPV4 [SERVER_SSH_USER] [player|moderator]
 
-The script installs dependencies, builds DARKPOOL, runs the TLS integration test,
-and transfers trust material via authenticated SSH. Player setup does not fetch the
-moderator token. Run from the root of a DARKPOOL checkout on each machine.
+The script installs dependencies, builds DARKPOOL, and runs the TLS integration test.
+Same-host clients reuse local trust material; remote clients transfer it via authenticated SSH.
+Player setup does not fetch the moderator token. Run from a DARKPOOL checkout.
 USAGE
 }
 
@@ -229,28 +229,61 @@ setup_client() {
   install_dependencies client
   ensure_data_dir
   local target="$ssh_user@$server_ip"
+  local local_server=false
 
-  info "Retrieving the public CA certificate over SSH from $target"
-  printf 'On first SSH connection, verify the host-key fingerprint before accepting it.\n'
-  ssh "$target" 'test -r "$HOME/.local/share/darkpool/tls-lan/ca-cert.pem" && test -r "$HOME/.local/share/darkpool/tls-lan/server-ip"' || die "SSH login or server TLS setup failed"
-  local configured_ip
-  configured_ip="$(ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/server-ip"')"
-  [[ "$configured_ip" == "$server_ip" ]] || die "server TLS setup uses $configured_ip; pass that address instead"
-  umask 077
-  ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/ca-cert.pem"' > "$DATA_DIR/ca-cert.pem" || die "CA certificate transfer failed"
-  openssl x509 -in "$DATA_DIR/ca-cert.pem" -noout >/dev/null || die "downloaded CA certificate is invalid"
-  chmod 600 "$DATA_DIR/ca-cert.pem"
-  if [[ "$role" == moderator ]]; then
-    ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/moderator.token"' > "$DATA_DIR/moderator.token" || die "moderator token transfer failed"
-    [[ -s "$DATA_DIR/moderator.token" ]] || die "downloaded moderator token is empty"
-    chmod 600 "$DATA_DIR/moderator.token"
-  else
-    rm -f -- "$DATA_DIR/moderator.token"
+  # When the server address belongs to this host and the server SSH account is
+  # the current user, the server and client share DATA_DIR. Avoid SSH redirection
+  # into ca-cert.pem, which would truncate the source before it is read.
+  if [[ "$ssh_user" == "$(id -un)" ]] &&
+     ip -o -f inet addr show scope global |
+       awk '{split($4, address, "/"); print address[1]}' |
+       grep -Fxq -- "$server_ip"; then
+    local_server=true
   fi
+
+  if [[ "$local_server" == true ]]; then
+    info "Using local TLS trust material (server and client share this host)"
+    [[ -s "$DATA_DIR/server-ip" ]] || die "local server TLS setup is missing server-ip in $DATA_DIR"
+    local configured_ip
+    configured_ip="$(<"$DATA_DIR/server-ip")"
+    [[ "$configured_ip" == "$server_ip" ]] || die "local server TLS setup uses $configured_ip; pass that address instead"
+    [[ -s "$DATA_DIR/ca-cert.pem" ]] || die "local CA certificate is missing or empty in $DATA_DIR; restore the existing server CA before client setup"
+    openssl x509 -in "$DATA_DIR/ca-cert.pem" -noout >/dev/null || die "local CA certificate is invalid"
+    chmod 600 "$DATA_DIR/ca-cert.pem"
+    if [[ "$role" == moderator ]]; then
+      [[ -s "$DATA_DIR/moderator.token" ]] || die "local moderator token is missing or empty in $DATA_DIR"
+      chmod 600 "$DATA_DIR/moderator.token"
+    fi
+  else
+    info "Retrieving the public CA certificate over SSH from $target"
+    printf 'On first SSH connection, verify the host-key fingerprint before accepting it.\n'
+    ssh "$target" 'test -r "$HOME/.local/share/darkpool/tls-lan/ca-cert.pem" && test -r "$HOME/.local/share/darkpool/tls-lan/server-ip"' || die "SSH login or server TLS setup failed"
+    local configured_ip
+    configured_ip="$(ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/server-ip"')"
+    [[ "$configured_ip" == "$server_ip" ]] || die "server TLS setup uses $configured_ip; pass that address instead"
+    umask 077
+    ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/ca-cert.pem"' > "$DATA_DIR/ca-cert.pem" || die "CA certificate transfer failed"
+    openssl x509 -in "$DATA_DIR/ca-cert.pem" -noout >/dev/null || die "downloaded CA certificate is invalid"
+    chmod 600 "$DATA_DIR/ca-cert.pem"
+    if [[ "$role" == moderator ]]; then
+      ssh "$target" 'cat "$HOME/.local/share/darkpool/tls-lan/moderator.token"' > "$DATA_DIR/moderator.token" || die "moderator token transfer failed"
+      [[ -s "$DATA_DIR/moderator.token" ]] || die "downloaded moderator token is empty"
+      chmod 600 "$DATA_DIR/moderator.token"
+    else
+      rm -f -- "$DATA_DIR/moderator.token"
+    fi
+  fi
+
   printf '%s\n' "$server_ip" > "$DATA_DIR/server-ip"
   chmod 600 "$DATA_DIR/server-ip"
-  printf '%s\n' "$ssh_user" > "$DATA_DIR/server-ssh-user"
-  chmod 600 "$DATA_DIR/server-ssh-user"
+  if [[ "$local_server" == true ]]; then
+    # The token directory is also shared on this host; skip SSH/SCP provisioning
+    # and preserve the server's moderator credential.
+    rm -f -- "$DATA_DIR/server-ssh-user"
+  else
+    printf '%s\n' "$ssh_user" > "$DATA_DIR/server-ssh-user"
+    chmod 600 "$DATA_DIR/server-ssh-user"
+  fi
   build_and_test
   printf '\nClient setup complete (%s). Launch with: bash scripts/run_tls_client.sh %s\n' "$role" "$role"
   if [[ "$role" == player ]]; then printf 'Player setup does not retrieve the moderator token.\n'; fi
