@@ -8,6 +8,7 @@ readonly TEST_HOME="$TEMP_ROOT/home"
 readonly MOCK_BIN="$TEMP_ROOT/bin"
 readonly DATA_DIR="$TEST_HOME/.local/share/darkpool/tls-lan"
 readonly SSH_CALL_LOG="$TEMP_ROOT/ssh-called"
+export SSH_CALL_LOG
 
 cleanup() {
   rm -rf -- "$TEMP_ROOT"
