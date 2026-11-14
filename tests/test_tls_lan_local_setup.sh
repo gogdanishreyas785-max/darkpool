@@ -28,12 +28,12 @@ MOCK
 
 cat > "$MOCK_BIN/ip" <<'MOCK'
 #!/usr/bin/env bash
-printf '2: enp0s8 inet 192.168.56.101/24 scope global enp0s8\\n'
+printf '2: enp0s8 inet 192.168.56.101/24 scope global enp0s8\n'
 MOCK
 
 cat > "$MOCK_BIN/ssh" <<'MOCK'
 #!/usr/bin/env bash
-printf 'ssh was unexpectedly invoked\\n' >> "$SSH_CALL_LOG"
+printf 'ssh was unexpectedly invoked\n' >> "$SSH_CALL_LOG"
 exit 99
 MOCK
 
@@ -53,9 +53,9 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -keyout "$DATA_DIR/ca-key.pem" \
   -out "$DATA_DIR/ca-cert.pem" \
   -days 1 -subj "/CN=DARKPOOL local setup test" >/dev/null 2>&1
-printf '%s\\n' "$SERVER_IP" > "$DATA_DIR/server-ip"
-printf 'test-moderator-token\\n' > "$DATA_DIR/moderator.token"
-printf '%s\\n' "$(id -un)" > "$DATA_DIR/server-ssh-user"
+printf '%s\n' "$SERVER_IP" > "$DATA_DIR/server-ip"
+printf 'test-moderator-token\n' > "$DATA_DIR/moderator.token"
+printf '%s\n' "$(id -un)" > "$DATA_DIR/server-ssh-user"
 chmod 600 "$DATA_DIR/ca-key.pem" "$DATA_DIR/moderator.token" "$DATA_DIR/server-ssh-user"
 chmod 644 "$DATA_DIR/ca-cert.pem"
 
@@ -81,4 +81,4 @@ run_setup moderator
 [[ "$(sha256sum "$DATA_DIR/moderator.token" | awk '{print $1}')" == "$token_before" ]]
 [[ ! -e "$SSH_CALL_LOG" ]]
 
-printf 'Same-host TLS client setup regression test passed.\\n'
+printf 'Same-host TLS client setup regression test passed.\n'
