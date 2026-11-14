@@ -20,6 +20,10 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v5
+      - name: Validate TLS LAN setup scripts
+        run: |
+          bash -n scripts/setup_tls_lan.sh scripts/run_tls_client.sh scripts/run_tls_server.sh tests/test_tls_lan_local_setup.sh
+          bash tests/test_tls_lan_local_setup.sh
       - name: Configure Release build
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DDARKPOOL_WARNINGS_AS_ERRORS=ON -DDARKPOOL_ENABLE_TEST_HOOKS=ON
       - name: Build
