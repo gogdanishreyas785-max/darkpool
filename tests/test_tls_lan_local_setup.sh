@@ -67,7 +67,6 @@ run_setup() {
   local role="$1"
   HOME="$TEST_HOME" \
     PATH="$MOCK_BIN:$PATH" \
-    SSH_CALL_LOG="$SSH_CALL_LOG" \
     bash "$REPO_ROOT/scripts/setup_tls_lan.sh" client "$SERVER_IP" "$(id -un)" "$role"
 }
 
